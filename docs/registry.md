@@ -50,7 +50,10 @@ println!("assigned {} v{}", resp.ctx_id, resp.version);
 > `RegistryServer::publish_unverified_for_tests` exists for integration tests
 > that can't run a live DID resolver. It is `#[doc(hidden)]`, skips §2.1 steps
 > 7–8, and is **a protocol violation in production**. Never call it from a real
-> service.
+> service. `publish_unverified_in_tenant_for_tests` is the same test-only
+> bypass with an added idempotency key and tenant argument, for tests that
+> need to exercise idempotent replay or tenant stamping without a live
+> resolver.
 
 ## RegistryServer
 

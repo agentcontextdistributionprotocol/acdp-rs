@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.10.0...acdp-v0.10.1) - 2026-09-10
+
+### Added
+
+- *(server)* add publish_unverified_in_tenant_for_tests ([#237](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/237))
+
+### Other
+
+- *(supply-chain)* cargo deny is the sole RustSec gate in CI, not cargo audit ([#224](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/224)) ([#236](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/236))
+- correct three inaccurate claims and record the assumption dispositions ([#233](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/233))
+
 ## [0.10.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.9.1...acdp-v0.10.0) - 2026-09-07
 
 ### Added

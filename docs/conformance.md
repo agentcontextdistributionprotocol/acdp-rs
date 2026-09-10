@@ -69,8 +69,8 @@ RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo +nightly doc --all-features --no-d
 ACDP_SPEC_DIR=../agentcontextdistributionprotocol cargo test --test conformance
 ```
 
-`cargo deny check` and `cargo audit` run in CI too; install them locally only
-when touching dependencies or crypto.
+`cargo deny check` runs in CI (the sole RustSec advisory gate); `cargo audit`
+is optional and local-only — install them when touching dependencies or crypto.
 
 ## Running a subset
 

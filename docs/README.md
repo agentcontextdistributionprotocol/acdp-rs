@@ -50,7 +50,7 @@ normative protocol rules. For those, each page links to the relevant RFC.
 | [Language bindings](bindings.md) | The Python (`acdp-py`) and Node (`acdp-node`) SDKs and the JSON-across-FFI design. |
 | [Release runbook](release-runbook.md) | Tagging/publishing the crate family and the three language bindings, and the tag-triggered-workflow hazard (H11) to mind when tagging retroactively. |
 | [Conformance & testing](conformance.md) | Running the spec golden vectors and the conformance fixture suite via `ACDP_SPEC_DIR`. |
-| [Supply-chain security](supply-chain.md) | Build provenance (npm/PyPI/GitHub attestations), the Action-pinning policy, the `cargo vet` contributor workflow, and the `cargo deny` + `cargo audit` posture. |
+| [Supply-chain security](supply-chain.md) | Build provenance (npm/PyPI/GitHub attestations), the Action-pinning policy, the `cargo vet` contributor workflow, and the `cargo deny` posture. |
 
 ## Research track
 

@@ -417,12 +417,12 @@ does not:
   `.github/workflows/ci.yml:138-141`). `cargo audit` is not run in CI at all
   and remains an optional local check documented in `CONTRIBUTING.md`.
 
-**Known allowlisted advisory:** `RUSTSEC-2025-0134` (`rustls-pemfile`
-unmaintained, folded into `rustls-pki-types` upstream). It is pulled in only
-transitively by `axum-server`'s `tls-rustls` feature, which is used solely in
-the **dev-dependency test harness** and never propagates to consumers. The
-ignore is declared in `deny.toml`. As of 2026-07-05 this is the only advisory
-in the tree, and none of the crypto-critical crates carry one.
+**Advisory allowlist:** `deny.toml` currently carries **no** `[advisories] ignore`
+entries (`ignore = []`) — the tree has no allowlisted advisories. The former
+`RUSTSEC-2025-0134` entry (`rustls-pemfile` unmaintained) was retired when
+`axum-server` 0.8 switched to `rustls`' built-in PEM helpers, dropping
+`rustls-pemfile` from the graph entirely; none of the crypto-critical crates
+carries an advisory.
 
 Together: **`vet`** answers "did a human look at this code?", **`deny`**
 answers "is there a known-bad advisory or license here?", and the **provenance +

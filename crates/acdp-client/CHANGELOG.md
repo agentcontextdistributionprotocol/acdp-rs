@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-client-v0.10.0...acdp-client-v0.10.1) - 2026-09-10
+
+### Added
+
+- *(client)* assemble revocation lineages so the earliest-T rule can actually apply ([#226](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/226)) ([#239](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/239))
+
 ## [0.10.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-client-v0.9.1...acdp-client-v0.10.0) - 2026-09-07
 
 ### Other

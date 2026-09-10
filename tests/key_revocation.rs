@@ -687,6 +687,196 @@ fn rev_002_earliest_boundary_across_lineage() {
     );
 }
 
+/// **Issue #226 Phase 5 — the pinning test.** `rev_002_earliest_boundary_across_lineage`
+/// above folds a HAND-BUILT two-element array through `classify_under_revocation`
+/// directly — it proves `effective_boundary`'s fold is correct, and
+/// nothing at all about whether real discovery ever *assembles* that
+/// array in the first place. This test drives the real registry
+/// end-to-end: R1 (T=early) → superseded by R2 (T=later) → R1 is
+/// retracted. It asserts all three things RFC-ACDP-0014 §4:62's
+/// end-to-end guarantee actually requires:
+///
+/// 1. A **search-only reconstruction** — the historical pre-Phase-3/4
+///    algorithm: `active` + `superseded` search passes only, no
+///    `retracted` pass, no lineage walk — MISSES R1 entirely. Once R1
+///    is retracted, the registry's *served* status for it is
+///    `retracted`, not `superseded` — `project_status` in
+///    `crates/acdp-server/src/registry/store.rs` makes retraction take
+///    precedence over the stored supersession fact — so neither
+///    pre-fix search pass ever names it again. This pins the
+///    historical blind spot as a documented, executable property
+///    rather than free-text prose.
+/// 2. `find_revocations` (post Phase 3 lineage walk + Phase 4 retracted
+///    pass) returns BOTH R1 and R2.
+/// 3. `effective_boundary` over that output resolves to R1's (earlier)
+///    T — the RFC-ACDP-0014 §4 monotonicity rule, now proven against
+///    real assembly rather than a hand-built input.
+///
+/// Runs against `LineageServerHarness` (a REAL `RegistryServer`), not a
+/// hand-built mock: every hand-built mock elsewhere in this file
+/// ignores the `status` query parameter and reports every match as
+/// `"status": "active"` regardless of what actually happened to it,
+/// which would make assertion 1 pass vacuously.
+#[tokio::test]
+async fn find_revocations_recovers_retracted_predecessor_across_lineage_supersession() {
+    use acdp::client::find_revocations;
+    use acdp::types::lifecycle::{LifecycleEvent, LifecycleEventType};
+    use acdp::types::revocation::effective_boundary;
+
+    let h = LineageServerHarness::start(lifecycle_caps(), true).await;
+
+    let seed = [0x91u8; 32];
+    let producer = Producer::new_did_key(SigningKey::from_bytes(&seed));
+    let did =
+        acdp::did::key::did_key_from_ed25519(&SigningKey::from_bytes(&seed).verifying_key_bytes());
+    let key_id = acdp::did::key::did_key_url(&did).expect("did:key URL");
+    let agent_id = AgentDid::new(did);
+
+    let early_t = at("2026-04-01T00:00:00.000Z");
+    let later_t = at("2026-05-01T00:00:00.000Z");
+
+    // R1: T = early.
+    let r1_req = producer
+        .publish_request()
+        .acdp_version("0.3.0")
+        .title("R1: early compromise boundary, later retracted")
+        .context_type(ContextType::KeyRevocation)
+        .visibility(Visibility::Public)
+        .metadata(json!({
+            "revoked_key_fingerprint": K1_FP,
+            "compromised_since": "2026-04-01T00:00:00.000Z",
+        }))
+        .build()
+        .expect("r1 build");
+    let r1_resp = h
+        .server
+        .publish_verified_did_key(&r1_req, None)
+        .expect("r1 publish");
+    let r1_stored = h
+        .server
+        .store()
+        .get(&r1_resp.ctx_id)
+        .expect("get")
+        .expect("r1 present");
+
+    // R2: supersedes R1, T = later. `check_revocation_supersession`
+    // does not gate on the direction `compromised_since` moves at
+    // publish time — RFC-ACDP-0014 §4:62 places the monotonicity
+    // guarantee on the consumer side, via `effective_boundary` — so
+    // this publishes without issue regardless of which way T moved.
+    let r2_req = producer
+        .supersede_body(&r1_stored.body)
+        .acdp_version("0.3.0")
+        .title("R2: supersedes R1, later boundary")
+        .context_type(ContextType::KeyRevocation)
+        .visibility(Visibility::Public)
+        .metadata(json!({
+            "revoked_key_fingerprint": K1_FP,
+            "compromised_since": "2026-05-01T00:00:00.000Z",
+        }))
+        .build()
+        .expect("r2 build");
+    let r2_resp = h
+        .server
+        .publish_verified_did_key(&r2_req, None)
+        .expect("r2 publish");
+    assert_eq!(r2_resp.lineage_id, r1_resp.lineage_id);
+
+    // R1 is now genuinely superseded — the real registry deriving that,
+    // not a hand-synthesized status.
+    let r1_after_supersede = h.server.store().get(&r1_resp.ctx_id).unwrap().unwrap();
+    assert_eq!(r1_after_supersede.registry_state.status, Status::Superseded);
+
+    // Retract R1. `retract_unverified_for_tests` skips only the §6
+    // step 3 cryptographic half; actor presence/binding is still
+    // enforced, so the event still needs a bound signature.
+    let event = LifecycleEvent::new(
+        "018f6d0a-00f4-4c4d-9e1f-3a5b7c9d1e30",
+        r1_resp.ctx_id.clone(),
+        LifecycleEventType::Retracted,
+        chrono::Utc::now(),
+        agent_id.clone(),
+        Some("R1 retracted after being superseded by R2".into()),
+    )
+    .expect("valid event")
+    .sign_with(SigningKey::from_bytes(&seed), key_id)
+    .expect("signed event");
+    h.server
+        .retract_unverified_for_tests(&event, None)
+        .expect("retract");
+
+    // Real-registry projection: retraction takes precedence over the
+    // stored "superseded" fact (`project_status`,
+    // `crates/acdp-server/src/registry/store.rs`) — R1's SERVED status
+    // is now `retracted`, NOT `superseded`. This is exactly what makes
+    // assertion 1 below non-vacuous: a `status=superseded` search pass
+    // genuinely no longer names R1.
+    let r1_after_retract = h.server.store().get(&r1_resp.ctx_id).unwrap().unwrap();
+    assert_eq!(r1_after_retract.registry_state.status, Status::Retracted);
+
+    let client = h.client();
+
+    // ── Assertion 1: a search-only reconstruction (the pre-fix
+    // algorithm — `active` + `superseded` passes, NO `retracted` pass,
+    // NO lineage walk) MISSES R1. ────────────────────────────────────
+    let mut search_only = Vec::new();
+    for status in ["active", "superseded"] {
+        let params = acdp::types::SearchParamsBuilder::new()
+            .context_type("key-revocation")
+            .agent_id(agent_id.as_str())
+            .status(status)
+            .limit(100)
+            .build();
+        let resp = client.search(&params).await.expect("search");
+        for m in &resp.matches {
+            let ctx = client.retrieve(&m.ctx_id).await.expect("retrieve");
+            if let Ok(rev) = verify_revocation_body(&ctx.body, &h.resolver).await {
+                search_only.push(rev);
+            }
+        }
+    }
+    assert_eq!(
+        search_only.len(),
+        1,
+        "the pre-fix search-only reconstruction must see only R2 — R1 is now \
+         retracted, invisible to both the active and superseded passes"
+    );
+    assert_eq!(search_only[0].compromised_since, later_t);
+    assert!(
+        !search_only.iter().any(|r| r.compromised_since == early_t),
+        "R1 (the retracted, earlier-boundary member) must be MISSING from the \
+         pre-fix search-only reconstruction — this is the historical blind \
+         spot issue #226 exists to close"
+    );
+
+    // ── Assertion 2: `find_revocations` (post Phase 3 lineage walk +
+    // Phase 4 retracted pass) returns BOTH R1 and R2. ────────────────
+    let mut revs = find_revocations(&client, &h.resolver, &agent_id)
+        .await
+        .expect("find_revocations must recover the full lineage");
+    assert_eq!(
+        revs.len(),
+        2,
+        "find_revocations must return both R1 (retracted) and R2 (active)"
+    );
+    revs.sort_by_key(|r| r.compromised_since);
+    assert_eq!(revs[0].compromised_since, early_t);
+    assert_eq!(revs[1].compromised_since, later_t);
+    for r in &revs {
+        assert_eq!(r.revoked_key_fingerprint, K1_FP);
+        assert_eq!(r.trust_class, RevocationTrustClass::ProducerSigned);
+    }
+
+    // ── Assertion 3: `effective_boundary` over that output resolves
+    // to R1's (earlier) T. ────────────────────────────────────────────
+    assert_eq!(
+        effective_boundary(&revs, K1_FP),
+        Some(early_t),
+        "RFC-ACDP-0014 §4: the earliest compromised_since across the lineage \
+         is effective, regardless of retraction"
+    );
+}
+
 // ── §5 pipeline: verify_revocation_body over an offline did:key body ────────
 
 /// A did:key producer CAN issue a producer-signed revocation for some
@@ -1738,6 +1928,59 @@ async fn find_registry_attested_revocations_propagates_capabilities_error() {
         result.is_err(),
         "a registry that can't even serve capabilities must surface an error, \
          not look like an honest \"no revocations\" empty vec"
+    );
+}
+
+/// Issue #226 Phase 5, N2 — `find_registry_attested_revocations` gets
+/// its own page-cap-exhaustion regression, mirroring
+/// `find_revocations_errors_on_page_cap_exhaustion_with_cursor_remaining`
+/// exactly: before this test, the retracted seed pass, the page-cap
+/// error, and the walk-cap error were duplicated verbatim from
+/// `find_revocations` into this function's implementation but
+/// exercised by nothing. A registry that never stops offering a
+/// `next_cursor` must abort with `AcdpError::SearchTruncated` rather
+/// than return whatever it collected across `MAX_SEARCH_PAGES` pages.
+#[tokio::test]
+async fn find_registry_attested_revocations_errors_on_page_cap_exhaustion_with_cursor_remaining() {
+    use acdp::client::find_registry_attested_revocations;
+    use std::collections::HashMap;
+
+    let router = Router::new()
+        .route(
+            "/.well-known/acdp.json",
+            get(move || {
+                let c = caps();
+                async move { Json(c) }
+            }),
+        )
+        .route(
+            "/contexts/search",
+            get(
+                |_: axum::extract::Query<HashMap<String, String>>| async move {
+                    // Empty matches, but a cursor that never runs out —
+                    // a hostile (or pathologically paginated) registry
+                    // holding the caller in an endless cursor loop.
+                    Json(json!({"matches": [], "next_cursor": "stuck"}))
+                },
+            ),
+        );
+    let tls = TlsTestServer::start(router).await;
+    let resolver = WebResolver::with_test_endpoint(&tls.root_cert_pem, "localhost", tls.addr)
+        .expect("pinned resolver");
+    let client = RegistryClient::with_test_endpoint(
+        &format!("https://{REGISTRY_AUTHORITY}"),
+        tls.addr,
+        &tls.root_cert_pem,
+    )
+    .expect("pinned client");
+
+    let err =
+        find_registry_attested_revocations(&client, &resolver, &AgentDid::new(LOCAL_PRODUCER_DID))
+            .await
+            .expect_err("page-cap exhaustion with a cursor remaining must be a hard error");
+    assert!(
+        matches!(err, AcdpError::SearchTruncated(_)),
+        "expected SearchTruncated, got {err:?}"
     );
 }
 

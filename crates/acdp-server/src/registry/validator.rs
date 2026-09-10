@@ -361,10 +361,23 @@ pub fn key_revocation_gate_applies(acdp_version: &str) -> bool {
 /// a revocation, not an additional publish-time constraint — per §4:58
 /// the monotonicity protection belongs on the consumer side, as the
 /// earliest-T rule. [`acdp_types::revocation::effective_boundary`]
-/// implements that fold correctly, but assembling its input from a
-/// registry is not wired end-to-end today (see issue #226), so this
-/// publish-time allow is spec-correct while that end-to-end guarantee
-/// remains incomplete.
+/// implements that fold correctly, and — as of issue #226 — assembling
+/// its input from a registry is wired end-to-end on the consumer side:
+/// `acdp_client::revocation::{find_revocations, find_registry_attested_revocations,
+/// find_revocations_in_lineage}` each walk a candidate's full lineage
+/// (via `GET /lineages/{id}`, including superseded and retracted
+/// members) rather than trusting a single search-visible one, so a
+/// consumer that feeds `effective_boundary`'s input from one of those
+/// helpers gets the earliest-T guarantee genuinely, not merely
+/// aspirationally. Nothing about that consumer-side guarantee changes
+/// this function's own scope, which stays deliberately narrow: gating
+/// the *publish-time* direction too (rejecting a narrowing
+/// `compromised_since` here) would let an attacker who has learned a
+/// key is compromised deny its legitimate producer the ability to
+/// publish a corrected, earlier-T revocation superseding a prior one
+/// that understated the window — RFC-ACDP-0014 §4:58's normative verb
+/// ("Consumers MUST …") already places the monotonicity obligation on
+/// the consumer side, not the publish path.
 ///
 /// "Signer class" is [`acdp_types::revocation::RevocationTrustClass`]
 /// (`ProducerSigned` vs. `RegistryAttested`) — **not** same-DID; RFC-ACDP-0014
@@ -1290,13 +1303,17 @@ mod tests {
     // distinct direction — NARROWING the compromise window by moving T
     // LATER (arm 1 already covers "same class, T earlier"; a test that
     // also moves T earlier would just be arm 1 again). This is the arm
-    // carrying real residual risk: `check_revocation_supersession` does
-    // not compare `compromised_since` direction at all, so a narrowing
-    // supersession is allowed at publish. That is spec-correct per §4:58
-    // (the monotonicity protection belongs on the consumer side via
-    // `effective_boundary`) but the guarantee is incomplete end-to-end
-    // until issue #226 is addressed — see the doc comment above
-    // `check_revocation_supersession`.
+    // carrying the intentional residual risk: `check_revocation_supersession`
+    // does not compare `compromised_since` direction at all, so a
+    // narrowing supersession is allowed at publish. That is
+    // spec-correct per §4:58 (the monotonicity protection belongs on
+    // the consumer side via `effective_boundary`) and, as of issue
+    // #226, that consumer-side guarantee is now wired end-to-end —
+    // `acdp_client::revocation::find_revocations` /
+    // `find_registry_attested_revocations` / `find_revocations_in_lineage`
+    // walk the full lineage (superseded and retracted members
+    // included) rather than trusting a single search-visible member —
+    // see the doc comment above `check_revocation_supersession`.
     #[test]
     fn revocation_supersession_same_class_narrowing_t_allowed_at_publish() {
         let mut prev_meta = valid_revocation_metadata();

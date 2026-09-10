@@ -419,7 +419,14 @@ pub async fn find_revocations_in_lineage(
 /// has been retracted, no `active`/`superseded` search pass returns
 /// anything to seed the lineage walk from at all — the `retracted` pass
 /// is the only way to discover the `lineage_id` in that case (issue
-/// #226 Phase 4).
+/// #226 Phase 4). **A retracted revocation is not merely a seed for
+/// finding the rest of the lineage**: once verified it is pushed into
+/// the returned `Vec` exactly like any other member, so it still
+/// permanently constrains [`effective_boundary`]'s earliest-`T` fold.
+/// This is deliberate, fail-closed behavior, not an oversight — a
+/// registry cannot erase a revocation's effect merely by retracting it
+/// — and it matches the private lineage walk underneath, which never
+/// filtered on `registry_state.status` in the first place.
 ///
 /// **Error contract.** In addition to the errors documented per-step
 /// above, this function returns
@@ -680,9 +687,10 @@ pub async fn find_revocations(
 /// before the search loop — [`RegistryClient::capabilities`] issues a
 /// fresh network round-trip on every call, so hoisting it above the
 /// type-form × status loop bounds total cost to one capabilities fetch,
-/// plus up to `3 * MAX_SEARCH_PAGES` search round-trips (three statuses
-/// — `active`, `superseded`, `retracted` — × two type-forms, sharing the
-/// same `MAX_SEARCH_PAGES` page cap per pair), plus up to
+/// plus up to `6 * MAX_SEARCH_PAGES` search round-trips (three statuses
+/// — `active`, `superseded`, `retracted` — × two type-forms = six
+/// distinct `(type_form, status)` pairs, each independently bounded by
+/// its own `MAX_SEARCH_PAGES` page cap), plus up to
 /// `MAX_LINEAGE_WALKS` lineage fetches from the walk below, each capped
 /// at 1 MB — rather than one capabilities fetch per candidate), then searches
 /// `agent_id=<capabilities.registry_did>` for `key-revocation` (and the
@@ -759,7 +767,12 @@ pub async fn find_revocations(
 /// **Retracted revocations are queried as a third status pass**, and
 /// **the same [`AcdpError::SearchTruncated`] error contract applies**,
 /// as [`find_revocations`] — see that function's doc for the exact
-/// truncation and completeness boundary (issue #226 Phase 4).
+/// truncation and completeness boundary (issue #226 Phase 4). As with
+/// [`find_revocations`], a retracted revocation is not seed-only: once
+/// verified it is pushed into the returned `Vec` like any other member
+/// and still permanently constrains [`effective_boundary`]'s
+/// earliest-`T` fold — a registry cannot erase its effect by retracting
+/// it.
 ///
 /// **Beyond the search passes above, every distinct `lineage_id` named
 /// by a search match is also walked** via the private lineage-walking

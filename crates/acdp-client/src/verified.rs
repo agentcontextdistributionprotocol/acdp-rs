@@ -110,7 +110,19 @@ pub struct RevocationPolicy {
     /// key's RFC-ACDP-0010 §6 fingerprint. The §4 earliest-
     /// `compromised_since` rule is applied across entries naming the
     /// same fingerprint, so include *every* revocation of a lineage,
-    /// superseded ones too.
+    /// superseded (and retracted) ones too — a later member can only
+    /// widen the compromise window, never narrow it, and dropping an
+    /// earlier one is exactly how that window gets quietly (and
+    /// wrongly) shrunk. This is no longer an unassisted obligation:
+    /// [`find_revocations`](crate::revocation::find_revocations) and
+    /// [`find_registry_attested_revocations`](crate::revocation::find_registry_attested_revocations)
+    /// each walk the full lineage of every candidate they find
+    /// (search-visible or not, including all-retracted lineages) and
+    /// already return the complete set for their respective trust
+    /// class; [`find_revocations_in_lineage`](crate::revocation::find_revocations_in_lineage)
+    /// does the same directly from a known `lineage_id`, with no
+    /// producer/trust-class scope filter. Populate `known` from one of
+    /// these rather than hand-assembling a lineage.
     pub known: Vec<acdp_types::revocation::KeyRevocation>,
 }
 

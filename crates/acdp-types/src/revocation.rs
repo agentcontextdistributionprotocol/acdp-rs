@@ -841,4 +841,91 @@ mod tests {
             );
         }
     }
+
+    // ── effective_boundary: issue #226 Phase 5 — zero direct unit tests
+    // existed for this fold before this block; `rev_002_earliest_boundary_across_lineage`
+    // (tests/key_revocation.rs) and `earliest_boundary_wins`
+    // (crates/acdp-client/src/revocation.rs) exercise it only indirectly,
+    // through `classify_under_revocation`. ─────────────────────────────
+
+    const EB_FP: &str = "sha256:139e3940e64b5491722088d9a0d741628fc826e09475d341a780acde3c4b8070";
+    const EB_OTHER_FP: &str =
+        "sha256:3097e2dee2cb4a34b53840cdb705aed71067c36f68db0e0f559c3f3fa043315f";
+
+    fn eb_rev(fp: &str, t: &str) -> KeyRevocation {
+        KeyRevocation {
+            revoked_key_fingerprint: fp.into(),
+            compromised_since: DateTime::parse_from_rfc3339(t).unwrap().with_timezone(&Utc),
+            reason: None,
+            revoked_key_id: None,
+            revoked_key_controller: AgentDid::new("did:web:agents.example.com:p"),
+            publisher: AgentDid::new("did:web:agents.example.com:p"),
+            trust_class: RevocationTrustClass::ProducerSigned,
+        }
+    }
+
+    #[test]
+    fn effective_boundary_empty_slice_is_none() {
+        let revs: [KeyRevocation; 0] = [];
+        assert_eq!(effective_boundary(&revs, EB_FP), None);
+    }
+
+    #[test]
+    fn effective_boundary_single_match() {
+        let revs = [eb_rev(EB_FP, "2026-05-01T00:00:00.000Z")];
+        assert_eq!(
+            effective_boundary(&revs, EB_FP),
+            Some(
+                DateTime::parse_from_rfc3339("2026-05-01T00:00:00.000Z")
+                    .unwrap()
+                    .with_timezone(&Utc)
+            )
+        );
+    }
+
+    /// The §4 monotonicity rule: the EARLIEST `compromised_since` among
+    /// several entries naming the same fingerprint wins, regardless of
+    /// input order or which one is the lineage head.
+    #[test]
+    fn effective_boundary_min_folds_across_multiple_entries_same_fingerprint() {
+        let revs = [
+            eb_rev(EB_FP, "2026-06-01T00:00:00.000Z"),
+            eb_rev(EB_FP, "2026-04-01T00:00:00.000Z"), // earliest
+            eb_rev(EB_FP, "2026-05-01T00:00:00.000Z"),
+        ];
+        assert_eq!(
+            effective_boundary(&revs, EB_FP),
+            Some(
+                DateTime::parse_from_rfc3339("2026-04-01T00:00:00.000Z")
+                    .unwrap()
+                    .with_timezone(&Utc)
+            )
+        );
+    }
+
+    /// An entry naming a different fingerprint is inert: it neither
+    /// contributes to nor blocks the fold for the fingerprint under
+    /// test.
+    #[test]
+    fn effective_boundary_ignores_non_matching_fingerprints() {
+        let revs = [
+            eb_rev(EB_OTHER_FP, "2026-01-01T00:00:00.000Z"),
+            eb_rev(EB_FP, "2026-05-01T00:00:00.000Z"),
+            eb_rev(EB_OTHER_FP, "2026-02-01T00:00:00.000Z"),
+        ];
+        assert_eq!(
+            effective_boundary(&revs, EB_FP),
+            Some(
+                DateTime::parse_from_rfc3339("2026-05-01T00:00:00.000Z")
+                    .unwrap()
+                    .with_timezone(&Utc)
+            )
+        );
+        // And the converse: querying a fingerprint no entry names at
+        // all is None, not a false match against the non-matching
+        // entries present.
+        const UNRELATED_FP: &str =
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        assert_eq!(effective_boundary(&revs, UNRELATED_FP), None);
+    }
 }

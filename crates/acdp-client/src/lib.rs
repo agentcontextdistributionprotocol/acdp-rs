@@ -24,7 +24,7 @@ pub use receipt::{verify_lineage_head_receipt_value, verify_receipt_value};
 pub use registry::{RegistryClient, RegistryClientBuilder};
 pub use revocation::{
     classify_under_revocation, find_registry_attested_revocations, find_revocations,
-    verify_revocation_body,
+    find_revocations_in_lineage, verify_revocation_body,
 };
 pub use verified::{
     HistoricalKeyPolicy, KeyAuthorization, LineageHeadPolicy, ReceiptPolicy, RevocationPolicy,

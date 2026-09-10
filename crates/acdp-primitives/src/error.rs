@@ -62,6 +62,60 @@ pub enum AcdpError {
         served: String,
     },
 
+    /// Locally detected: `GET /lineages/{id}` (RFC-ACDP-0013 §8.1) did not
+    /// serve a lineage the caller could accept — either it came back with
+    /// no members at all, or (when `ctx_id` is `Some`) its members did not
+    /// include the `ctx_id` a live search match named for that lineage.
+    /// Not a wire code — RFC-ACDP-0014 §10 ("No new wire error code"):
+    /// this is a locally-detected consumer-side binding failure, exactly
+    /// the same kind of thing as [`AcdpError::ContextIdMismatch`] (issue
+    /// #189) but for the lineage-walk path added for issue #226. Permanent;
+    /// fail closed — never added to [`AcdpError::is_transient`].
+    #[error(
+        "incomplete lineage {lineage_id}: registry-served members did not satisfy the \
+         expected membership (expected ctx_id: {ctx_id:?})"
+    )]
+    IncompleteLineage {
+        /// The lineage id that was walked (`GET /lineages/{id}`).
+        lineage_id: String,
+        /// The `ctx_id` a live search match named for this lineage, when
+        /// the walk was invoked with a specific member to check for.
+        /// `None` when the walk was invoked directly with no particular
+        /// member to verify (e.g. via `find_revocations_in_lineage`),
+        /// in which case only the empty-lineage case can produce this
+        /// variant.
+        ctx_id: Option<String>,
+    },
+
+    /// Locally detected: a revocation-discovery search helper
+    /// (`find_revocations`, `find_registry_attested_revocations` in
+    /// `acdp-client`) exhausted its pagination safety cap
+    /// (`MAX_SEARCH_PAGES`) with a search cursor still remaining, or
+    /// named more candidate revocation-lineage ids than its lineage-walk
+    /// safety cap (`MAX_LINEAGE_WALKS`) allows to fetch. Not a wire code
+    /// — RFC-ACDP-0014 §10 ("No new wire error code"): this is a
+    /// client-local safety-limit signal the registry cannot express, the
+    /// same rationale as [`AcdpError::ContextIdMismatch`] and
+    /// [`AcdpError::IncompleteLineage`]. Permanent for the same request
+    /// shape — never added to [`AcdpError::is_transient`]; retrying an
+    /// identical query reproduces the same truncation.
+    ///
+    /// Both caps exist as hostile-registry DoS protection
+    /// (`MAX_SEARCH_PAGES` bounds search round-trips; `MAX_LINEAGE_WALKS`
+    /// bounds the `GET /lineages/{id}` fetches a search result can
+    /// trigger, each capped at 1 MB). Search results are ordered
+    /// `created_at DESC`, so hitting a cap sheds the OLDEST — most
+    /// likely earliest-`compromised_since` — members first: a silently
+    /// truncated revocation set narrows a compromise window, which is
+    /// precisely the outcome RFC-ACDP-0014 §4 ("earliest T across a
+    /// revocation lineage is effective") forbids. A knowingly-partial
+    /// answer from these discovery helpers is strictly worse than a
+    /// loud refusal, so exhausting either cap with more results
+    /// remaining on the registry is a hard error, never a silently
+    /// partial `Vec`.
+    #[error("search truncated: {0}")]
+    SearchTruncated(String),
+
     /// Wire code: `hash_mismatch`. The remote registry rejected a
     /// publish request because its independent hash recomputation did
     /// not match the producer-supplied `content_hash`. Distinct from
@@ -575,5 +629,19 @@ mod tests {
             served: "b".into(),
         }
         .is_transient());
+        // Issue #226 Phase 3: an incomplete/mismatched lineage is a
+        // locally-detected consumer-side binding failure, not a
+        // transport hiccup — retrying will not change what the
+        // registry serves for the same lineage_id.
+        assert!(!AcdpError::IncompleteLineage {
+            lineage_id: "lin:sha256:aa".into(),
+            ctx_id: Some("acdp://r.example.com/x".into()),
+        }
+        .is_transient());
+        // Issue #226 Phase 4: exhausting the search-page or lineage-walk
+        // safety cap is a client-local safety-limit signal, not a
+        // transport hiccup — retrying the identical query reproduces the
+        // same truncation.
+        assert!(!AcdpError::SearchTruncated("x".into()).is_transient());
     }
 }

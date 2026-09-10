@@ -119,6 +119,21 @@ fn revocation_surface_reexported() {
     let _g = RevocationTrustClass::ProducerSigned;
 }
 
+#[cfg(feature = "client")]
+#[test]
+fn revocation_lineage_walk_reexported() {
+    // `acdp::client::find_revocations_in_lineage` resolves through the
+    // whole-crate umbrella re-export (`src/lib.rs:107-108`) with no
+    // umbrella-level changes of its own — this is the compile-time
+    // proof, in the same style as `revocation_surface_reexported`
+    // above.
+    use acdp::client::find_revocations_in_lineage;
+
+    // Binding the (async) fn item itself proves the path resolves
+    // without needing to actually drive it over a live registry.
+    let _a = find_revocations_in_lineage;
+}
+
 #[cfg(feature = "server")]
 #[test]
 fn server_types_reexported() {

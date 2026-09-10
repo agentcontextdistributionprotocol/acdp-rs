@@ -22,10 +22,12 @@
 //! signature verification — before persistence. It requires the `client`
 //! feature for [`acdp_did::WebResolver`].
 //!
-//! [`RegistryServer::publish_unverified_for_tests`] performs only steps
-//! 1–6 (skipping DID resolution + signature verification) and is
-//! intentionally **not** RFC-conformant; use only in tests where DID
-//! resolution would require a live network or mock server.
+//! [`RegistryServer::publish_unverified_for_tests`] (and its
+//! idempotency/tenant-capable sibling
+//! [`RegistryServer::publish_unverified_in_tenant_for_tests`]) perform
+//! only steps 1–6 (skipping DID resolution + signature verification)
+//! and are intentionally **not** RFC-conformant; use only in tests
+//! where DID resolution would require a live network or mock server.
 
 use crate::registry::rate_limit::{NoopRateLimiter, RateLimiter};
 use crate::registry::store::RegistryStore;
@@ -202,8 +204,9 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
     /// `caps.registry_did` (a receipt minted under a foreign DID would
     /// fail every consumer's serving-authority cross-check).
     ///
-    /// Note: [`Self::publish_unverified_for_tests`] never mints — the
-    /// producer key is not resolved on that path, so a fingerprint
+    /// Note: [`Self::publish_unverified_for_tests`] and
+    /// [`Self::publish_unverified_in_tenant_for_tests`] never mint — the
+    /// producer key is not resolved on either path, so a fingerprint
     /// attestation would be false.
     pub fn with_receipt_signer(
         mut self,
@@ -521,10 +524,40 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
     /// Intended for integration tests where DID resolution would require
     /// a live network or mock server. Production callers MUST use
     /// [`Self::publish_verified`].
+    ///
+    /// Delegates to [`Self::publish_unverified_in_tenant_for_tests`] with
+    /// no idempotency key and no tenant; use that method directly for an
+    /// idempotent-replay or tenant-stamped test publish.
     #[doc(hidden)]
     pub fn publish_unverified_for_tests(
         &self,
         req: &PublishRequest,
+    ) -> Result<PublishResponse, AcdpError> {
+        self.publish_unverified_in_tenant_for_tests(req, None, None)
+    }
+
+    /// Like [`Self::publish_unverified_for_tests`] but additionally
+    /// accepts an idempotency key and a tenant, so tests can exercise the
+    /// idempotent-replay and tenant-stamping behavior of
+    /// [`Self::commit_via_store`] without resorting to store-level
+    /// workarounds. `(None, None)` is identical to
+    /// [`Self::publish_unverified_for_tests`].
+    ///
+    /// **NOT RFC-conformant** — same caveats as
+    /// [`Self::publish_unverified_for_tests`]: skips RFC-ACDP-0003 §2.1
+    /// steps 7–8 (DID resolution + signature verification). Production
+    /// callers MUST use [`Self::publish_verified_in_tenant`].
+    ///
+    /// Passing an idempotency key to a registry whose capabilities don't
+    /// advertise `supports_idempotency_key` is a silent no-op — mirrors
+    /// [`Self::publish_verified_in_tenant`]'s contract via the shared
+    /// [`Self::commit_via_store`] gate.
+    #[doc(hidden)]
+    pub fn publish_unverified_in_tenant_for_tests(
+        &self,
+        req: &PublishRequest,
+        idempotency_key: Option<&str>,
+        tenant: Option<&str>,
     ) -> Result<PublishResponse, AcdpError> {
         // Rate-limit gate fires here too — the limiter is intentionally
         // wired BEFORE validation so it works as a defensive cap even
@@ -535,12 +568,13 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
         // degraded mode — every persisted context must carry a receipt,
         // and minting here would attest a `key_fingerprint` that was
         // never resolved. Refuse outright rather than persist a
-        // receipt-less context.
+        // receipt-less context — from either unverified test entry
+        // point, since neither resolves a producer key.
         if self.receipt_signer.is_some() {
             return Err(AcdpError::SchemaViolation(
-                "publish_unverified_for_tests is unavailable on a receipts-advertising \
-                 registry (RFC-ACDP-0010 §7: no degraded mode); use publish_verified or \
-                 publish_verified_did_key"
+                "publish_unverified_for_tests / publish_unverified_in_tenant_for_tests are \
+                 unavailable on a receipts-advertising registry (RFC-ACDP-0010 §7: no \
+                 degraded mode); use publish_verified or publish_verified_did_key"
                     .into(),
             ));
         }
@@ -548,7 +582,7 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
         // a did:web signer: this method's entire contract (see its doc
         // comment above) is to skip DID resolution + signature
         // verification, so there is no resolved key — and no
-        // resolver — to fingerprint. `validate_post_schema` above still
+        // resolver — to fingerprint. `validate_post_schema` below still
         // enforces the did:key sub-case offline (`KeyRevocation::from_parts`),
         // since that needs no resolution either; a did:web self-revocation
         // published through this test-only bypass is not caught until a
@@ -556,7 +590,7 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
         let raw_bytes = serde_json::to_vec(req)?.len();
         let validator = PublishValidator::for_authority(&self.caps, &self.authority);
         let _validated = validator.validate_post_schema(req, raw_bytes)?;
-        self.commit_via_store(req, None, None, None)
+        self.commit_via_store(req, idempotency_key, tenant, None)
     }
 
     /// **Publish already verified by the caller against an
@@ -2082,32 +2116,26 @@ mod tests {
             .visibility(Visibility::Public)
             .build()
             .unwrap();
-        // First publish (using the offline path; idempotency works either way).
-        let first = server.publish_unverified_for_tests(&req).unwrap();
-        // Record the idempotency entry as if it had come in through
-        // publish_verified — we test only the lookup logic here, so
-        // simulate via the store API.
-        let ttl = caps_with_idempotency()
-            .limits
-            .idempotency_key_ttl_seconds
-            .unwrap() as i64;
-        server
-            .store()
-            .idempotency_record(
-                &req.agent_id,
-                "k-001",
-                &req.content_hash,
-                &first,
-                chrono::Utc::now() + chrono::Duration::seconds(ttl),
-            )
+        // Publish twice through the same idempotency key via the real
+        // path — `publish_unverified_in_tenant_for_tests` can pass an
+        // idempotency key straight through to `commit_via_store`, so
+        // there is no more need to fake the store-level entry.
+        let first = server
+            .publish_unverified_in_tenant_for_tests(&req, Some("k-001"), None)
             .unwrap();
-        let prior = server
-            .store()
-            .idempotency_lookup(&req.agent_id, "k-001")
-            .unwrap()
+        let replayed = server
+            .publish_unverified_in_tenant_for_tests(&req, Some("k-001"), None)
             .unwrap();
-        assert_eq!(prior.content_hash, req.content_hash);
-        assert_eq!(prior.response.ctx_id, first.ctx_id);
+        assert_eq!(replayed.ctx_id, first.ctx_id);
+        assert_eq!(replayed.lineage_id, first.lineage_id);
+        assert_eq!(replayed.created_at, first.created_at);
+        // And only one context was actually persisted.
+        let resp = server.search(&SearchParams::default(), None).unwrap();
+        assert_eq!(
+            resp.matches.len(),
+            1,
+            "idempotent replay must not persist a second context"
+        );
     }
 
     #[test]
@@ -2141,6 +2169,192 @@ mod tests {
         assert!(
             prior.is_none(),
             "lazy TTL eviction should drop expired record"
+        );
+    }
+
+    /// A receipts-advertising registry must refuse
+    /// `publish_unverified_in_tenant_for_tests` identically to
+    /// `publish_unverified_for_tests` (RFC-ACDP-0010 §7: no degraded
+    /// mode) — the refusal is inherited by construction since the old
+    /// method's body moved wholesale into the new one, but this proves
+    /// it from the new name specifically.
+    #[test]
+    fn publish_unverified_in_tenant_for_tests_refuses_receipts_registry() {
+        let mut c = caps();
+        c.acdp_version = "0.2.0".into();
+        let server = RegistryServer::new(InMemoryStore::new(), c, "registry.example.com")
+            .with_receipt_signer(
+                acdp_types::receipt::ReceiptSigner::new(
+                    SigningKey::from_bytes(&[0x33u8; 32]),
+                    "did:web:registry.example.com",
+                    "did:web:registry.example.com#receipt-key-1",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let p = producer();
+        let req = p
+            .publish_request()
+            .title("should be refused")
+            .context_type(ContextType::DataSnapshot)
+            .visibility(Visibility::Public)
+            .build()
+            .unwrap();
+        let err = server
+            .publish_unverified_in_tenant_for_tests(&req, None, None)
+            .unwrap_err();
+        assert!(
+            matches!(err, AcdpError::SchemaViolation(_)),
+            "expected SchemaViolation refusal on a receipts-advertising registry, got {err:?}"
+        );
+    }
+
+    // ── Tenancy-recording test store ────────────────────────────────────
+    //
+    // `InMemoryStore::commit_publish` deliberately discards `tenant`
+    // (store.rs:676-678: "InMemoryStore does not model tenancy") since
+    // it is a single-tenant reference/test backend — so testing tenancy
+    // plumbing against it directly would prove nothing. `RecordingStore`
+    // wraps an `InMemoryStore` for all real behavior and additionally
+    // captures the `tenant` argument each `commit_publish` call receives.
+
+    /// Delegates every [`RegistryStore`] method to an inner
+    /// [`InMemoryStore`], additionally recording `commit.tenant` from
+    /// each [`RegistryStore::commit_publish`] call.
+    struct RecordingStore {
+        inner: InMemoryStore,
+        tenants: std::sync::Mutex<Vec<Option<String>>>,
+    }
+
+    impl RecordingStore {
+        fn new() -> Self {
+            Self {
+                inner: InMemoryStore::new(),
+                tenants: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl RegistryStore for RecordingStore {
+        fn put(&self, body: Body) -> Result<(), AcdpError> {
+            self.inner.put(body)
+        }
+
+        fn get(&self, ctx_id: &CtxId) -> Result<Option<FullContext>, AcdpError> {
+            self.inner.get(ctx_id)
+        }
+
+        fn lineage(&self, lineage_id: &LineageId) -> Result<Vec<FullContext>, AcdpError> {
+            self.inner.lineage(lineage_id)
+        }
+
+        fn current(&self, lineage_id: &LineageId) -> Result<Option<FullContext>, AcdpError> {
+            self.inner.current(lineage_id)
+        }
+
+        fn mark_superseded(&self, ctx_id: &CtxId) -> Result<(), AcdpError> {
+            self.inner.mark_superseded(ctx_id)
+        }
+
+        fn first_version_ctx_id(&self, lineage_id: &LineageId) -> Result<Option<CtxId>, AcdpError> {
+            self.inner.first_version_ctx_id(lineage_id)
+        }
+
+        fn search(
+            &self,
+            params: &SearchParams,
+            requester: Option<&AgentDid>,
+            anonymous_public_reads: bool,
+        ) -> Result<SearchResponse, AcdpError> {
+            self.inner.search(params, requester, anonymous_public_reads)
+        }
+
+        fn idempotency_lookup(
+            &self,
+            agent_id: &AgentDid,
+            key: &str,
+        ) -> Result<Option<crate::registry::store::IdempotencyRecord>, AcdpError> {
+            self.inner.idempotency_lookup(agent_id, key)
+        }
+
+        fn idempotency_record(
+            &self,
+            agent_id: &AgentDid,
+            key: &str,
+            hash: &acdp_types::primitives::ContentHash,
+            response: &PublishResponse,
+            expires_at: chrono::DateTime<chrono::Utc>,
+        ) -> Result<(), AcdpError> {
+            self.inner
+                .idempotency_record(agent_id, key, hash, response, expires_at)
+        }
+
+        fn idempotency_evict_expired(
+            &self,
+            now: chrono::DateTime<chrono::Utc>,
+        ) -> Result<(), AcdpError> {
+            self.inner.idempotency_evict_expired(now)
+        }
+
+        fn commit_publish(
+            &self,
+            commit: crate::registry::store::PublishCommit<'_>,
+        ) -> Result<crate::registry::store::PublishCommitOutcome, AcdpError> {
+            self.tenants
+                .lock()
+                .unwrap()
+                .push(commit.tenant.map(String::from));
+            self.inner.commit_publish(commit)
+        }
+
+        fn commit_lifecycle_event(
+            &self,
+            event: &acdp_types::lifecycle::LifecycleEvent,
+        ) -> Result<crate::registry::store::LifecycleCommitOutcome, AcdpError> {
+            self.inner.commit_lifecycle_event(event)
+        }
+    }
+
+    /// Proves `tenant` reaches `PublishCommit.tenant` verbatim from
+    /// `publish_unverified_in_tenant_for_tests`, in call order.
+    ///
+    /// What this does NOT prove: tenant *isolation* (that two tenants'
+    /// data cannot leak into each other's reads) — that is the durable
+    /// backends' contract (`store.rs:274-279`), entirely out of scope
+    /// for `InMemoryStore`/`RecordingStore`, which is why this test only
+    /// asserts on the recorded argument, not on any read-side behavior.
+    #[test]
+    fn tenant_reaches_publish_commit_verbatim() {
+        let server = RegistryServer::new(RecordingStore::new(), caps(), "registry.example.com");
+        let p = producer();
+
+        let req_a = p
+            .publish_request()
+            .title("tenant a")
+            .context_type(ContextType::DataSnapshot)
+            .visibility(Visibility::Public)
+            .build()
+            .unwrap();
+        server
+            .publish_unverified_in_tenant_for_tests(&req_a, None, Some("tenant-a"))
+            .unwrap();
+
+        let req_b = p
+            .publish_request()
+            .title("tenant none")
+            .context_type(ContextType::DataSnapshot)
+            .visibility(Visibility::Public)
+            .build()
+            .unwrap();
+        server
+            .publish_unverified_in_tenant_for_tests(&req_b, None, None)
+            .unwrap();
+
+        let recorded = server.store().tenants.lock().unwrap().clone();
+        assert_eq!(
+            recorded,
+            vec![Some("tenant-a".to_string()), None],
+            "tenant must reach PublishCommit.tenant verbatim, in call order"
         );
     }
 

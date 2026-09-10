@@ -215,7 +215,10 @@ let response = server.publish_verified(req, None, resolver).await?;
 > `RegistryServer::publish_unverified_for_tests` is provided for unit tests
 > that cannot run a live DID resolver. It MUST NOT be used in production —
 > it skips DID resolution and signature verification, which is a protocol
-> violation (RFC-ACDP-0003 §2.1).
+> violation (RFC-ACDP-0003 §2.1). The tenant/idempotency-capable sibling
+> `publish_unverified_in_tenant_for_tests` carries the same restriction; use
+> it when a test needs to drive an idempotency-key replay or tenant
+> stamping through the unverified path.
 
 ## Cryptographic design
 

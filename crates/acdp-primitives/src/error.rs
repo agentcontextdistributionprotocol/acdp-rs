@@ -87,6 +87,35 @@ pub enum AcdpError {
         ctx_id: Option<String>,
     },
 
+    /// Locally detected: a revocation-discovery search helper
+    /// (`find_revocations`, `find_registry_attested_revocations` in
+    /// `acdp-client`) exhausted its pagination safety cap
+    /// (`MAX_SEARCH_PAGES`) with a search cursor still remaining, or
+    /// named more candidate revocation-lineage ids than its lineage-walk
+    /// safety cap (`MAX_LINEAGE_WALKS`) allows to fetch. Not a wire code
+    /// — RFC-ACDP-0014 §10 ("No new wire error code"): this is a
+    /// client-local safety-limit signal the registry cannot express, the
+    /// same rationale as [`AcdpError::ContextIdMismatch`] and
+    /// [`AcdpError::IncompleteLineage`]. Permanent for the same request
+    /// shape — never added to [`AcdpError::is_transient`]; retrying an
+    /// identical query reproduces the same truncation.
+    ///
+    /// Both caps exist as hostile-registry DoS protection
+    /// (`MAX_SEARCH_PAGES` bounds search round-trips; `MAX_LINEAGE_WALKS`
+    /// bounds the `GET /lineages/{id}` fetches a search result can
+    /// trigger, each capped at 1 MB). Search results are ordered
+    /// `created_at DESC`, so hitting a cap sheds the OLDEST — most
+    /// likely earliest-`compromised_since` — members first: a silently
+    /// truncated revocation set narrows a compromise window, which is
+    /// precisely the outcome RFC-ACDP-0014 §4 ("earliest T across a
+    /// revocation lineage is effective") forbids. A knowingly-partial
+    /// answer from these discovery helpers is strictly worse than a
+    /// loud refusal, so exhausting either cap with more results
+    /// remaining on the registry is a hard error, never a silently
+    /// partial `Vec`.
+    #[error("search truncated: {0}")]
+    SearchTruncated(String),
+
     /// Wire code: `hash_mismatch`. The remote registry rejected a
     /// publish request because its independent hash recomputation did
     /// not match the producer-supplied `content_hash`. Distinct from
@@ -609,5 +638,10 @@ mod tests {
             ctx_id: Some("acdp://r.example.com/x".into()),
         }
         .is_transient());
+        // Issue #226 Phase 4: exhausting the search-page or lineage-walk
+        // safety cap is a client-local safety-limit signal, not a
+        // transport hiccup — retrying the identical query reproduces the
+        // same truncation.
+        assert!(!AcdpError::SearchTruncated("x".into()).is_transient());
     }
 }

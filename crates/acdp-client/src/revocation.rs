@@ -33,6 +33,19 @@ use super::verified::KeyAuthorization;
 /// must not be able to hold the helper in an endless cursor loop.
 const MAX_SEARCH_PAGES: usize = 10;
 
+/// Lineage-walk safety cap for [`find_revocations`] and
+/// [`find_registry_attested_revocations`] — a hostile registry must not
+/// be able to name an unbounded number of distinct `lineage_id`s across
+/// a `MAX_SEARCH_PAGES`-bounded search (3 statuses × 2 type-forms × 10
+/// pages × limit 100 = up to ~6000 candidates) and force one
+/// `GET /lineages/{id}` fetch each (each capped at 1 MB by the client —
+/// ~6 GB of forced fetches with no cap at all). 100 is generous for any
+/// legitimate producer's revocation history and bounded against a
+/// hostile one; exceeding it is treated exactly like exhausting
+/// `MAX_SEARCH_PAGES` — a hard [`AcdpError::SearchTruncated`], never a
+/// silently partial set (issue #226 Phase 4).
+const MAX_LINEAGE_WALKS: usize = 100;
+
 /// Apply the RFC-ACDP-0014 §7 compromise-boundary rule.
 ///
 /// Inputs:
@@ -400,7 +413,25 @@ pub async fn find_revocations_in_lineage(
 /// [`verify_revocation_body`], and [`KeyRevocation::from_body`].
 ///
 /// Superseded revocations are queried too: the §4 earliest-boundary
-/// rule needs the whole lineage.
+/// rule needs the whole lineage. **Retracted revocations are queried as
+/// a third status pass** (RFC-ACDP-0013 §8.2 makes `status=retracted`
+/// available for exactly this): if every member of a revocation lineage
+/// has been retracted, no `active`/`superseded` search pass returns
+/// anything to seed the lineage walk from at all — the `retracted` pass
+/// is the only way to discover the `lineage_id` in that case (issue
+/// #226 Phase 4).
+///
+/// **Error contract.** In addition to the errors documented per-step
+/// above, this function returns
+/// [`AcdpError::SearchTruncated`] in two cases, both hard fail-closed —
+/// never a silently partial `Vec`: (1) any one `(type_form, status)`
+/// search pass exhausts `MAX_SEARCH_PAGES` while a `next_cursor` still
+/// remains, or (2) the total number of distinct candidate
+/// `lineage_id`s discovered across every search pass exceeds
+/// `MAX_LINEAGE_WALKS` before the lineage walk begins. Exactly
+/// `MAX_SEARCH_PAGES` full pages whose last page's `next_cursor` is
+/// `None` is a *complete* result, not truncated, and returns `Ok`
+/// normally.
 ///
 /// **`agent_id` is matched by exact bytes, not normalized.**
 /// [`AgentDid`] derives `PartialEq` as plain string equality, and
@@ -507,14 +538,23 @@ pub async fn find_revocations(
 
     for type_form in ["key-revocation", "acdp:key-revocation"] {
         // Revocations are permanent but supersedable; the registry
-        // defaults search to status=active, so ask for both explicitly.
-        for status in ["active", "superseded"] {
+        // defaults search to status=active, so ask for the other
+        // statuses explicitly too. `retracted` closes the seed hole
+        // Phase 3's lineage walk cannot reach on its own: if every
+        // member of a lineage is retracted, no `active`/`superseded`
+        // pass returns anything to walk from in the first place
+        // (RFC-ACDP-0013 §8.2, issue #226 Phase 4).
+        for status in ["active", "superseded", "retracted"] {
             let mut params = SearchParamsBuilder::new()
                 .context_type(type_form)
                 .agent_id(agent_id.as_str())
                 .status(status)
                 .limit(100)
                 .build();
+            // Set only when the loop exhausts `MAX_SEARCH_PAGES` while a
+            // cursor still remains — i.e. genuine truncation, not
+            // completion. See the boundary note on `AcdpError::SearchTruncated`.
+            let mut truncated = false;
             for _page in 0..MAX_SEARCH_PAGES {
                 let resp = client.search(&params).await?;
                 for m in &resp.matches {
@@ -556,11 +596,38 @@ pub async fn find_revocations(
                     }
                 }
                 match resp.next_cursor {
-                    Some(cursor) => params.cursor = Some(cursor),
-                    None => break,
+                    Some(cursor) => {
+                        params.cursor = Some(cursor);
+                        truncated = true;
+                    }
+                    None => {
+                        truncated = false;
+                        break;
+                    }
                 }
             }
+            if truncated {
+                return Err(AcdpError::SearchTruncated(format!(
+                    "find_revocations: exhausted MAX_SEARCH_PAGES={MAX_SEARCH_PAGES} pages \
+                     for (type_form={type_form}, status={status}) with results still \
+                     remaining on the registry (next_cursor was still Some) — refusing to \
+                     return a silently partial revocation set"
+                )));
+            }
         }
+    }
+
+    // Bound the lineage walk the same way the search pages are bounded:
+    // a hostile registry must not be able to name more distinct
+    // lineage ids than this client is willing to fetch one-by-one via
+    // `GET /lineages/{id}` (issue #226 Phase 4).
+    if lineage_order.len() > MAX_LINEAGE_WALKS {
+        return Err(AcdpError::SearchTruncated(format!(
+            "find_revocations: {} candidate lineage ids for agent_id={} exceed \
+             MAX_LINEAGE_WALKS={MAX_LINEAGE_WALKS} — refusing to fetch a partial set",
+            lineage_order.len(),
+            agent_id.as_str(),
+        )));
     }
 
     // The lineage walk: recovers members a search pass cannot or does
@@ -612,9 +679,12 @@ pub async fn find_revocations(
 /// Fetches the registry's own capabilities document (**exactly once**,
 /// before the search loop — [`RegistryClient::capabilities`] issues a
 /// fresh network round-trip on every call, so hoisting it above the
-/// type-form × status loop bounds total cost to one capabilities fetch
-/// plus up to `2 * MAX_SEARCH_PAGES` search round-trips rather than
-/// one capabilities fetch per candidate), then searches
+/// type-form × status loop bounds total cost to one capabilities fetch,
+/// plus up to `3 * MAX_SEARCH_PAGES` search round-trips (three statuses
+/// — `active`, `superseded`, `retracted` — × two type-forms, sharing the
+/// same `MAX_SEARCH_PAGES` page cap per pair), plus up to
+/// `MAX_LINEAGE_WALKS` lineage fetches from the walk below, each capped
+/// at 1 MB — rather than one capabilities fetch per candidate), then searches
 /// `agent_id=<capabilities.registry_did>` for `key-revocation` (and the
 /// §10 interim `acdp:key-revocation`) contexts, retrieves each match,
 /// and keeps the ones that:
@@ -686,6 +756,11 @@ pub async fn find_revocations(
 /// **The same §8 honest caveat as [`find_revocations`] applies**: search
 /// is registry-served, so an empty result is not evidence of absence.
 ///
+/// **Retracted revocations are queried as a third status pass**, and
+/// **the same [`AcdpError::SearchTruncated`] error contract applies**,
+/// as [`find_revocations`] — see that function's doc for the exact
+/// truncation and completeness boundary (issue #226 Phase 4).
+///
 /// **Beyond the search passes above, every distinct `lineage_id` named
 /// by a search match is also walked** via the private lineage-walking
 /// helper behind [`find_revocations_in_lineage`] — see that function's
@@ -740,14 +815,23 @@ pub async fn find_registry_attested_revocations(
 
     for type_form in ["key-revocation", "acdp:key-revocation"] {
         // Revocations are permanent but supersedable; the registry
-        // defaults search to status=active, so ask for both explicitly.
-        for status in ["active", "superseded"] {
+        // defaults search to status=active, so ask for the other
+        // statuses explicitly too. `retracted` closes the seed hole
+        // Phase 3's lineage walk cannot reach on its own: if every
+        // member of a lineage is retracted, no `active`/`superseded`
+        // pass returns anything to walk from in the first place
+        // (RFC-ACDP-0013 §8.2, issue #226 Phase 4).
+        for status in ["active", "superseded", "retracted"] {
             let mut params = SearchParamsBuilder::new()
                 .context_type(type_form)
                 .agent_id(registry_agent_id.as_str())
                 .status(status)
                 .limit(100)
                 .build();
+            // Set only when the loop exhausts `MAX_SEARCH_PAGES` while a
+            // cursor still remains — i.e. genuine truncation, not
+            // completion. See the boundary note on `AcdpError::SearchTruncated`.
+            let mut truncated = false;
             for _page in 0..MAX_SEARCH_PAGES {
                 let resp = client.search(&params).await?;
                 for m in &resp.matches {
@@ -786,11 +870,39 @@ pub async fn find_registry_attested_revocations(
                     }
                 }
                 match resp.next_cursor {
-                    Some(cursor) => params.cursor = Some(cursor),
-                    None => break,
+                    Some(cursor) => {
+                        params.cursor = Some(cursor);
+                        truncated = true;
+                    }
+                    None => {
+                        truncated = false;
+                        break;
+                    }
                 }
             }
+            if truncated {
+                return Err(AcdpError::SearchTruncated(format!(
+                    "find_registry_attested_revocations: exhausted MAX_SEARCH_PAGES=\
+                     {MAX_SEARCH_PAGES} pages for (type_form={type_form}, status={status}) \
+                     with results still remaining on the registry (next_cursor was still \
+                     Some) — refusing to return a silently partial revocation set"
+                )));
+            }
         }
+    }
+
+    // Bound the lineage walk the same way the search pages are bounded:
+    // a hostile registry must not be able to name more distinct
+    // lineage ids than this client is willing to fetch one-by-one via
+    // `GET /lineages/{id}` (issue #226 Phase 4).
+    if lineage_order.len() > MAX_LINEAGE_WALKS {
+        return Err(AcdpError::SearchTruncated(format!(
+            "find_registry_attested_revocations: {} candidate lineage ids for \
+             controller={} exceed MAX_LINEAGE_WALKS={MAX_LINEAGE_WALKS} — refusing to \
+             fetch a partial set",
+            lineage_order.len(),
+            controller.as_str(),
+        )));
     }
 
     // The lineage walk: recovers members a search pass cannot or does

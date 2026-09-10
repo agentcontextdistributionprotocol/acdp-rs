@@ -2678,3 +2678,255 @@ async fn find_revocations_in_lineage_drops_broken_signature_member() {
     );
     assert_eq!(revs[0].revoked_key_fingerprint, K1_FP);
 }
+
+// ── Issue #226 Phase 4: retracted seed pass + loud page/walk caps ───────────
+
+/// **Retracted-only lineage.** The sole member of this revocation
+/// lineage is retracted on a REAL `RegistryServer` — no `active` or
+/// `superseded` search pass can ever return it, so before Phase 4 the
+/// consumer would never learn the `lineage_id` to walk in the first
+/// place. RFC-ACDP-0013 §8.2 makes `status=retracted` available
+/// specifically to close this hole; `find_revocations`'s new third
+/// status pass discovers the seed match, and the (single-member)
+/// lineage walk trivially confirms it. The hand-built mocks used
+/// elsewhere in this file cannot express this case at all — they
+/// ignore the `status` query parameter entirely — which is why this
+/// test uses `LineageServerHarness` with `lifecycle_caps()` and
+/// lifecycle enabled instead.
+#[tokio::test]
+async fn find_revocations_recovers_all_retracted_lineage_via_retracted_search_pass() {
+    use acdp::client::find_revocations;
+    use acdp::types::lifecycle::{LifecycleEvent, LifecycleEventType};
+
+    let h = LineageServerHarness::start(lifecycle_caps(), true).await;
+
+    let seed = [0x71u8; 32];
+    let producer = Producer::new_did_key(SigningKey::from_bytes(&seed));
+    let did =
+        acdp::did::key::did_key_from_ed25519(&SigningKey::from_bytes(&seed).verifying_key_bytes());
+    let key_id = acdp::did::key::did_key_url(&did).expect("did:key URL");
+    let actor = AgentDid::new(did);
+
+    let req = producer
+        .publish_request()
+        .acdp_version("0.3.0")
+        .title("retracted-only lineage revocation")
+        .context_type(ContextType::KeyRevocation)
+        .visibility(Visibility::Public)
+        .metadata(json!({
+            "revoked_key_fingerprint": K1_FP,
+            "compromised_since": "2026-04-01T00:00:00.000Z",
+        }))
+        .build()
+        .expect("build");
+    let resp = h
+        .server
+        .publish_verified_did_key(&req, None)
+        .expect("publish");
+
+    // Retract the sole member. `retract_unverified_for_tests` skips only
+    // the §6 step 3 cryptographic half — actor presence/binding is still
+    // enforced, so the event still needs a bound signature.
+    let event = LifecycleEvent::new(
+        "018f6d0a-00f4-4c4d-9e1f-3a5b7c9d1e2f",
+        resp.ctx_id.clone(),
+        LifecycleEventType::Retracted,
+        chrono::Utc::now(),
+        actor,
+        Some("compromise confirmed; retracting the only lineage member".into()),
+    )
+    .expect("valid event")
+    .sign_with(SigningKey::from_bytes(&seed), key_id)
+    .expect("signed event");
+    h.server
+        .retract_unverified_for_tests(&event, None)
+        .expect("retract");
+
+    let stored = h.server.store().get(&resp.ctx_id).unwrap().unwrap();
+    assert_eq!(
+        stored.registry_state.status,
+        Status::Retracted,
+        "the store must genuinely reflect the retraction, not a hand-synthesized status"
+    );
+
+    let client = h.client();
+    let revs = find_revocations(&client, &h.resolver, &req.agent_id)
+        .await
+        .expect("an all-retracted lineage must still be discoverable via the retracted pass");
+    assert_eq!(
+        revs.len(),
+        1,
+        "only the retracted status pass can find this revocation"
+    );
+    assert_eq!(revs[0].revoked_key_fingerprint, K1_FP);
+}
+
+/// Issue #226 Phase 4 — page-cap exhaustion becomes a hard, loud error
+/// instead of a silent partial return. A hand-built mock that never
+/// stops offering a `next_cursor`, on every page, for every
+/// `(type_form, status)` pair `find_revocations` tries: it must abort
+/// with `AcdpError::SearchTruncated` rather than return whatever it
+/// collected (nothing, here) across `MAX_SEARCH_PAGES` pages.
+#[tokio::test]
+async fn find_revocations_errors_on_page_cap_exhaustion_with_cursor_remaining() {
+    use acdp::client::find_revocations;
+    use std::collections::HashMap;
+
+    let router = Router::new().route(
+        "/contexts/search",
+        get(
+            |_: axum::extract::Query<HashMap<String, String>>| async move {
+                // Empty matches, but a cursor that never runs out — a
+                // hostile (or pathologically paginated) registry holding
+                // the caller in an endless cursor loop.
+                Json(json!({"matches": [], "next_cursor": "stuck"}))
+            },
+        ),
+    );
+    let tls = TlsTestServer::start(router).await;
+    let resolver = WebResolver::with_test_endpoint(&tls.root_cert_pem, "localhost", tls.addr)
+        .expect("pinned resolver");
+    let client = RegistryClient::with_test_endpoint(
+        &format!("https://{REGISTRY_AUTHORITY}"),
+        tls.addr,
+        &tls.root_cert_pem,
+    )
+    .expect("pinned client");
+
+    let err = find_revocations(&client, &resolver, &AgentDid::new(LOCAL_PRODUCER_DID))
+        .await
+        .expect_err("page-cap exhaustion with a cursor remaining must be a hard error");
+    assert!(
+        matches!(err, AcdpError::SearchTruncated(_)),
+        "expected SearchTruncated, got {err:?}"
+    );
+}
+
+/// **Boundary — completion, not truncation.** Exactly `MAX_SEARCH_PAGES`
+/// (10) full pages whose LAST page's `next_cursor` is absent is a
+/// *complete* result: `find_revocations` must return `Ok`, never
+/// `SearchTruncated`, in this case. The mock encodes the page index in
+/// the cursor itself (`"0"..="9"`) so every `(type_form, status)` pass
+/// independently walks the same exact-boundary sequence.
+#[tokio::test]
+async fn find_revocations_exactly_at_page_cap_with_no_trailing_cursor_is_ok() {
+    use acdp::client::find_revocations;
+    use std::collections::HashMap;
+
+    let router = Router::new().route(
+        "/contexts/search",
+        get(
+            |axum::extract::Query(raw): axum::extract::Query<HashMap<String, String>>| async move {
+                let n: usize = raw.get("cursor").and_then(|c| c.parse().ok()).unwrap_or(0);
+                let next = n + 1;
+                // MAX_SEARCH_PAGES = 10 (kept in lockstep with
+                // `crates/acdp-client/src/revocation.rs`; not itself
+                // exported for tests to reference).
+                if next < 10 {
+                    Json(json!({"matches": [], "next_cursor": next.to_string()}))
+                } else {
+                    Json(json!({"matches": []}))
+                }
+            },
+        ),
+    );
+    let tls = TlsTestServer::start(router).await;
+    let resolver = WebResolver::with_test_endpoint(&tls.root_cert_pem, "localhost", tls.addr)
+        .expect("pinned resolver");
+    let client = RegistryClient::with_test_endpoint(
+        &format!("https://{REGISTRY_AUTHORITY}"),
+        tls.addr,
+        &tls.root_cert_pem,
+    )
+    .expect("pinned client");
+
+    let revs = find_revocations(&client, &resolver, &AgentDid::new(LOCAL_PRODUCER_DID))
+        .await
+        .expect("exactly-at-cap with no trailing cursor is complete, not truncated");
+    assert!(revs.is_empty());
+}
+
+/// Issue #226 Phase 4 — the lineage walk is bounded exactly like the
+/// search pages: a search response naming more distinct candidate
+/// `lineage_id`s than `MAX_LINEAGE_WALKS` (100) must abort with the
+/// same `AcdpError::SearchTruncated`, never silently walk only the
+/// first `MAX_LINEAGE_WALKS` and drop the rest. All 101 matches share
+/// one `ctx_id` (dedup is by `ctx_id`, not `lineage_id`), so exactly
+/// one `retrieve` call happens and the test stays cheap.
+#[tokio::test]
+async fn find_revocations_errors_when_candidate_lineages_exceed_walk_cap() {
+    use acdp::client::find_revocations;
+    use std::collections::HashMap;
+
+    let producer = Producer::new_did_key(SigningKey::from_bytes(&[0x72u8; 32]));
+    let ctx_id = "acdp://localhost/00000000-0000-4000-8000-0000000000c1";
+    let body = revocation_body(
+        &producer,
+        json!({"revoked_key_fingerprint": K1_FP, "compromised_since": "2026-04-01T00:00:00.000Z"}),
+        ctx_id,
+        &lineage_p(),
+        None,
+        at("2026-04-02T00:00:00.000Z"),
+    );
+    let producer_did = body.agent_id.as_str().to_string();
+
+    // MAX_LINEAGE_WALKS (100) + 1 distinct candidate lineage ids.
+    let matches: Vec<serde_json::Value> = (0..101u32)
+        .map(|i| {
+            let lineage = LineageId::parse(format!("lin:sha256:{i:064x}")).unwrap();
+            serde_json::to_value(search_result(
+                ctx_id,
+                &lineage,
+                &producer_did,
+                "2026-04-02T00:00:00.000Z",
+            ))
+            .unwrap()
+        })
+        .collect();
+    let search_response = json!({ "matches": matches });
+    let expected_ctx_id = ctx_id.to_string();
+    let context_json = serde_json::to_value(full_context(body)).unwrap();
+
+    let router = Router::new()
+        .route(
+            "/contexts/search",
+            get(move |_: axum::extract::Query<HashMap<String, String>>| {
+                let resp = search_response.clone();
+                async move { Json(resp) }
+            }),
+        )
+        .route(
+            "/contexts/{id}",
+            get(
+                move |axum::extract::Path(id): axum::extract::Path<String>| {
+                    let context_json = context_json.clone();
+                    let expected_ctx_id = expected_ctx_id.clone();
+                    async move {
+                        assert_eq!(
+                            id, expected_ctx_id,
+                            "only the single shared ctx_id should ever be retrieved"
+                        );
+                        Json(context_json)
+                    }
+                },
+            ),
+        );
+
+    let tls = TlsTestServer::start(router).await;
+    let resolver = WebResolver::with_test_endpoint(&tls.root_cert_pem, "localhost", tls.addr)
+        .expect("pinned resolver");
+    let client = RegistryClient::with_test_endpoint(
+        &format!("https://{REGISTRY_AUTHORITY}"),
+        tls.addr,
+        &tls.root_cert_pem,
+    )
+    .expect("pinned client");
+
+    let err = find_revocations(&client, &resolver, &AgentDid::new(&producer_did))
+        .await
+        .expect_err("more candidate lineage ids than MAX_LINEAGE_WALKS must be a hard error");
+    assert!(
+        matches!(err, AcdpError::SearchTruncated(_)),
+        "expected SearchTruncated, got {err:?}"
+    );
+}

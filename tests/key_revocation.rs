@@ -2050,6 +2050,118 @@ async fn lineage_walk_recovers_search_blind_member() {
     }
 }
 
+/// **GAP-A regression.** A search match names ctx_id `X` under
+/// `lineage_p()`, but `/lineages/{id}` for that same lineage_id serves a
+/// DIFFERENT member `Y` that does not include `X` at all — the registry
+/// answered the lineage-walk request, but not with the lineage the
+/// search match actually pointed at. The walk must reject this
+/// (`AcdpError::IncompleteLineage`, checked against the pre-verification
+/// member list) rather than silently incorporating `Y`'s revocation —
+/// and, per GAP-D, that one bad lineage must not suppress the genuine
+/// revocation `X` that `find_revocations` already found directly via
+/// `client.retrieve(&m.ctx_id)`.
+#[tokio::test]
+async fn lineage_walk_rejects_member_mismatch_without_poisoning_or_aborting() {
+    use acdp::client::find_revocations;
+    use std::collections::HashMap;
+
+    let producer = Producer::new_did_key(SigningKey::from_bytes(&[0x66u8; 32]));
+
+    // X: the genuine revocation the search match names.
+    let x = revocation_body(
+        &producer,
+        json!({"revoked_key_fingerprint": K1_FP, "compromised_since": "2026-04-05T00:00:00.000Z"}),
+        "acdp://localhost/00000000-0000-4000-8000-0000000000b1",
+        &lineage_p(),
+        None,
+        at("2026-04-06T00:00:00.000Z"),
+    );
+    let producer_did = x.agent_id.as_str().to_string();
+
+    // Y: a DIFFERENT, unrelated ctx_id served under X's lineage_id when
+    // the lineage endpoint is queried — the registry is not honestly
+    // answering for the lineage X's own search match named.
+    let y = revocation_body(
+        &producer,
+        json!({"revoked_key_fingerprint": K2_FP, "compromised_since": "2026-04-07T00:00:00.000Z"}),
+        "acdp://localhost/00000000-0000-4000-8000-0000000000b2",
+        &lineage_p(),
+        None,
+        at("2026-04-08T00:00:00.000Z"),
+    );
+
+    let search_response = json!({
+        "matches": [
+            search_result(x.ctx_id.as_str(), &lineage_p(), &producer_did, "2026-04-06T00:00:00.000Z"),
+        ],
+    });
+    let mut contexts: HashMap<String, serde_json::Value> = HashMap::new();
+    contexts.insert(
+        x.ctx_id.as_str().to_string(),
+        serde_json::to_value(full_context(x.clone())).unwrap(),
+    );
+    let mut lineages: HashMap<String, serde_json::Value> = HashMap::new();
+    // The lineage endpoint serves Y only — NOT X — under the same
+    // lineage_id the search match named for X.
+    lineages.insert(
+        lineage_p().as_str().to_string(),
+        serde_json::to_value(vec![full_context(y.clone())]).unwrap(),
+    );
+    let contexts = Arc::new(contexts);
+    let lineages = Arc::new(lineages);
+
+    let router = Router::new()
+        .route(
+            "/contexts/search",
+            get(move |_: axum::extract::Query<HashMap<String, String>>| {
+                let resp = search_response.clone();
+                async move { Json(resp) }
+            }),
+        )
+        .route(
+            "/contexts/{id}",
+            get({
+                let contexts = contexts.clone();
+                move |axum::extract::Path(id): axum::extract::Path<String>| {
+                    let contexts = contexts.clone();
+                    async move { Json(contexts.get(&id).cloned().expect("known ctx_id")) }
+                }
+            }),
+        )
+        .route(
+            "/lineages/{id}",
+            get({
+                let lineages = lineages.clone();
+                move |axum::extract::Path(id): axum::extract::Path<String>| {
+                    let lineages = lineages.clone();
+                    async move { Json(lineages.get(&id).cloned().unwrap_or(json!([]))) }
+                }
+            }),
+        );
+
+    let tls = TlsTestServer::start(router).await;
+    let resolver = WebResolver::with_test_endpoint(&tls.root_cert_pem, "localhost", tls.addr)
+        .expect("pinned resolver");
+    let client = RegistryClient::with_test_endpoint(
+        &format!("https://{REGISTRY_AUTHORITY}"),
+        tls.addr,
+        &tls.root_cert_pem,
+    )
+    .expect("pinned client");
+
+    let revs = find_revocations(&client, &resolver, &AgentDid::new(&producer_did))
+        .await
+        .expect("a mismatched lineage walk must not abort the whole call");
+    assert_eq!(
+        revs.len(),
+        1,
+        "the search-found revocation X must survive; Y — served under X's \
+         lineage_id but not actually containing X — must NOT be silently \
+         incorporated"
+    );
+    assert_eq!(revs[0].revoked_key_fingerprint, K1_FP, "must be X, not Y");
+}
+
 /// `lifecycle_caps()` — mirrors `tests/lifecycle.rs:110-115`: idem-007
 /// (`acdp_version` ≥ 0.3.0 requires `supports_idempotency_key: true`)
 /// plus a TTL in the `86_400..=604_800` range `validate_capabilities`
@@ -2064,7 +2176,14 @@ fn lifecycle_caps() -> CapabilitiesDocument {
         registry_did: REGISTRY_DID.into(),
         supported_signature_algorithms: vec!["ed25519".into()],
         supported_did_methods: vec!["did:web".into(), "did:key".into()],
-        profiles: vec!["acdp-registry-core".into()],
+        // `LineageServerHarness` also serves `/contexts/search`, which
+        // requires `acdp-registry-discovery` (RFC-ACDP-0001-core.md
+        // §545-551) — `acdp-registry-core` alone would be an inaccurate
+        // profile claim for what this harness actually serves.
+        profiles: vec![
+            "acdp-registry-core".into(),
+            "acdp-registry-discovery".into(),
+        ],
         limits: Limits {
             max_payload_bytes: 1_048_576,
             max_embedded_bytes: 65_536,

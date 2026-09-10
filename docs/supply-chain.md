@@ -17,7 +17,7 @@ Four layers, each independently verifiable:
 | Released artifacts | Build provenance / signed attestations | npm `--provenance`, PyPI PEP 740, GitHub `attest-build-provenance` |
 | CI itself | Every third-party Action pinned to a commit SHA | `.github/workflows/*` |
 | Dependency graph | `cargo vet` — every dep audited or explicitly exempted (BLOCKING CI gate) | `supply-chain/` |
-| Advisories & licenses | `cargo deny` + `cargo audit` | `deny.toml`, CI |
+| Advisories & licenses | `cargo deny` | `deny.toml`, CI |
 
 ---
 
@@ -348,7 +348,7 @@ have. Refresh them with `cargo vet` (updates `imports.lock`).
 The crates that implement or underpin ACDP's signature and TLS security were
 inspected and **certified locally** (`safe-to-deploy`), not merely exempted.
 The inspection criteria for each: canonical upstream source, latest compatible
-release, and no open RUSTSEC advisory (`cargo audit`, verified 2026-07-05). See
+release, and no open RUSTSEC advisory (verified locally with `cargo audit`, 2026-07-05). See
 `supply-chain/audits.toml` for the full per-crate notes.
 
 | Crate | Version | Upstream | Role in ACDP |
@@ -406,23 +406,24 @@ exemption, and their version bumps therefore never trip the gate.
 
 ---
 
-## 4. Advisory and license posture (`cargo deny` + `cargo audit`)
+## 4. Advisory and license posture (`cargo deny`)
 
-These run alongside `cargo vet` in CI and cover the axes `vet` does not:
+`cargo deny check` runs alongside `cargo vet` in CI and covers the axes `vet`
+does not:
 
 - **`cargo deny check`** ([`deny.toml`](../deny.toml)) — advisories, license
-  allow-list, banned/duplicate crates, and source registries. Blocking.
-- **`cargo audit`** (`rustsec/audit-check`) — cross-checks `Cargo.lock` against
-  the RustSec advisory database on every push/PR. Blocking.
+  allow-list, banned/duplicate crates, and source registries. Blocking; the
+  **sole** RustSec advisory gate in CI (see the comment at
+  `.github/workflows/ci.yml:138-141`). `cargo audit` is not run in CI at all
+  and remains an optional local check documented in `CONTRIBUTING.md`.
 
-**Known allowlisted advisory:** `RUSTSEC-2025-0134` (`rustls-pemfile`
-unmaintained, folded into `rustls-pki-types` upstream). It is pulled in only
-transitively by `axum-server`'s `tls-rustls` feature, which is used solely in
-the **dev-dependency test harness** and never propagates to consumers. The
-ignore is mirrored in both `deny.toml` and the `cargo audit` CI step. As of
-2026-07-05 this is the only advisory in the tree, and none of the
-crypto-critical crates carry one.
+**Advisory allowlist:** `deny.toml` currently carries **no** `[advisories] ignore`
+entries (`ignore = []`) — the tree has no allowlisted advisories. The former
+`RUSTSEC-2025-0134` entry (`rustls-pemfile` unmaintained) was retired when
+`axum-server` 0.8 switched to `rustls`' built-in PEM helpers, dropping
+`rustls-pemfile` from the graph entirely; none of the crypto-critical crates
+carries an advisory.
 
-Together: **`vet`** answers "did a human look at this code?", **`deny`/`audit`**
-answer "is there a known-bad advisory or license here?", and the **provenance +
+Together: **`vet`** answers "did a human look at this code?", **`deny`**
+answers "is there a known-bad advisory or license here?", and the **provenance +
 pinning** layers answer "did this actually come from our CI?".

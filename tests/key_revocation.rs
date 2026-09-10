@@ -1049,6 +1049,11 @@ async fn find_revocations_returns_only_verified() {
             .expect("pinned resolver");
 
     let mut contexts: HashMap<String, serde_json::Value> = HashMap::new();
+    // Both candidates here are independent fresh v1s, so each one's own
+    // lineage contains only itself — this just gives `find_revocations`'s
+    // (now unconditional) lineage walk a real `/lineages/{id}` route to
+    // call instead of 404ing; it is not what this test is pinning.
+    let mut lineages: HashMap<String, serde_json::Value> = HashMap::new();
     let mut matches = Vec::new();
     for req in [&good_req, &self_signed_req] {
         let resp = server
@@ -1074,11 +1079,16 @@ async fn find_revocations_returns_only_verified() {
             full.body.ctx_id.as_str().to_string(),
             serde_json::to_value(&full).unwrap(),
         );
+        lineages.insert(
+            full.body.lineage_id.as_str().to_string(),
+            json!([serde_json::to_value(&full).unwrap()]),
+        );
     }
 
     // Serve search + retrieval + DID hosting from one harness.
     let search_body = json!({ "matches": matches });
     let contexts = Arc::new(contexts);
+    let lineages = Arc::new(lineages);
     let full_router = Router::new()
         .route(
             "/agent/did.json",
@@ -1104,6 +1114,16 @@ async fn find_revocations_returns_only_verified() {
                 move |axum::extract::Path(id): axum::extract::Path<String>| {
                     let contexts = contexts.clone();
                     async move { Json(contexts.get(&id).cloned().expect("known ctx_id")) }
+                }
+            }),
+        )
+        .route(
+            "/lineages/{id}",
+            get({
+                let lineages = lineages.clone();
+                move |axum::extract::Path(id): axum::extract::Path<String>| {
+                    let lineages = lineages.clone();
+                    async move { Json(lineages.get(&id).cloned().unwrap_or(json!([]))) }
                 }
             }),
         );
@@ -1244,6 +1264,15 @@ async fn discover_with_candidates(
 
     let mut matches = Vec::new();
     let mut contexts: HashMap<String, serde_json::Value> = HashMap::new();
+    // Each candidate here is an independent fresh v1 (no `supersedes`),
+    // so its own lineage always contains exactly itself — this is not
+    // the Phase 3 lineage-walking behavior under test (that lives in
+    // `lineage_walk_recovers_search_blind_member` and the
+    // `LineageServerHarness` tests); it exists purely so `find_revocations`
+    // / `find_registry_attested_revocations`'s own (now unconditional)
+    // lineage walk has a real `/lineages/{id}` route to call instead of
+    // 404ing.
+    let mut lineages: HashMap<String, serde_json::Value> = HashMap::new();
     for c in candidates {
         let producer_did = candidate_did(c.path);
         let producer = Producer::new(
@@ -1287,6 +1316,10 @@ async fn discover_with_candidates(
             full.body.ctx_id.as_str().to_string(),
             serde_json::to_value(&full).unwrap(),
         );
+        lineages.insert(
+            full.body.lineage_id.as_str().to_string(),
+            json!([serde_json::to_value(&full).unwrap()]),
+        );
     }
 
     // Paginate the synthesized search response one match per page (via
@@ -1297,6 +1330,7 @@ async fn discover_with_candidates(
     const PAGE_SIZE: usize = 1;
     let matches = Arc::new(matches);
     let contexts = Arc::new(contexts);
+    let lineages = Arc::new(lineages);
     let caps_hits = Arc::new(AtomicUsize::new(0));
 
     let mut full_router = Router::new()
@@ -1331,6 +1365,16 @@ async fn discover_with_candidates(
                 move |axum::extract::Path(id): axum::extract::Path<String>| {
                     let contexts = contexts.clone();
                     async move { Json(contexts.get(&id).cloned().expect("known ctx_id")) }
+                }
+            }),
+        )
+        .route(
+            "/lineages/{id}",
+            get({
+                let lineages = lineages.clone();
+                move |axum::extract::Path(id): axum::extract::Path<String>| {
+                    let lineages = lineages.clone();
+                    async move { Json(lineages.get(&id).cloned().unwrap_or(json!([]))) }
                 }
             }),
         )
@@ -1695,4 +1739,599 @@ async fn find_registry_attested_revocations_propagates_capabilities_error() {
         "a registry that can't even serve capabilities must surface an error, \
          not look like an honest \"no revocations\" empty vec"
     );
+}
+
+// ── Phase 3 (#226 part 1): lineage-walking revocation discovery ────────────
+//
+// `find_revocations` / `find_registry_attested_revocations`'s own search
+// passes cannot see a lineage member a search pass is structurally blind
+// to (or has been made blind to by a hostile/eventually-consistent
+// registry). RFC-ACDP-0013 §8.1 obliges `GET /lineages/{id}` to include
+// every member, so walking the lineage id any visible member names
+// recovers it. The tests below pin that the walk is actually wired in
+// (test A, the falsifiability-probe target), that it works end-to-end
+// against a genuine `RegistryServer` lineage endpoint (test B), and that
+// a member failing §5 verification is dropped rather than erroring
+// (test C).
+
+use acdp::client::find_revocations_in_lineage;
+use acdp::types::body::FullContext;
+use acdp::types::search::SearchResult;
+use acdp::types::{CapabilitiesDocument, Status};
+
+/// Build a genuine, verifiable `key-revocation` `Body` without a live
+/// registry: `Producer::publish_request` / `supersede_body` compute the
+/// real hash + signature, and `Body::from_publish_request` assigns
+/// whatever `ctx_id` / `lineage_id` the test wants — the registry-
+/// assigned identity fields sit outside `content_hash` coverage
+/// (RFC-ACDP-0001 §5.7), so choosing them by hand here does not affect
+/// verification.
+fn revocation_body(
+    producer: &Producer,
+    metadata: serde_json::Value,
+    ctx_id: &str,
+    lineage_id: &LineageId,
+    supersedes: Option<&Body>,
+    created_at: DateTime<Utc>,
+) -> Body {
+    let builder = match supersedes {
+        Some(prev) => producer.supersede_body(prev),
+        None => producer.publish_request(),
+    };
+    let req = builder
+        .acdp_version("0.3.0")
+        .title("lineage-walk test revocation")
+        .context_type(ContextType::KeyRevocation)
+        .visibility(Visibility::Public)
+        .metadata(metadata)
+        .build()
+        .expect("build");
+    Body::from_publish_request(
+        &req,
+        CtxId::parse(ctx_id).expect("valid ctx_id"),
+        lineage_id.clone(),
+        REGISTRY_AUTHORITY,
+        created_at,
+    )
+}
+
+/// Wrap a `Body` in the minimal `FullContext` envelope `client.lineage`
+/// deserializes into — status is irrelevant to the walk (it verifies
+/// every member regardless of `registry_state.status`), so a plain
+/// `Active` is fine everywhere it's used below.
+fn full_context(body: Body) -> FullContext {
+    FullContext {
+        body,
+        registry_state: acdp::types::body::RegistryState {
+            status: Status::Active,
+            lifecycle_events: None,
+            extensions: Default::default(),
+        },
+        registry_receipt: None,
+        lineage_head_receipt: None,
+        log_inclusion: None,
+        extensions: Default::default(),
+    }
+}
+
+/// A `match_summary`-shaped search result naming `ctx_id`/`lineage_id`
+/// for the hand-built search mock below.
+fn search_result(
+    ctx_id: &str,
+    lineage_id: &LineageId,
+    agent_id: &str,
+    created_at: &str,
+) -> SearchResult {
+    SearchResult {
+        ctx_id: CtxId::parse(ctx_id).expect("valid ctx_id"),
+        lineage_id: lineage_id.clone(),
+        agent_id: AgentDid::new(agent_id),
+        title: "lineage-walk test revocation".into(),
+        summary: None,
+        context_type: ContextType::KeyRevocation,
+        domain: None,
+        created_at: at(created_at),
+        status: Status::Active,
+        visibility: Some(Visibility::Public),
+    }
+}
+
+fn lineage_p() -> LineageId {
+    LineageId::parse(format!("lin:sha256:{}", "1".repeat(64))).unwrap()
+}
+fn lineage_r() -> LineageId {
+    LineageId::parse(format!("lin:sha256:{}", "2".repeat(64))).unwrap()
+}
+
+/// **Test A — criterion 6's falsifiability probe target.** A hand-built
+/// mock whose `/contexts/search` never lists R1 (of either lineage), on
+/// any page, while `/lineages/{id}` (also hand-built) includes it —
+/// search is structurally blind to R1; only the lineage walk can find
+/// it. Both `find_revocations` (producer-scoped, a did:key identity —
+/// no DID hosting needed) and `find_registry_attested_revocations`
+/// (registry-scoped, a did:web identity hosted at
+/// `/.well-known/did.json`) are exercised against ONE combined mock, so
+/// this single test pins the walk for both wired call sites.
+#[tokio::test]
+async fn lineage_walk_recovers_search_blind_member() {
+    use acdp::client::{find_registry_attested_revocations, find_revocations};
+    use std::collections::HashMap;
+
+    let producer = Producer::new_did_key(SigningKey::from_bytes(&[0x21u8; 32]));
+    let registry_seed = [0x33u8; 32];
+    let registry_pub = SigningKey::from_bytes(&registry_seed).verifying_key_bytes();
+    let registry = Producer::new(
+        SigningKey::from_bytes(&registry_seed),
+        AgentDid::new(REGISTRY_DID),
+        format!("{REGISTRY_DID}#key-1"),
+    );
+    let controller = "did:web:localhost:some-affected-producer";
+
+    // R1/R2: producer-signed, same lineage, R2 supersedes R1.
+    let r1_p = revocation_body(
+        &producer,
+        json!({"revoked_key_fingerprint": K1_FP, "compromised_since": "2026-04-01T00:00:00.000Z"}),
+        "acdp://localhost/00000000-0000-4000-8000-000000000001",
+        &lineage_p(),
+        None,
+        at("2026-04-02T00:00:00.000Z"),
+    );
+    let producer_did = r1_p.agent_id.as_str().to_string();
+    let r2_p = revocation_body(
+        &producer,
+        json!({"revoked_key_fingerprint": K1_FP, "compromised_since": "2026-05-01T00:00:00.000Z"}),
+        "acdp://localhost/00000000-0000-4000-8000-000000000002",
+        &lineage_p(),
+        Some(&r1_p),
+        at("2026-05-02T00:00:00.000Z"),
+    );
+
+    // R1'/R2': registry-attested, same (different) lineage, R2'
+    // supersedes R1'.
+    let r1_r = revocation_body(
+        &registry,
+        json!({
+            "revoked_key_fingerprint": K2_FP,
+            "compromised_since": "2026-04-03T00:00:00.000Z",
+            "revoked_key_controller": controller,
+        }),
+        "acdp://localhost/00000000-0000-4000-8000-000000000003",
+        &lineage_r(),
+        None,
+        at("2026-04-04T00:00:00.000Z"),
+    );
+    let r2_r = revocation_body(
+        &registry,
+        json!({
+            "revoked_key_fingerprint": K2_FP,
+            "compromised_since": "2026-05-03T00:00:00.000Z",
+            "revoked_key_controller": controller,
+        }),
+        "acdp://localhost/00000000-0000-4000-8000-000000000004",
+        &lineage_r(),
+        Some(&r1_r),
+        at("2026-05-04T00:00:00.000Z"),
+    );
+
+    // The search mock: ONLY R2/R2' ever appear, on every page. R1/R1'
+    // are named exclusively by `/lineages/{id}`.
+    let search_response = json!({
+        "matches": [
+            search_result(r2_p.ctx_id.as_str(), &lineage_p(), &producer_did, "2026-05-02T00:00:00.000Z"),
+            search_result(r2_r.ctx_id.as_str(), &lineage_r(), REGISTRY_DID, "2026-05-04T00:00:00.000Z"),
+        ],
+    });
+    let mut contexts: HashMap<String, serde_json::Value> = HashMap::new();
+    contexts.insert(
+        r2_p.ctx_id.as_str().to_string(),
+        serde_json::to_value(full_context(r2_p.clone())).unwrap(),
+    );
+    contexts.insert(
+        r2_r.ctx_id.as_str().to_string(),
+        serde_json::to_value(full_context(r2_r.clone())).unwrap(),
+    );
+    let mut lineages: HashMap<String, serde_json::Value> = HashMap::new();
+    lineages.insert(
+        lineage_p().as_str().to_string(),
+        serde_json::to_value(vec![full_context(r1_p.clone()), full_context(r2_p.clone())]).unwrap(),
+    );
+    lineages.insert(
+        lineage_r().as_str().to_string(),
+        serde_json::to_value(vec![full_context(r1_r.clone()), full_context(r2_r.clone())]).unwrap(),
+    );
+    let contexts = Arc::new(contexts);
+    let lineages = Arc::new(lineages);
+
+    let registry_doc = ed25519_did_doc(REGISTRY_DID, "key-1", &registry_pub);
+    let router = Router::new()
+        .route(
+            "/.well-known/did.json",
+            get(move || {
+                let doc = registry_doc.clone();
+                async move { Json(doc) }
+            }),
+        )
+        .route(
+            "/.well-known/acdp.json",
+            get(move || {
+                let c = caps();
+                async move { Json(c) }
+            }),
+        )
+        .route(
+            "/contexts/search",
+            get(move |_: axum::extract::Query<HashMap<String, String>>| {
+                let resp = search_response.clone();
+                async move { Json(resp) }
+            }),
+        )
+        .route(
+            "/contexts/{id}",
+            get({
+                let contexts = contexts.clone();
+                move |axum::extract::Path(id): axum::extract::Path<String>| {
+                    let contexts = contexts.clone();
+                    async move { Json(contexts.get(&id).cloned().expect("known ctx_id")) }
+                }
+            }),
+        )
+        .route(
+            "/lineages/{id}",
+            get({
+                let lineages = lineages.clone();
+                move |axum::extract::Path(id): axum::extract::Path<String>| {
+                    let lineages = lineages.clone();
+                    async move { Json(lineages.get(&id).cloned().unwrap_or(json!([]))) }
+                }
+            }),
+        );
+
+    let tls = TlsTestServer::start(router).await;
+    let resolver = WebResolver::with_test_endpoint(&tls.root_cert_pem, "localhost", tls.addr)
+        .expect("pinned resolver");
+    let client = RegistryClient::with_test_endpoint(
+        &format!("https://{REGISTRY_AUTHORITY}"),
+        tls.addr,
+        &tls.root_cert_pem,
+    )
+    .expect("pinned client");
+
+    // `find_revocations`: search alone would only ever see R2 (the
+    // fingerprint asserted below on the early-boundary member is the
+    // walk's, not search's, contribution).
+    let mut producer_revs = find_revocations(&client, &resolver, &AgentDid::new(&producer_did))
+        .await
+        .expect("producer-scoped discovery");
+    assert_eq!(
+        producer_revs.len(),
+        2,
+        "search alone finds only R2 — the walk must add R1"
+    );
+    producer_revs.sort_by_key(|r| r.compromised_since);
+    assert_eq!(
+        producer_revs[0].compromised_since,
+        at("2026-04-01T00:00:00.000Z"),
+        "R1's early boundary must be present — it is invisible to search entirely"
+    );
+    assert_eq!(
+        producer_revs[1].compromised_since,
+        at("2026-05-01T00:00:00.000Z")
+    );
+    for r in &producer_revs {
+        assert_eq!(r.revoked_key_fingerprint, K1_FP);
+        assert_eq!(r.trust_class, RevocationTrustClass::ProducerSigned);
+    }
+
+    // `find_registry_attested_revocations`: same story, the registry-
+    // attested lineage.
+    let mut registry_revs =
+        find_registry_attested_revocations(&client, &resolver, &AgentDid::new(controller))
+            .await
+            .expect("registry-scoped discovery");
+    assert_eq!(
+        registry_revs.len(),
+        2,
+        "search alone finds only R2' — the walk must add R1'"
+    );
+    registry_revs.sort_by_key(|r| r.compromised_since);
+    assert_eq!(
+        registry_revs[0].compromised_since,
+        at("2026-04-03T00:00:00.000Z"),
+        "R1's early boundary must be present — it is invisible to search entirely"
+    );
+    assert_eq!(
+        registry_revs[1].compromised_since,
+        at("2026-05-03T00:00:00.000Z")
+    );
+    for r in &registry_revs {
+        assert_eq!(r.revoked_key_fingerprint, K2_FP);
+        assert_eq!(r.trust_class, RevocationTrustClass::RegistryAttested);
+        assert_eq!(r.revoked_key_controller.as_str(), controller);
+    }
+}
+
+/// `lifecycle_caps()` — mirrors `tests/lifecycle.rs:110-115`: idem-007
+/// (`acdp_version` ≥ 0.3.0 requires `supports_idempotency_key: true`)
+/// plus a TTL in the `86_400..=604_800` range `validate_capabilities`
+/// hard-requires whenever idempotency is on
+/// (`crates/acdp-validation/src/lib.rs:164-178`). Deliberately NOT the
+/// shared `caps()` above (0.2.0, no TTL) — a partial flip of that one
+/// fails `RegistryServer::try_new` outright.
+fn lifecycle_caps() -> CapabilitiesDocument {
+    use acdp::types::capabilities::Limits;
+    CapabilitiesDocument {
+        acdp_version: "0.3.0".into(),
+        registry_did: REGISTRY_DID.into(),
+        supported_signature_algorithms: vec!["ed25519".into()],
+        supported_did_methods: vec!["did:web".into(), "did:key".into()],
+        profiles: vec!["acdp-registry-core".into()],
+        limits: Limits {
+            max_payload_bytes: 1_048_576,
+            max_embedded_bytes: 65_536,
+            idempotency_key_ttl_seconds: Some(86_400),
+            max_publish_per_minute: None,
+        },
+        read_authentication_methods: vec![],
+        anonymous_public_reads: true,
+        supports_idempotency_key: true,
+        extensions: Default::default(),
+    }
+}
+
+/// A harness routing `/contexts/search`, `/contexts/{id}`, and
+/// `/lineages/{id}` through a REAL `RegistryServer<InMemoryStore>` —
+/// statuses, query filtering, and lineage membership are all genuine,
+/// not hand-synthesized. Parameterized over the capabilities document
+/// and a `lifecycle` flag (rather than hardcoding `caps()`/always
+/// calling `with_lifecycle()`) so Phase 4/5 additions can reuse this
+/// harness with lifecycle enabled without reopening this constructor.
+struct LineageServerHarness {
+    tls: TlsTestServer,
+    server: Arc<RegistryServer<InMemoryStore>>,
+    resolver: WebResolver,
+}
+
+impl LineageServerHarness {
+    async fn start(caps: CapabilitiesDocument, lifecycle: bool) -> Self {
+        use std::collections::HashMap;
+
+        let mut server = RegistryServer::try_new(InMemoryStore::new(), caps, REGISTRY_AUTHORITY)
+            .expect("server");
+        if lifecycle {
+            server = server.with_lifecycle().expect("lifecycle enabled");
+        }
+        let server = Arc::new(server);
+
+        let router = Router::new()
+            .route(
+                "/contexts/search",
+                get({
+                    let server = server.clone();
+                    move |axum::extract::Query(raw): axum::extract::Query<
+                        HashMap<String, String>,
+                    >| {
+                        let server = server.clone();
+                        async move {
+                            let params = acdp::types::SearchParams {
+                                q: raw.get("q").cloned(),
+                                context_type: raw.get("type").cloned(),
+                                domain: raw.get("domain").cloned(),
+                                tags: raw.get("tags").cloned(),
+                                agent_id: raw.get("agent_id").cloned(),
+                                schema_uri: raw.get("schema_uri").cloned(),
+                                derived_from: raw.get("derived_from").cloned(),
+                                created_after: raw.get("created_after").cloned(),
+                                created_before: raw.get("created_before").cloned(),
+                                data_period_start_after: raw
+                                    .get("data_period_start_after")
+                                    .cloned(),
+                                data_period_end_before: raw.get("data_period_end_before").cloned(),
+                                expires_after: raw.get("expires_after").cloned(),
+                                expires_before: raw.get("expires_before").cloned(),
+                                status: raw.get("status").cloned(),
+                                limit: raw.get("limit").and_then(|v| v.parse().ok()),
+                                cursor: raw.get("cursor").cloned(),
+                            };
+                            let resp = server.search(&params, None).expect("search");
+                            Json(resp)
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/contexts/{id}",
+                get({
+                    let server = server.clone();
+                    move |axum::extract::Path(id): axum::extract::Path<String>| {
+                        let server = server.clone();
+                        async move {
+                            let ctx_id = CtxId(id);
+                            let full = server
+                                .retrieve(&ctx_id, None)
+                                .expect("retrieve")
+                                .expect("found");
+                            Json(full)
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/lineages/{id}",
+                get({
+                    let server = server.clone();
+                    move |axum::extract::Path(id): axum::extract::Path<String>| {
+                        let server = server.clone();
+                        async move {
+                            let lineage_id = LineageId(id);
+                            let all = server.lineage(&lineage_id, None).expect("lineage");
+                            Json(all)
+                        }
+                    }
+                }),
+            );
+
+        let tls = TlsTestServer::start(router).await;
+        let resolver = WebResolver::with_test_endpoint(&tls.root_cert_pem, "localhost", tls.addr)
+            .expect("pinned resolver");
+        Self {
+            tls,
+            server,
+            resolver,
+        }
+    }
+
+    fn client(&self) -> RegistryClient {
+        RegistryClient::with_test_endpoint(
+            &format!("https://{REGISTRY_AUTHORITY}"),
+            self.tls.addr,
+            &self.tls.root_cert_pem,
+        )
+        .expect("pinned client")
+    }
+}
+
+/// **Test B — the genuine lineage endpoint, end-to-end.** R1 (early
+/// boundary) superseded by R2 (later boundary) on a real
+/// `RegistryServer`; `find_revocations_in_lineage` must return both,
+/// exercising the real `/lineages/{id}` handler rather than a
+/// hand-built stand-in.
+#[tokio::test]
+async fn find_revocations_in_lineage_returns_superseded_and_current_member() {
+    let h = LineageServerHarness::start(lifecycle_caps(), false).await;
+
+    let producer = Producer::new_did_key(SigningKey::from_bytes(&[0x44u8; 32]));
+    let v1 = producer
+        .publish_request()
+        .acdp_version("0.3.0")
+        .title("lineage-walk v1: early boundary")
+        .context_type(ContextType::KeyRevocation)
+        .visibility(Visibility::Public)
+        .metadata(json!({
+            "revoked_key_fingerprint": K1_FP,
+            "compromised_since": "2026-04-01T00:00:00.000Z",
+        }))
+        .build()
+        .expect("v1 build");
+    let resp1 = h
+        .server
+        .publish_verified_did_key(&v1, None)
+        .expect("v1 publish");
+    let stored_v1 = h
+        .server
+        .store()
+        .get(&resp1.ctx_id)
+        .expect("get")
+        .expect("v1 present");
+
+    let v2 = producer
+        .supersede_body(&stored_v1.body)
+        .acdp_version("0.3.0")
+        .title("lineage-walk v2: later boundary")
+        .context_type(ContextType::KeyRevocation)
+        .visibility(Visibility::Public)
+        .metadata(json!({
+            "revoked_key_fingerprint": K1_FP,
+            "compromised_since": "2026-05-01T00:00:00.000Z",
+        }))
+        .build()
+        .expect("v2 build");
+    let resp2 = h
+        .server
+        .publish_verified_did_key(&v2, None)
+        .expect("v2 publish");
+    assert_eq!(resp2.lineage_id, resp1.lineage_id);
+
+    // v1 is now genuinely superseded — this is the real registry
+    // deriving that status, not a hand-synthesized one.
+    let stored_v1_after = h.server.store().get(&resp1.ctx_id).unwrap().unwrap();
+    assert_eq!(stored_v1_after.registry_state.status, Status::Superseded);
+
+    let client = h.client();
+    let mut revs = find_revocations_in_lineage(&client, &h.resolver, &resp2.lineage_id)
+        .await
+        .expect("lineage walk");
+    assert_eq!(
+        revs.len(),
+        2,
+        "both the superseded and current member must be returned"
+    );
+    revs.sort_by_key(|r| r.compromised_since);
+    assert_eq!(revs[0].compromised_since, at("2026-04-01T00:00:00.000Z"));
+    assert_eq!(revs[1].compromised_since, at("2026-05-01T00:00:00.000Z"));
+    for r in &revs {
+        assert_eq!(r.revoked_key_fingerprint, K1_FP);
+        assert_eq!(r.trust_class, RevocationTrustClass::ProducerSigned);
+    }
+}
+
+/// **Negative test.** A lineage member whose signature is broken is
+/// excluded from `find_revocations_in_lineage`'s output — dropped
+/// exactly as the existing search-driven loop drops an unverifiable
+/// candidate — rather than surfaced as (or turned into) an error.
+#[tokio::test]
+async fn find_revocations_in_lineage_drops_broken_signature_member() {
+    use std::collections::HashMap;
+
+    let producer = Producer::new_did_key(SigningKey::from_bytes(&[0x55u8; 32]));
+    let lineage = LineageId::parse(format!("lin:sha256:{}", "3".repeat(64))).unwrap();
+
+    let good = revocation_body(
+        &producer,
+        json!({"revoked_key_fingerprint": K1_FP, "compromised_since": T}),
+        "acdp://localhost/00000000-0000-4000-8000-0000000000a1",
+        &lineage,
+        None,
+        at("2026-05-02T00:00:00.000Z"),
+    );
+    let mut broken = revocation_body(
+        &producer,
+        json!({"revoked_key_fingerprint": K2_FP, "compromised_since": T}),
+        "acdp://localhost/00000000-0000-4000-8000-0000000000a2",
+        &lineage,
+        None,
+        at("2026-05-03T00:00:00.000Z"),
+    );
+    // Corrupt the signature. `content_hash` still matches (the
+    // signature is not part of ProducerContent), so this fails
+    // specifically at Ed25519 verification, not earlier at hash
+    // recomputation.
+    broken.signature.value = "A".repeat(88);
+
+    let mut lineages: HashMap<String, serde_json::Value> = HashMap::new();
+    lineages.insert(
+        lineage.as_str().to_string(),
+        serde_json::to_value(vec![full_context(good.clone()), full_context(broken)]).unwrap(),
+    );
+    let lineages = Arc::new(lineages);
+
+    let router = Router::new().route(
+        "/lineages/{id}",
+        get({
+            let lineages = lineages.clone();
+            move |axum::extract::Path(id): axum::extract::Path<String>| {
+                let lineages = lineages.clone();
+                async move { Json(lineages.get(&id).cloned().unwrap_or(json!([]))) }
+            }
+        }),
+    );
+    let tls = TlsTestServer::start(router).await;
+    let resolver = WebResolver::with_test_endpoint(&tls.root_cert_pem, "localhost", tls.addr)
+        .expect("pinned resolver");
+    let client = RegistryClient::with_test_endpoint(
+        &format!("https://{REGISTRY_AUTHORITY}"),
+        tls.addr,
+        &tls.root_cert_pem,
+    )
+    .expect("pinned client");
+
+    let revs = find_revocations_in_lineage(&client, &resolver, &lineage)
+        .await
+        .expect("lineage walk must not error on a dropped candidate");
+    assert_eq!(
+        revs.len(),
+        1,
+        "the broken-signature member must be dropped, not error, and not \
+         poison the genuine member"
+    );
+    assert_eq!(revs[0].revoked_key_fingerprint, K1_FP);
 }

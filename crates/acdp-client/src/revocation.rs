@@ -20,7 +20,7 @@ use acdp_crypto::fingerprint::fingerprint_for_key_id;
 use acdp_did::WebResolver;
 use acdp_primitives::error::AcdpError;
 use acdp_types::body::Body;
-use acdp_types::primitives::AgentDid;
+use acdp_types::primitives::{AgentDid, CtxId, LineageId};
 use acdp_types::revocation::{effective_boundary, KeyRevocation, RevocationTrustClass};
 use acdp_types::search::SearchParamsBuilder;
 use acdp_verify::Verifier;
@@ -135,6 +135,125 @@ pub async fn verify_revocation_body(
     Ok(revocation)
 }
 
+/// Walk every member of a revocation lineage and return the ones that
+/// verify per §5 — **regardless of `registry_state.status`** and with
+/// **no trust-class or publisher scope filter**.
+///
+/// **Why walk a lineage at all, when [`find_revocations`] already
+/// re-queries `status=superseded`:** a merely-superseded member is
+/// already visible to a `status=superseded` search pass — the walk buys
+/// nothing there. What the walk buys is robustness to any lineage whose
+/// members carry a *mixed* set of statuses a search pass does not (or
+/// cannot) enumerate: `expired` members, a future [`acdp_types::primitives::Status::Other`]
+/// value (`Status` is an open enum — RFC-ACDP-0004 §4), or a member a
+/// search pass has been made structurally blind to. RFC-ACDP-0013
+/// §8.1 makes `GET /lineages/{id}` an **obligation** to include the
+/// full lineage including retracted versions — so one lineage member
+/// that IS visible to search exposes every other member through this
+/// endpoint, independent of what search itself would ever return for
+/// them. A registry excluding a retracted context from `status=superseded`
+/// search results (RFC-ACDP-0013 §8.2 — normative) is exactly the seed
+/// case this closes; the complementary case — where **every** member of
+/// a lineage is invisible to search (e.g. the lineage head itself was
+/// retracted) — has no live search match to discover the lineage id
+/// from in the first place, and is closed separately by an explicit
+/// `status=retracted` search pass, not by this walk.
+///
+/// Fetches `client.lineage(lineage_id)` (RFC-ACDP-0004 §5.1 defines no
+/// pagination for this endpoint, so a pathological lineage fails loudly
+/// at the client's `MAX_CONTEXT_BYTES` cap rather than truncating) and
+/// verifies every returned member via [`verify_revocation_body`],
+/// pairing each verified member with its `ctx_id` — read from
+/// `ctx.body.ctx_id`, since the lineage linkage travels via the
+/// [`acdp_types::body::FullContext`]/[`Body`] shape, never via a new
+/// [`KeyRevocation`] field (`KeyRevocation` carries no `ctx_id` and
+/// derives no `Hash`, so its public return shape alone cannot feed a
+/// `ctx_id`-keyed dedupe set).
+///
+/// A member that fails §5 verification is skipped exactly as in the
+/// existing search-driven loop — attacker-injected garbage in a lineage
+/// must not poison the set — logged via `tracing::warn!` when the
+/// `tracing` feature is enabled.
+///
+/// **Fails closed, rather than returning an empty vec, when the
+/// lineage itself has no members at all.** The reference registry
+/// returns `Ok(vec![])` for an unrecognized `lineage_id`
+/// (`crates/acdp-server/src/registry/store.rs`), so an empty response
+/// here for a `lineage_id` a live search match just named is the
+/// realistic hostile-or-eventually-consistent shape, not an honest
+/// "nothing here" — the caller must not silently continue with a
+/// partial revocation set. A genuine 404 or transport error from
+/// `client.lineage` propagates unchanged.
+///
+/// This is the neutral building block: no trust-class or publisher
+/// filter is applied here. [`find_revocations_in_lineage`] is a thin
+/// wrapper for a caller that wants every verified member regardless of
+/// scope; [`find_revocations`] and [`find_registry_attested_revocations`]
+/// each apply their own (different) scope filter to the members this
+/// returns.
+async fn walk_revocation_lineage(
+    client: &RegistryClient,
+    resolver: &WebResolver,
+    lineage_id: &LineageId,
+) -> Result<Vec<(CtxId, KeyRevocation)>, AcdpError> {
+    let members = client.lineage(lineage_id).await?;
+    if members.is_empty() {
+        return Err(AcdpError::NotFound(format!(
+            "lineage {} named by a search match has no members on this registry \
+             (unknown or empty lineage) — an empty response for a lineage a live \
+             search match just named is treated as a discovery failure, not an \
+             honest \"nothing here\": never silently continue with a partial \
+             revocation set",
+            lineage_id.as_str(),
+        )));
+    }
+    let mut out = Vec::with_capacity(members.len());
+    for ctx in members {
+        match verify_revocation_body(&ctx.body, resolver).await {
+            Ok(rev) => out.push((ctx.body.ctx_id.clone(), rev)),
+            Err(_e) => {
+                #[cfg(feature = "tracing")]
+                tracing::warn!(
+                    lineage_id = %lineage_id.as_str(),
+                    ctx_id = %ctx.body.ctx_id.as_str(),
+                    error = %_e,
+                    "walk_revocation_lineage: dropped lineage member failing §5 verification"
+                );
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Discover every verified member of a revocation lineage
+/// (RFC-ACDP-0014 §4, RFC-ACDP-0013 §8.1), regardless of
+/// `registry_state.status` and with no trust-class or publisher scope
+/// filter applied.
+///
+/// A thin wrapper over the crate-private lineage walk
+/// (`walk_revocation_lineage`) — see the walk-vs-search rationale
+/// below (in short: `GET /lineages/{id}` is normatively obliged to
+/// include every member, including ones a `status=`-scoped search pass
+/// cannot or does not enumerate, so one search-visible member exposes
+/// the whole lineage through this call). [`find_revocations`] and
+/// [`find_registry_attested_revocations`] both call this internally
+/// (via the same private walk) to widen their own search-driven
+/// discovery; call this function directly when a caller already has a
+/// `lineage_id` in hand (e.g. from a [`acdp_types::search::SearchResult`]
+/// or a previously-verified [`Body`]) and wants every verified member
+/// without those functions' scope filters.
+pub async fn find_revocations_in_lineage(
+    client: &RegistryClient,
+    resolver: &WebResolver,
+    lineage_id: &LineageId,
+) -> Result<Vec<KeyRevocation>, AcdpError> {
+    Ok(walk_revocation_lineage(client, resolver, lineage_id)
+        .await?
+        .into_iter()
+        .map(|(_, rev)| rev)
+        .collect())
+}
+
 /// Discover a producer's key revocations on a registry
 /// (RFC-ACDP-0014 §8): search `type=key-revocation` (and the §10
 /// interim `acdp:key-revocation`) with `agent_id=<producer>`, retrieve
@@ -245,6 +364,17 @@ pub async fn verify_revocation_body(
 /// *registry's* DID, not the producer's, so this producer-scoped query
 /// never returns them (filter 2 above, in addition to the search scope
 /// itself) — call [`find_registry_attested_revocations`] for those.
+///
+/// **Beyond the search passes above, every distinct `lineage_id` named
+/// by a search match is also walked** via the private lineage-walking
+/// helper behind [`find_revocations_in_lineage`] — see that function's
+/// doc for the full rationale. This recovers a lineage member a
+/// `status=`-scoped search pass cannot or does not enumerate (mixed
+/// `expired`/`Other` statuses, or a member a search pass has been made
+/// structurally blind to) as long as at least one member of the same
+/// lineage is still visible to search. Walked members are deduped
+/// against search-found ones by `ctx_id` and pass through the same
+/// publisher/trust-class filter as above.
 pub async fn find_revocations(
     client: &RegistryClient,
     resolver: &WebResolver,
@@ -259,6 +389,7 @@ pub async fn find_revocations(
 
     let mut revocations = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    let mut lineage_ids = std::collections::HashSet::new();
 
     for type_form in ["key-revocation", "acdp:key-revocation"] {
         // Revocations are permanent but supersedable; the registry
@@ -273,6 +404,10 @@ pub async fn find_revocations(
             for _page in 0..MAX_SEARCH_PAGES {
                 let resp = client.search(&params).await?;
                 for m in &resp.matches {
+                    // Free — no extra round trip: every match names its
+                    // own lineage, walked below regardless of whether
+                    // this particular ctx_id turns out to be new.
+                    lineage_ids.insert(m.lineage_id.clone());
                     if !seen.insert(m.ctx_id.as_str().to_string()) {
                         continue;
                     }
@@ -306,6 +441,37 @@ pub async fn find_revocations(
                     Some(cursor) => params.cursor = Some(cursor),
                     None => break,
                 }
+            }
+        }
+    }
+
+    // The lineage walk: recovers members a search pass cannot or does
+    // not enumerate. Each candidate lineage is fetched at most once
+    // (deduped above); an error from the walk (including the
+    // empty/unknown-lineage fail-closed case) propagates and aborts
+    // this whole call — never continue with a partial revocation set.
+    for lineage_id in lineage_ids {
+        let walked = walk_revocation_lineage(client, resolver, &lineage_id).await?;
+        for (ctx_id, rev) in walked {
+            if !seen.insert(ctx_id.as_str().to_string()) {
+                continue;
+            }
+            if rev.publisher == agent_id && rev.trust_class == RevocationTrustClass::ProducerSigned
+            {
+                revocations.push(rev);
+            } else {
+                #[cfg(feature = "tracing")]
+                tracing::warn!(
+                    publisher = %rev.publisher,
+                    trust_class = ?rev.trust_class,
+                    ctx_id = %ctx_id.as_str(),
+                    filter = if rev.publisher != agent_id {
+                        "publisher_scope"
+                    } else {
+                        "trust_class"
+                    },
+                    "find_revocations: dropped lineage-walk candidate outside query scope/trust class"
+                );
             }
         }
     }
@@ -395,6 +561,13 @@ pub async fn find_revocations(
 /// **The same §8 honest caveat as [`find_revocations`] applies**: search
 /// is registry-served, so an empty result is not evidence of absence.
 ///
+/// **Beyond the search passes above, every distinct `lineage_id` named
+/// by a search match is also walked** via the private lineage-walking
+/// helper behind [`find_revocations_in_lineage`] — see that function's
+/// doc for the full rationale. Walked members are deduped against
+/// search-found ones by `ctx_id` and pass through the same
+/// controller/registry-binding filter as above.
+///
 /// **Cost note for callers verifying many contexts.** The single
 /// capabilities fetch above is hoisted *within* one call, but
 /// [`RegistryClient::capabilities`] issues a fresh network round-trip
@@ -423,6 +596,7 @@ pub async fn find_registry_attested_revocations(
 
     let mut revocations = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    let mut lineage_ids = std::collections::HashSet::new();
 
     for type_form in ["key-revocation", "acdp:key-revocation"] {
         // Revocations are permanent but supersedable; the registry
@@ -437,6 +611,10 @@ pub async fn find_registry_attested_revocations(
             for _page in 0..MAX_SEARCH_PAGES {
                 let resp = client.search(&params).await?;
                 for m in &resp.matches {
+                    // Free — no extra round trip: every match names its
+                    // own lineage, walked below regardless of whether
+                    // this particular ctx_id turns out to be new.
+                    lineage_ids.insert(m.lineage_id.clone());
                     if !seen.insert(m.ctx_id.as_str().to_string()) {
                         continue;
                     }
@@ -467,6 +645,37 @@ pub async fn find_registry_attested_revocations(
                     Some(cursor) => params.cursor = Some(cursor),
                     None => break,
                 }
+            }
+        }
+    }
+
+    // The lineage walk: recovers members a search pass cannot or does
+    // not enumerate — see `find_revocations_in_lineage`'s doc for the
+    // full rationale. Each candidate lineage is fetched at most once
+    // (deduped above); a walk error (including the empty/unknown-lineage
+    // fail-closed case) propagates and aborts this whole call — never
+    // continue with a partial revocation set.
+    for lineage_id in lineage_ids {
+        let walked = walk_revocation_lineage(client, resolver, &lineage_id).await?;
+        for (ctx_id, rev) in walked {
+            if !seen.insert(ctx_id.as_str().to_string()) {
+                continue;
+            }
+            if rev.revoked_key_controller == controller
+                && rev
+                    .cross_check_registry_binding(&serving_authority, &caps.registry_did)
+                    .is_ok()
+            {
+                revocations.push(rev);
+            } else {
+                #[cfg(feature = "tracing")]
+                tracing::warn!(
+                    publisher = %rev.publisher,
+                    controller = %rev.revoked_key_controller,
+                    ctx_id = %ctx_id.as_str(),
+                    "find_registry_attested_revocations: dropped lineage-walk candidate \
+                     outside controller scope or failing registry-binding check"
+                );
             }
         }
     }

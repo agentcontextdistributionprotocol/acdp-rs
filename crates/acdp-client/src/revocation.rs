@@ -206,7 +206,9 @@ pub async fn verify_revocation_body(
 ///
 /// Both cases return [`AcdpError::IncompleteLineage`]. A genuine 404 or
 /// transport error from `client.lineage` propagates unchanged (a
-/// different variant, not this one).
+/// different variant, not this one) — all the way out to
+/// [`find_revocations`] and [`find_registry_attested_revocations`],
+/// neither of which catches an `Err` from this function.
 ///
 /// **This does not contradict RFC-ACDP-0004 §5.4** ("if the lineage
 /// exists but the requester is authorized to see zero versions, the
@@ -246,9 +248,9 @@ pub async fn verify_revocation_body(
 /// wrapper for a caller that wants every verified member regardless of
 /// scope; [`find_revocations`] and [`find_registry_attested_revocations`]
 /// each apply their own (different) scope filter to the members this
-/// returns, and each treats a failure from this function as scoped to
-/// that one lineage — never aborting the whole discovery call (see
-/// their docs).
+/// returns, and each propagates a failure from this function via `?`,
+/// aborting the whole discovery call rather than scoping the failure to
+/// one lineage — see their docs.
 ///
 /// `expect_member`, when `Some`, is the `ctx_id` a live search match
 /// named for `lineage_id` — checked against the lineage's
@@ -455,19 +457,24 @@ pub async fn find_revocations_in_lineage(
 /// against search-found ones by `ctx_id` and pass through the same
 /// publisher/trust-class filter as above.
 ///
-/// **A failure walking one lineage is scoped to that lineage, not the
-/// whole call.** If `walk_revocation_lineage` errors for a given
-/// `lineage_id` — empty response, or (per issue #226 Phase 3) a
-/// registry-served member set that does not include the `ctx_id` a
-/// search match actually named for it — that one lineage's contribution
-/// is dropped and every other lineage and every direct search-match
-/// result is still returned. Letting one bad lineage abort the entire
-/// call would be a strictly better outcome for an attacker (suppress
-/// every genuine revocation by poisoning just one lineage) than for the
-/// consumer, which is exactly backwards for a discovery helper whose
-/// job is finding revocations under adversarial conditions. The failure
-/// is still observable, just not fatal: logged via `tracing::warn!` when
-/// the `tracing` feature is enabled.
+/// **A failure walking any one lineage aborts the whole call.** If
+/// `walk_revocation_lineage` errors for a given `lineage_id` — empty
+/// response, or (per issue #226 Phase 3) a registry-served member set
+/// that does not include the `ctx_id` a search match actually named
+/// for it — that error propagates via `?` and this function returns
+/// `Err` rather than a partial `Vec`. A caller cannot distinguish a
+/// `Vec` that omits a compromise window from one that is complete, and
+/// that `Vec` feeds straight into [`effective_boundary`]'s `.min()`
+/// over `compromised_since` (RFC-ACDP-0014 §4): silently dropping a
+/// member with an earlier boundary would move the effective boundary
+/// later, and dropping an entire lineage would make revocation
+/// enforcement inert for it — exactly the "quietly shrink a compromise
+/// window" outcome §4 forbids, and exactly what a hostile registry
+/// gets for free by failing one lineage walk if this were scoped
+/// instead of fatal. This is not a new abort lever either: the same
+/// call already aborts unconditionally on `client.search` and
+/// `client.retrieve` a few lines above, so failing closed here adds no
+/// availability exposure this function does not already have.
 pub async fn find_revocations(
     client: &RegistryClient,
     resolver: &WebResolver,
@@ -560,46 +567,35 @@ pub async fn find_revocations(
     // not enumerate. Each candidate lineage is fetched at most once
     // (deduped above), in discovery order (GAP-B). A walk failure for
     // one lineage — empty response, or a served member set missing the
-    // search-named `ctx_id` (GAP-A) — is scoped to that lineage only
-    // (GAP-D): it is logged and skipped, never propagated, so one bad
-    // lineage cannot suppress every other genuine revocation this call
-    // found.
+    // search-named `ctx_id` (GAP-A) — aborts this whole call via `?`:
+    // a partial `Vec` here is indistinguishable from a complete one to
+    // the caller, and feeds `effective_boundary`'s `.min()` over
+    // `compromised_since` (RFC-ACDP-0014 §4), so silently dropping a
+    // lineage could only ever move the effective compromise boundary
+    // later (or, if the whole set is dropped, make enforcement inert) —
+    // never safer to omit than to fail closed on.
     for lineage_id in &lineage_order {
         let expect = lineage_expect.get(lineage_id.as_str());
-        match walk_revocation_lineage(client, resolver, lineage_id, expect).await {
-            Ok(walked) => {
-                for (ctx_id, rev) in walked {
-                    if !seen.insert(ctx_id.as_str().to_string()) {
-                        continue;
-                    }
-                    if rev.publisher == agent_id
-                        && rev.trust_class == RevocationTrustClass::ProducerSigned
-                    {
-                        revocations.push(rev);
-                    } else {
-                        #[cfg(feature = "tracing")]
-                        tracing::warn!(
-                            publisher = %rev.publisher,
-                            trust_class = ?rev.trust_class,
-                            ctx_id = %ctx_id.as_str(),
-                            filter = if rev.publisher != agent_id {
-                                "publisher_scope"
-                            } else {
-                                "trust_class"
-                            },
-                            "find_revocations: dropped lineage-walk candidate outside query scope/trust class"
-                        );
-                    }
-                }
+        let walked = walk_revocation_lineage(client, resolver, lineage_id, expect).await?;
+        for (ctx_id, rev) in walked {
+            if !seen.insert(ctx_id.as_str().to_string()) {
+                continue;
             }
-            Err(_e) => {
+            if rev.publisher == agent_id && rev.trust_class == RevocationTrustClass::ProducerSigned
+            {
+                revocations.push(rev);
+            } else {
                 #[cfg(feature = "tracing")]
                 tracing::warn!(
-                    lineage_id = %lineage_id.as_str(),
-                    error = %_e,
-                    "find_revocations: lineage walk failed; this lineage's contribution \
-                     is dropped but discovery continues for every other lineage and \
-                     direct search match"
+                    publisher = %rev.publisher,
+                    trust_class = ?rev.trust_class,
+                    ctx_id = %ctx_id.as_str(),
+                    filter = if rev.publisher != agent_id {
+                        "publisher_scope"
+                    } else {
+                        "trust_class"
+                    },
+                    "find_revocations: dropped lineage-walk candidate outside query scope/trust class"
                 );
             }
         }
@@ -708,10 +704,12 @@ pub async fn find_revocations(
 /// document can be added additively later if that turns out to matter
 /// in practice.
 ///
-/// **A failure walking one lineage is scoped to that lineage, not the
-/// whole call** — see [`find_revocations`]'s doc for the identical
-/// rationale (issue #226 Phase 3, GAP-D): one bad or mismatched lineage
-/// must not suppress every other genuine revocation this call found.
+/// **A failure walking any one lineage aborts the whole call** — see
+/// [`find_revocations`]'s doc for the identical rationale (issue #226
+/// Phase 3): a partial `Vec` is indistinguishable from a complete one
+/// to the caller, and feeds the same `effective_boundary` `.min()` this
+/// crate uses to enforce RFC-ACDP-0014 §4, so a dropped lineage must
+/// fail the call rather than silently narrow the result.
 pub async fn find_registry_attested_revocations(
     client: &RegistryClient,
     resolver: &WebResolver,
@@ -799,43 +797,31 @@ pub async fn find_registry_attested_revocations(
     // not enumerate — see `find_revocations_in_lineage`'s doc for the
     // full rationale. Each candidate lineage is fetched at most once
     // (deduped above), in discovery order (GAP-B). A walk failure for
-    // one lineage is scoped to that lineage only (GAP-D): logged and
-    // skipped, never propagated.
+    // one lineage aborts this whole call via `?` — see `find_revocations`
+    // for why a partial result here is unsafe rather than merely
+    // incomplete.
     for lineage_id in &lineage_order {
         let expect = lineage_expect.get(lineage_id.as_str());
-        match walk_revocation_lineage(client, resolver, lineage_id, expect).await {
-            Ok(walked) => {
-                for (ctx_id, rev) in walked {
-                    if !seen.insert(ctx_id.as_str().to_string()) {
-                        continue;
-                    }
-                    if rev.revoked_key_controller == controller
-                        && rev
-                            .cross_check_registry_binding(&serving_authority, &caps.registry_did)
-                            .is_ok()
-                    {
-                        revocations.push(rev);
-                    } else {
-                        #[cfg(feature = "tracing")]
-                        tracing::warn!(
-                            publisher = %rev.publisher,
-                            controller = %rev.revoked_key_controller,
-                            ctx_id = %ctx_id.as_str(),
-                            "find_registry_attested_revocations: dropped lineage-walk \
-                             candidate outside controller scope or failing \
-                             registry-binding check"
-                        );
-                    }
-                }
+        let walked = walk_revocation_lineage(client, resolver, lineage_id, expect).await?;
+        for (ctx_id, rev) in walked {
+            if !seen.insert(ctx_id.as_str().to_string()) {
+                continue;
             }
-            Err(_e) => {
+            if rev.revoked_key_controller == controller
+                && rev
+                    .cross_check_registry_binding(&serving_authority, &caps.registry_did)
+                    .is_ok()
+            {
+                revocations.push(rev);
+            } else {
                 #[cfg(feature = "tracing")]
                 tracing::warn!(
-                    lineage_id = %lineage_id.as_str(),
-                    error = %_e,
-                    "find_registry_attested_revocations: lineage walk failed; this \
-                     lineage's contribution is dropped but discovery continues for \
-                     every other lineage and direct search match"
+                    publisher = %rev.publisher,
+                    controller = %rev.revoked_key_controller,
+                    ctx_id = %ctx_id.as_str(),
+                    "find_registry_attested_revocations: dropped lineage-walk \
+                     candidate outside controller scope or failing \
+                     registry-binding check"
                 );
             }
         }

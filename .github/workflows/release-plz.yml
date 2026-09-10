@@ -50,6 +50,43 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
+      # #231: release-plz bumps the 13 workspace crates but cannot maintain the
+      # three binding lockfiles (separate workspaces, excluded from the root;
+      # release-plz 0.3.x has no hook mechanism). Sync them onto the release PR
+      # branch here. `cargo update --workspace` provably touches ONLY the
+      # workspace path-dep `version = ` lines (32 across the three dirs) and
+      # declines to move third-party pins, so the #196/#225 --locked guarantees
+      # are preserved; the diff guard below hard-fails rather than committing if
+      # cargo ever moves a non-version line. Idempotent: a no-op run exits early.
+      # KNOWN WART (accepted): this push authenticates as GITHUB_TOKEN, which
+      # triggers no new workflow runs, so the release PR's advisory `bindings`
+      # check stays visually stale. Harmless — `bindings` is not a required
+      # context, and the post-merge SDK release workflows (which run --ref main
+      # and hold the real `cargo metadata --locked` gates) see the synced files.
+      - name: Sync binding lockfiles to the release version
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        env:
+          BRANCH: ${{ fromJSON(steps.release.outputs.pr).head_branch }}
+        run: |
+          git fetch origin "$BRANCH"
+          git checkout -B "$BRANCH" FETCH_HEAD
+          for d in bindings/acdp-py bindings/acdp-node bindings/acdp-wasm; do
+            (cd "$d" && cargo update --workspace)
+          done
+          if git diff -U0 -- bindings/ | grep -E '^[+-]' | grep -vE '^(\+\+\+|---)' \
+               | grep -vE '^[+-]version = "' ; then
+            echo "::error::cargo update -w touched a non-version line; aborting"; exit 1
+          fi
+          git diff --quiet -- bindings/ && { echo "lockfiles already in sync"; exit 0; }
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add bindings/acdp-py/Cargo.lock bindings/acdp-node/Cargo.lock bindings/acdp-wasm/Cargo.lock
+          git commit -m 'chore(bindings): sync binding lockfiles to the release version'
+          git push origin HEAD:"$BRANCH"
+          for d in bindings/acdp-py bindings/acdp-node bindings/acdp-wasm; do
+            (cd "$d" && cargo metadata --locked --format-version 1 >/dev/null)
+          done
+
       # When the `acdp` crate itself publishes (not the other workspace crates),
       # notify the crate consumer (acdp-registry-rs) so it opens an auto-bump PR
       # via acdp-ci's bump-consume. App-authenticated (org secrets) — no PAT.

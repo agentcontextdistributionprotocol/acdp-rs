@@ -102,6 +102,45 @@ const methods = {
     },
   }),
 
+  // Reflect the wasm binding's flat function surface for the parity
+  // test. UNLIKE every other method here, the wasm pkg is loaded lazily
+  // — right here, inside the handler, wrapped in try/catch — rather than
+  // at module top level. `bindings/acdp-wasm/pkg/` is a gitignored build
+  // artifact that most contributor machines won't have (no wasm-pack
+  // run), and this worker's module-scoped `node` fixture
+  // (test_parity.py) is required by EVERY existing parity/interop test.
+  // A top-level `await import(...)` that throws when the wasm pkg is
+  // missing — mirroring the acdp-node imports above — would take down
+  // this entire worker process (and therefore every test that uses it)
+  // on any machine without a wasm build, not just the wasm-specific
+  // tests. So: on failure, return a structured `{ available: false,
+  // reason }` instead of throwing; the Python side turns that into a
+  // `pytest.skip` (or a hard failure under ACDP_REQUIRE_WASM_PARITY=1).
+  describe_wasm: async () => {
+    try {
+      const wasmDir = join(here, '..', 'acdp-wasm', 'pkg');
+      const modUrl = pathToFileURL(join(wasmDir, 'acdp_wasm.js')).href;
+      const wasmMod = await import(modUrl);
+      const wasmBytes = readFileSync(join(wasmDir, 'acdp_wasm_bg.wasm'));
+      await wasmMod.default({ module_or_path: wasmBytes });
+      // wasm-bindgen's `--target web` module namespace carries the 25
+      // #[wasm_bindgen] free functions plus its own init machinery
+      // (`default` — the init function itself, re-exported under that
+      // name — and `initSync`) and, in other wasm-bindgen output shapes,
+      // internal helpers prefixed `__`. None of those three are ACDP
+      // surface, so they're excluded here; everything else exported as
+      // a function is a real export to pin.
+      const functions = Object.getOwnPropertyNames(wasmMod)
+        .filter((k) => typeof wasmMod[k] === 'function')
+        .filter((k) => k !== 'default' && k !== 'initSync' && !/^__/.test(k))
+        .map(toSnake)
+        .sort();
+      return { available: true, functions };
+    } catch (err) {
+      return { available: false, reason: String(err?.message ?? err) };
+    }
+  },
+
   // ── Sync primitives (AcdpCanonicalizer / AcdpSsrfPolicy) ──────────────
   canonicalize: (p) => ({ result: AcdpCanonicalizer.canonicalize(p.json) }),
 
@@ -345,7 +384,7 @@ for await (const line of rl) {
   try {
     const handler = methods[req.method];
     if (!handler) throw new Error(`unknown method: ${req.method}`);
-    resp = { id: req.id, ok: true, result: handler(req.params ?? {}) };
+    resp = { id: req.id, ok: true, result: await handler(req.params ?? {}) };
   } catch (err) {
     resp = { id: req.id, ok: false, error: String(err?.message ?? err) };
   }

@@ -8,13 +8,16 @@ NODE_DIR  := bindings/acdp-node
 WASM_DIR  := bindings/acdp-wasm
 INTEROP   := bindings/interop
 
-.PHONY: help test sdk-py sdk-node interop sdk-all clean-bindings ci-bindings audit-bindings
+.PHONY: help test sdk-py sdk-node sdk-wasm interop sdk-all clean-bindings ci-bindings audit-bindings
 
 help:
 	@echo "Targets:"
 	@echo "  test          - cargo test --all-features on the root crate"
 	@echo "  sdk-py        - maturin develop + pytest in $(PY_DIR)"
 	@echo "  sdk-node      - npm install + napi build:debug + node --test in $(NODE_DIR)"
+	@echo "  sdk-wasm      - wasm-pack build --target web --out-dir pkg in $(WASM_DIR)"
+	@echo "                  (optional: enables the wasm parity checks in \`make interop\`;"
+	@echo "                  not required for interop/CI otherwise)"
 	@echo "  sdk-all       - build both SDKs (no tests)"
 	@echo "  interop       - sdk-py + sdk-node + pytest $(INTEROP)"
 	@echo "  audit-bindings - cargo-deny advisories ($(PY_DIR), $(NODE_DIR), $(WASM_DIR)) + npm audit"
@@ -40,6 +43,14 @@ sdk-node:
 	cd $(NODE_DIR) && npm install
 	cd $(NODE_DIR) && npm run build:debug
 	cd $(NODE_DIR) && node --test tests/*.mjs
+
+# ── wasm SDK (optional convenience) ─────────────────────────────────────
+# Not part of `make interop` or CI's default path: bindings/acdp-wasm/pkg
+# is gitignored and most contributor machines won't have wasm-pack. Build
+# it here to turn the pytest-skipped wasm parity checks in
+# bindings/interop/test_parity.py on locally.
+sdk-wasm:
+	cd $(WASM_DIR) && wasm-pack build --target web --out-dir pkg
 
 sdk-all: sdk-py-build sdk-node-build
 

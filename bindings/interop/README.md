@@ -58,8 +58,53 @@ never silently drift:
   (`canonicalize` / `content_hash`) and `AcdpSsrfPolicy` (the stable
   reason taxonomy: Python's `SsrfRejected.reason` vs Node's `Error.code`)
   are cross-checked across both bindings in `test_interop.py`.
-* **Version parity** — `pyproject.toml`, both `Cargo.toml`s, and
-  `package.json` must all carry the same version.
+* **wasm surface parity** — `bindings/acdp-wasm` is a flat
+  `#[wasm_bindgen]` function surface (25 free functions, no classes), not
+  a class surface like py/node, so it gets its own `wasm` block in
+  `expected_surface.json` rather than an entry under `classes`. That block
+  pins the full export list (`functions`) and classifies every py/node
+  class against it (`class_map`): a class with no wasm counterpart at all
+  maps to `"absent"`; a present class's methods default to the identical
+  snake_case name, with `aliases` naming the exceptions (a wasm function
+  name, or `null` for a method with no wasm counterpart); `wasm_only`
+  lists wasm exports with no class counterpart (e.g. `resolve_did_key`).
+  Some aliases exist because wasm shipped a different name for the same
+  operation before this guard existed (e.g. `verify_signature` →
+  `verify_signature_ed25519`, `AcdpMerkle.leaf_hash` → `merkle_leaf_hash`)
+  — **renaming a shipped npm export is a breaking change**, so those
+  divergences are pinned as permanent aliases here, never "fixed" by
+  renaming one side to match the other. Four invariants are enforced (one
+  test function each, in `test_parity.py`): the reflected wasm surface
+  equals `wasm.functions`; every class method resolves (via alias or
+  identity) to a real wasm function; `wasm.functions` equals exactly the
+  union of every resolved class method and `wasm_only` (so a new wasm
+  export can never go unclassified); and the manifest's own internal
+  structure is consistent (alias keys/values and `wasm_only` entries all
+  point somewhere real). The wasm pkg is a gitignored build artifact
+  (`bindings/acdp-wasm/pkg/`, built via `make sdk-wasm` or `wasm-pack
+  build --target web --out-dir pkg`) most machines won't have, so these
+  tests `pytest.skip` with a message pointing at `make sdk-wasm` when it's
+  absent — unless `ACDP_REQUIRE_WASM_PARITY=1` (set in CI), which turns
+  the skip into a hard failure. `make interop` does NOT require wasm-pack.
+  Deliberately **not** covered here: per-parameter arity. Python's kwargs
+  (~20 real parameters on the widest methods) vs. Node's single
+  camelCase options object need per-binding normalization to compare at
+  all, and naive `Function.length` reflection isn't a shortcut on
+  either JS-hosted binding: measured against this repo's own build,
+  Node's native (napi-rs) methods report `Function.length === 0`
+  regardless of true arity (no JS-level signal at all), while
+  `acdp-wasm`'s generated wrappers currently report the full accurate
+  arity even for methods with optional trailing `Option<T>` params —
+  correct today only because this wasm-bindgen version doesn't lower
+  those to JS default values, which is an implementation detail, not a
+  guarantee. Name-only parity is what ships in this phase; a real arity
+  guard (required + total arity per binding, sourced from
+  `inspect.signature` / the `.d.ts` files rather than
+  `Function.length`) is tracked as a follow-up issue:
+  https://github.com/agentcontextdistributionprotocol/acdp-rs/issues/242
+* **Version parity** — `pyproject.toml`, both `Cargo.toml`s,
+  `acdp-wasm/Cargo.toml`, and `package.json` must all carry the same
+  version.
 
 When you intentionally change the public API, update
 `expected_surface.json` (and both bindings) in the same change. The guard

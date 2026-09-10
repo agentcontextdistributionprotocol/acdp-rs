@@ -78,5 +78,57 @@
       "parse",
       "receipt_key_for_algorithm"
     ]
+  },
+  "wasm": {
+    "_comment": "Flat #[wasm_bindgen] surface of bindings/acdp-wasm (25 free functions, no classes). `functions` pins the full export list in snake_case. `class_map` classifies every `classes` entry against wasm: a class mapped to \"absent\" has no wasm counterpart at all; a present class's methods default to the identical snake_case name, with `aliases` naming the exceptions (value = wasm function name, or null = this one method has no wasm counterpart). `wasm_only` lists exports with no class counterpart. Renaming a shipped npm export is BREAKING — divergences live here as aliases forever (or until an acdp-wasm major).",
+    "functions": [
+      "build_log_leaf",
+      "build_witness_cosignature",
+      "canonical_preimage",
+      "classify_under_revocation",
+      "evaluate_witness_quorum",
+      "explain_hash_mismatch",
+      "fingerprint_ed25519",
+      "merkle_leaf_hash",
+      "merkle_node_hash",
+      "merkle_root_hash",
+      "parse_key_revocation",
+      "resolve_did_key",
+      "verify_body_offline",
+      "verify_content_hash",
+      "verify_ctx_id_binding",
+      "verify_lifecycle_event",
+      "verify_lineage_head_receipt",
+      "verify_log_checkpoint",
+      "verify_log_consistency",
+      "verify_log_inclusion",
+      "verify_publish_request_offline",
+      "verify_receipt",
+      "verify_signature_ed25519",
+      "verify_signature_p256",
+      "verify_witness_cosignature"
+    ],
+    "class_map": {
+      "AcdpCanonicalizer": "absent",
+      "AcdpDid": "absent",
+      "AcdpDidDocument": "absent",
+      "AcdpMerkle": {
+        "aliases": {
+          "leaf_hash": "merkle_leaf_hash",
+          "node_hash": "merkle_node_hash",
+          "root_hash": "merkle_root_hash"
+        }
+      },
+      "AcdpP256Producer": "absent",
+      "AcdpProducer": "absent",
+      "AcdpSsrfPolicy": "absent",
+      "AcdpVerifier": {
+        "aliases": {
+          "verify_signature": "verify_signature_ed25519",
+          "fingerprint_ed25519_b64": "fingerprint_ed25519"
+        }
+      }
+    },
+    "wasm_only": ["resolve_did_key"]
   }
 }

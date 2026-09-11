@@ -271,3 +271,50 @@ and dated; no code changes from this pass except item 5, already shipped in PR #
 (`rust-cache` ordering) was recorded in an earlier revision as a confirmed real gap
 needing a workflow reorder and a follow-up issue; that was wrong and has been retracted
 above — no reorder and no follow-up issue are needed.
+
+## issues-240-242-seamb-wave — /reconcile, 2026-09-10
+
+One `UNCONFIRMED` entry was in scope at the end of this plan. Settled by Opus under the
+standing delegation; no owner decision was required and none is implied.
+
+**1. The napi-rs half of the binding-toolchain pinning entry — CONFIRMED, resolved.**
+Shipped in Phase 1 (PR #244, `f241b2f`): `bindings/acdp-node/package-lock.json` is tracked,
+`@napi-rs/cli` is pinned to exact `3.8.6` in both manifest and lockfile, and both
+`bindings.yml` and `bindings-release.yml` assert the resolved version after `npm install`.
+Proven live — `acdp-node (node 20/22)` pass on PR #244, and `interop` executed for the first
+time since #229 merged.
+
+**2. The maturin half — DEFERRED, and now tracked as #252.**
+`bindings.yml:79` and `:315` install `'maturin>=1.5,<2.0'` (and an unpinned `pytest`) from an
+open range. Same "re-resolves silently" shape as #240, deliberately NOT fixed in this wave.
+
+*Reasoning, recorded so it is not re-litigated:* the two are not equivalent in severity, and
+flattening them would be wrong. `@napi-rs/cli` **generates the committed `index.js`/`index.d.ts`
+that ship to consumers** — its drift was invisible (no lockfile diff to review) and
+consequential (it silently disabled two CI guards). maturin is a build tool whose output is a
+wheel; it does not generate committed source that a guard diffs, so a bump is far likelier to
+fail loudly than to silently alter a checked-in artifact.
+
+*What changed:* it moved out of a gitignored plan file and this register into a tracked issue
+(#252) with three costed options. That is the actual gap that was closed — the item was
+invisible for two waves, not unanalyzed.
+
+**3. `npm ci` — REJECTED on measurement, tracked as #249.**
+Not an `ASSUMPTIONS.md` entry, recorded here because the owner named `npm ci` as the intended
+fix for #240 and this run did not ship it. Measured: `npm ci` fails `EUSAGE / Missing:
+@agentcontextdistributionprotocol/acdp-*-* from lock file`, because `package.json` declares
+self-referential `optionalDependencies` on its own four platform packages at the manifest
+version while the highest published is 0.8.5. `--omit=optional` does not help; rewriting to
+0.8.5 makes it succeed, isolating the cause. **Structural, not incidental** — the manifest
+version always leads the published version, so `npm ci` would break after every bump even with
+npm publishing healthy. A second independent blocker: `bindings-release.yml:160-165` stamps the
+version before installing.
+
+This was reported to the owner before Phase 1 began and the corrected approach
+(lockfile + exact pin, keep `npm install`) was taken with that stated. **It was also validated
+by the 0.11.0 release itself:** the binding release workflow stamps `package.json` to the
+release version while the committed lock still reads 0.10.0, and `npm install` self-heals that
+silently. `npm ci` would have hard-failed the release.
+
+**Owner verdict:** none recorded for items 1-3. All three were settled by Opus under the
+standing delegation for this run and remain **pending the owner's review**.

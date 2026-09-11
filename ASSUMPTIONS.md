@@ -468,7 +468,14 @@
   `needs: [... acdp-node ...]`) is restored as a side effect: the guard now runs against a
   real, reviewable pin instead of a floating caret with no committed lock. The maturin
   half (`pip install 'maturin>=1.5,<2.0'`, an open range with no pin) was untouched by this
-  phase and stays UNCONFIRMED/open, tracked separately.
+  phase and stays open — **now tracked as acdp-rs#252** (filed 2026-09-10 during this plan's
+  `/reconcile` pass) rather than living only in this file. Disposition: **DEFERRED, not
+  resolved.** Reasoning, recorded so it is not re-litigated: `@napi-rs/cli` GENERATES the
+  committed `index.js`/`index.d.ts` that ship to consumers, so its drift was both invisible
+  and consequential; maturin is a build tool whose output is a wheel and does not generate
+  committed source that a guard diffs, so a bump there is far likelier to fail loudly than to
+  silently alter a checked-in artifact. Lower severity, same shape. `pytest` is unpinned on the
+  same two lines (`bindings.yml:79`, `:315`) and should be handled together with it.
 
 ## `Swatinem/rust-cache` runs before the `--locked` gate in three workflows
 - **Plan:** plans/issues-196-199-215-216-followups.md (Phase 2, #196a)

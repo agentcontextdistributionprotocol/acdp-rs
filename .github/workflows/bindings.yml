@@ -280,17 +280,19 @@ jobs:
   interop:
     name: interop (python ↔ node)
     runs-on: ubuntu-latest
-    needs: [acdp-py, acdp-node]
+    needs: [acdp-py, acdp-node, acdp-wasm]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           toolchain: stable
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2.9.1
         with:
           workspaces: |
             bindings/acdp-py
             bindings/acdp-node
+            bindings/acdp-wasm
       - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
@@ -317,11 +319,23 @@ jobs:
         run: |
           npm install
           npm run build:debug -- -- --locked
+      - uses: taiki-e/install-action@0751bff5da373f43f04fdc57a72795931a822bd7 # wasm-pack
+        with:
+          tool: wasm-pack@0.15.0
+          # A version absent from this SHA's manifest must fail the job, not
+          # silently rebuild from QuickInstall (a third-party source) via
+          # install-action's own `fallback` default. See docs/supply-chain.md
+          # "Pinned-tool inventory".
+          fallback: none
+      - name: Build the wasm SDK
+        run: cd bindings/acdp-wasm && wasm-pack build --target web --out-dir pkg
       # Whole dir: cross-language behavioral parity (test_interop.py) AND
       # the API-surface + version drift guards (test_parity.py). Fails the
       # build if the two SDKs ever diverge in surface, behavior, or version.
       - name: Cross-language interop + parity pytest
         working-directory: bindings/interop
+        env:
+          ACDP_REQUIRE_WASM_PARITY: "1"
         run: pytest -v
 
   bindings-deny:

@@ -7,10 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.11.0...acdp-v0.12.0) - 2026-09-11
+
 ### Fixed
 
 - *(client)* [**breaking**] propagate transient verification failures in revocation
-  discovery ([#248](https://github.com/agentcontextdistributionprotocol/acdp-rs/issues/248))
+  discovery ([#248](https://github.com/agentcontextdistributionprotocol/acdp-rs/issues/248),
+  [#253](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/253))
 
   `find_revocations`, `find_registry_attested_revocations`, and the lineage walk behind
   `find_revocations_in_lineage` used to swallow *every* `verify_revocation_body` failure for
@@ -37,6 +40,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per `AcdpError::is_transient()`) rather than silently under-reporting revocations. No public
   signature changed, so this break is invisible to `cargo-semver-checks`; the version bump is
   the signal.
+
+### Other
+
+- *(reconcile)* dispose the binding-toolchain pinning assumption
 
 ## [0.11.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.10.1...acdp-v0.11.0) - 2026-09-11
 

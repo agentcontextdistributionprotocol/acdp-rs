@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-client-v0.11.0...acdp-client-v0.12.0) - 2026-09-11
+
+### Fixed
+
+- *(client)* [**breaking**] propagate transient verification failures in revocation discovery ([#248](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/248)) ([#253](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/253))
+
 ## [0.11.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-client-v0.10.1...acdp-client-v0.11.0) - 2026-09-11
 
 ### Fixed

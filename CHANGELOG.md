@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.11.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.10.1...acdp-v0.11.0) - 2026-09-11
 
+### Fixed
+
+- *(client)* [**breaking**] make `fetch_report*` honor the caller's `VerificationPolicy`
+  ([#245](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/245))
+
+  `fetch_report`, `fetch_report_with_fetcher` and `fetch_report_diagnose` never called the
+  verification spine: they hardcoded `key_status: CurrentlyAuthorized` and
+  `verified_receipt: None`, so `policy.receipts`, `policy.revocations` and — on the diagnose
+  path — `policy.allow_unknown_status` were silently ignored. They now honor the policy.
+
+  **Behavior changes in both directions. Two fire under `VerificationPolicy::default()` with
+  no caller opt-in:**
+
+  - A present-but-invalid registry receipt is now rejected with `invalid_receipt` where it was
+    previously accepted (fail-closed tightening).
+  - A key rotated out of `assertionMethod` but backed by a verified receipt now verifies as
+    `HistoricallyAuthorized` where it previously failed with `key_not_authorized` — **a
+    deliberate loosening**, matching what `fetch_with_policy` has always done.
+
+  Also tightened, but only for callers who set the relevant field: `ReceiptPolicy::Require`
+  with no receipt now fails; a `revocations.known` entry covering the signing key is now
+  enforced; and `allow_unknown_status: false` now withholds the handle on the diagnose path.
+
+  `fetch_report_diagnose` never starts returning `Err` — it withholds the handle and records
+  the reason in the new `VerificationReport::policy_phase_error`.
+
+  **Callers pinned to `VerificationPolicy::strict_v0_1_0()` are unaffected**: the report family
+  previously behaved as that policy, so their outcomes are byte-identical.
+
+  No public signature changed (`cargo semver-checks` is clean); the minor bump is for the
+  behavioral break, which it cannot see.
+
 ### Other
 
 - *(interop)* pin required and total arity across all three bindings ([#242](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/242))

@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- *(client)* [**breaking**] propagate transient verification failures in revocation
+  discovery ([#248](https://github.com/agentcontextdistributionprotocol/acdp-rs/issues/248))
+
+  `find_revocations`, `find_registry_attested_revocations`, and the lineage walk behind
+  `find_revocations_in_lineage` used to swallow *every* `verify_revocation_body` failure for
+  a discovered candidate, including transport failures — a producer's `did:web` host being
+  unreachable, rate-limited, or otherwise un-askable. Since `classify_under_revocation(&[],
+  …)` treats an empty revocation set as "proceed," a candidate that could not be *checked*
+  read identically to one that was checked and found clean: anyone able to disrupt a
+  producer's DID host (or a lineage member's) could make a real revocation vanish from
+  discovery, invisibly.
+
+  **Behavior change.** A transient failure (`AcdpError::is_transient() == true` —
+  `KeyResolutionUnreachable`, `RateLimited`, `CrossRegistryResolutionFailed`,
+  `RegistryInternal`, `Http`) for any candidate now makes all three functions return `Err`
+  instead of a possibly-incomplete `Ok(vec![])`/`Ok(vec![...])`. A *permanent* verification
+  failure (bad signature, hash mismatch, schema violation, a DID that resolves but denies the
+  key) is still dropped with a `tracing::warn!` (behind the `tracing` feature) exactly as
+  before — that case cannot manufacture a false authorization, so it stays fail-open to avoid
+  handing a hostile registry a one-garbage-candidate denial-of-service lever.
+
+  **Who is affected:** any caller of `find_revocations`, `find_registry_attested_revocations`,
+  or `find_revocations_in_lineage` — directly, or indirectly via the discovery helpers a
+  caller has wired into its own `RevocationPolicy.known` assembly — behind a producer or
+  registry DID host that is sometimes unreachable. Such a call now surfaces `Err` (retryable
+  per `AcdpError::is_transient()`) rather than silently under-reporting revocations. No public
+  signature changed, so this break is invisible to `cargo-semver-checks`; the version bump is
+  the signal.
+
 ## [0.11.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.10.1...acdp-v0.11.0) - 2026-09-11
 
 ### Fixed

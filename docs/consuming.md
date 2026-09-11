@@ -155,6 +155,80 @@ let policy = VerificationPolicy::strict_v0_1_0();   // == VerificationPolicy::de
 > profile is the only one the `acdp-consumer` conformance suite covers. To
 > apply a custom policy use `fetch_with_policy(&client, &resolver, &ctx_id, &policy)`.
 
+### Revocation auto-discovery
+
+By default `VerificationPolicy::revocations.known` is caller-supplied: you
+look up revocations yourself and hand the list to the policy, and
+verification enforces them but issues no network calls of its own for
+this phase. `RevocationPolicy::with_discovery` opts a policy into having
+verification look revocations up itself (RFC-ACDP-0014 §8), in addition
+to (not instead of) whatever `known` already carries:
+
+```rust,no_run
+# #[cfg(feature = "client")]
+# fn build() -> acdp::client::VerificationPolicy {
+use acdp::client::{RevocationDiscovery, RevocationPolicy, VerificationPolicy};
+
+let policy = VerificationPolicy {
+    revocations: RevocationPolicy::new(vec![])
+        .with_discovery(RevocationDiscovery::producer_signed_only()),
+    ..VerificationPolicy::strict_v0_1_0()
+};
+# policy
+# }
+```
+
+`RevocationDiscovery` has no `Default` — construct it via
+`producer_signed_only()` or `all_trust_classes()`. The two searches are
+distinct trust classes: producer-signed revocations are always searched
+once discovery is on, while registry-attested revocations (the §6
+"producer lost every key" fallback) are searched only when
+`include_registry_attested` is `true` (`all_trust_classes()`), because
+that search unconditionally fetches the registry's capabilities
+document and roughly doubles worst-case discovery cost — a
+cost/availability default, not a claim that registry-attested
+revocations matter less.
+
+**`on_failure`: `FailClosed` vs `ProceedWithKnown`.** When discovery
+itself fails — a transport error, or the search-safety-cap error
+`AcdpError::SearchTruncated` — `DiscoveryFailurePolicy::FailClosed`
+(the default) fails verification. `ProceedWithKnown` instead proceeds
+using `known` alone and records the failure, retrievable via both
+`VerifiedContext::revocation_discovery_failure()` and
+`VerificationReport::revocation_discovery`. Choose `ProceedWithKnown`
+with open eyes: `SearchTruncated` and an ordinary transport error (e.g.
+a 503) both take this same path, but they are **not** equivalent.
+`SearchTruncated` means "this producer has more revocations than we
+will page through" — a hostile producer or registry can pad the search
+result set specifically to exhaust the page cap, hiding a real
+revocation from discovery — an attacker-inducible security downgrade,
+not merely a transient blip like a 503.
+
+**`total_timeout` requires a Tokio time driver.** Discovery wraps both
+searches in a single `tokio::time::timeout(discover.total_timeout, ..)`,
+which requires the executing runtime to have its time driver enabled
+(`enable_time`, on by default under `#[tokio::main]` / `#[tokio::test]`,
+but not under a hand-built `Builder::new_current_thread()` runtime
+unless `.enable_time()` / `.enable_all()` is called). Calling any
+`_with_policy` or `fetch_report*` entry point with `discover: Some(..)`
+from a runtime without the time driver **panics**, it does not return
+`Err`.
+
+**Where discovery is, and is not, reachable.** All five
+policy-taking entry points — `fetch_with_policy`,
+`fetch_current_with_policy`, `fetch_report`, `fetch_report_diagnose`,
+and `fetch_report_with_fetcher` — honor `discover` through the shared
+verification pipeline. Two paths structurally cannot carry it:
+
+- `fetch` and `fetch_current` hardcode `VerificationPolicy::default()`
+  and take no policy argument at all; use the `_with_policy` forms if
+  you need discovery.
+- `CrossRegistryResolver` has no policy injection point (it builds its
+  own internal policy for the lineage walk), so cross-registry
+  `derived_from` resolution never discovers revocations. This is a
+  known limitation, not an oversight — see the issue #248 plan's
+  LIM-1/LIM-2.
+
 ### Diagnostics: fetch_report
 
 When you need to know *which* stage failed rather than just that it did, use
@@ -193,6 +267,7 @@ assert!(report.schema_ok && report.body_hash_ok && report.signature_ok);
 | `ctx_id_ok` | the served body's `ctx_id` matched the one requested (RFC-ACDP-0006 §4.1 step 7, NORMATIVE). |
 | `key_status` | the real `KeyAuthorization` verdict once the receipt/revocation/signature phases ran and passed; `None` if a top-level probe failed first (so those phases never ran) or one of them failed. |
 | `policy_phase_error` | which of the receipt/revocation/signature/unknown-status phases failed, if one did; `None` when every phase passed or none ran. |
+| `revocation_discovery` | `Some(Ok(DiscoveryOutcome))` / `Some(Err(AcdpError))` when `policy.revocations.discover` was `Some`, else `None`. Counts *discovered* revocations only — never `policy.revocations.known` — so it stays meaningful when discovery is off. See "Revocation auto-discovery" above. |
 
 `fetch_report_with_fetcher` additionally fetches and verifies external
 `data_ref` locations (see below).

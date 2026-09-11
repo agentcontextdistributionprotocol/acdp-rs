@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.10.1...acdp-v0.11.0) - 2026-09-11
+
+### Other
+
+- *(interop)* pin required and total arity across all three bindings ([#242](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/242))
+- *(bindings)* track the npm lockfile and pin @napi-rs/cli exactly ([#240](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/240))
+- *(assumptions)* record #240 as evidence for the deferred npm ci decision
+- *(interop)* add a wasm parity manifest and harness ([#229](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/229))
+
 ## [0.10.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.10.0...acdp-v0.10.1) - 2026-09-10
 
 ### Added

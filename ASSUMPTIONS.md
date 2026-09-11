@@ -431,7 +431,17 @@
   maturin one is lower-severity (an open semver range on a single build tool, not the
   publishable artifact's own dependency graph) but has the same "re-resolves silently"
   shape.
-- **Status:** UNCONFIRMED
+- **Status:** UNCONFIRMED — **but now evidenced. See acdp-rs#240 (filed 2026-09-10 during the
+  issues-224-226-229-231-234 wave).** The deferred `npm install` → `npm ci` change is no longer
+  hypothetical: the unpinned `"@napi-rs/cli": "^3.8.6"` caret range combined with a gitignored
+  `bindings/acdp-node/package-lock.json` (`.gitignore:32`) caused CI to resolve a newer napi-rs
+  whose codegen differs, so the committed `index.js`/`index.d.ts` are reported stale with ZERO
+  source changes. That reddens `acdp-node (node 20/22)` on every `bindings.yml` run, and because
+  `interop` declares `needs: [... acdp-node ...]`, it also SKIPS the interop job — silently
+  disabling both the NAPI staleness guard and the #229 wasm-parity suite. The "own blast radius"
+  reasoning for deferring still stands as written; what has changed is the cost of NOT doing it,
+  which is now two guards not running rather than a tidiness concern. Tracked in #240 with the
+  concrete options; this entry stays UNCONFIRMED only because the fix itself has not been made.
 
 ## `Swatinem/rust-cache` runs before the `--locked` gate in three workflows
 - **Plan:** plans/issues-196-199-215-216-followups.md (Phase 2, #196a)

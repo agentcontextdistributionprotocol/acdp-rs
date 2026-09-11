@@ -116,6 +116,30 @@ pub enum AcdpError {
     #[error("search truncated: {0}")]
     SearchTruncated(String),
 
+    /// Locally detected: RFC-ACDP-0014 §8 revocation auto-discovery
+    /// (`RevocationPolicy::discover` in `acdp-client`) failed under
+    /// `DiscoveryFailurePolicy::FailClosed`. Not a wire code — the same
+    /// rationale as [`AcdpError::ContextIdMismatch`],
+    /// [`AcdpError::IncompleteLineage`], and [`AcdpError::SearchTruncated`]:
+    /// this is a client-local decision about how to react to a failure
+    /// the registry already reported some other way, so it wraps that
+    /// failure rather than inventing a new wire vocabulary entry for it.
+    /// `source` is boxed because [`AcdpError`] derives only `Debug` and
+    /// [`std::error::Error`] (no `Clone`/`PartialEq`), so an unboxed
+    /// recursive field would need those bounds threaded through the
+    /// whole enum for no benefit.
+    #[error("revocation auto-discovery failed: {source}")]
+    RevocationDiscoveryFailed {
+        /// The underlying error discovery hit — typically a transport
+        /// failure from the search or lineage-walk requests
+        /// (`AcdpError::KeyResolutionUnreachable`, `AcdpError::Http`,
+        /// …) or `AcdpError::SearchTruncated` from exhausting a
+        /// discovery safety cap. [`AcdpError::is_transient`] delegates
+        /// to this field, so a retry-aware caller still gets a correct
+        /// answer through the wrapper.
+        source: Box<AcdpError>,
+    },
+
     /// Wire code: `hash_mismatch`. The remote registry rejected a
     /// publish request because its independent hash recomputation did
     /// not match the producer-supplied `content_hash`. Distinct from
@@ -348,7 +372,15 @@ impl AcdpError {
     /// All cryptographic, schema, and authorization errors are NOT
     /// transient: a malformed body or invalid signature will not
     /// magically validate on retry.
+    ///
+    /// [`AcdpError::RevocationDiscoveryFailed`] is a wrapper, not a
+    /// wire code, so it is exempted from the list above and instead
+    /// delegates to its own `source` — a retry-aware caller unwrapping
+    /// the wrapper still gets the right answer.
     pub fn is_transient(&self) -> bool {
+        if let AcdpError::RevocationDiscoveryFailed { source } = self {
+            return source.is_transient();
+        }
         matches!(
             self,
             AcdpError::KeyResolutionUnreachable(_)

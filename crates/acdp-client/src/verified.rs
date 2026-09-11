@@ -6,6 +6,7 @@ use acdp_did::WebResolver;
 use acdp_primitives::error::AcdpError;
 use acdp_types::{body::FullContext, primitives::CtxId};
 use acdp_verify::Verifier;
+use std::time::Duration;
 
 /// Consumer-tunable strictness for [`VerifiedContext::fetch_with_policy`],
 /// [`VerifiedContext::fetch_current_with_policy`], and the
@@ -159,7 +160,16 @@ impl Default for VerificationPolicy {
 /// those from
 /// [`find_registry_attested_revocations`](crate::revocation::find_registry_attested_revocations)
 /// instead.
+///
+/// `#[non_exhaustive]`: this struct grew a second field
+/// ([`Self::discover`], RFC-ACDP-0014 §8 auto-discovery) after having
+/// shipped with exactly one, and a caller constructing this with a
+/// bare struct literal would otherwise break on every future field the
+/// same way. Construct with [`Self::new`] (equivalent to today's
+/// `RevocationPolicy { known }`) and, when opting into discovery,
+/// [`Self::with_discovery`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct RevocationPolicy {
     /// Verified revocations to enforce, matched against the signing
     /// key's RFC-ACDP-0010 §6 fingerprint. The §4 earliest-
@@ -179,6 +189,189 @@ pub struct RevocationPolicy {
     /// producer/trust-class scope filter. Populate `known` from one of
     /// these rather than hand-assembling a lineage.
     pub known: Vec<acdp_types::revocation::KeyRevocation>,
+
+    /// RFC-ACDP-0014 §8 auto-discovery configuration. `None` (the
+    /// default) is exactly today's behavior: the caller supplies
+    /// everything via [`Self::known`] and this phase does no network
+    /// I/O of its own. `Some` opts into running
+    /// [`find_revocations`](crate::revocation::find_revocations) and,
+    /// depending on [`RevocationDiscovery::include_registry_attested`],
+    /// [`find_registry_attested_revocations`](crate::revocation::find_registry_attested_revocations)
+    /// as part of verification, merging their results with
+    /// [`Self::known`].
+    pub discover: Option<RevocationDiscovery>,
+}
+
+impl RevocationPolicy {
+    /// Construct a policy from a caller-supplied revocation set with
+    /// discovery left off (`discover: None`) — the same shape as the
+    /// bare `RevocationPolicy { known }` literal this struct's
+    /// `#[non_exhaustive]` retires.
+    #[must_use]
+    pub fn new(known: Vec<acdp_types::revocation::KeyRevocation>) -> Self {
+        Self {
+            known,
+            discover: None,
+        }
+    }
+
+    /// Opt into RFC-ACDP-0014 §8 auto-discovery on top of any
+    /// caller-supplied [`Self::known`] revocations. See
+    /// [`RevocationDiscovery`] for cost and the required explicit
+    /// trust-class choice.
+    #[must_use]
+    pub fn with_discovery(mut self, discovery: RevocationDiscovery) -> Self {
+        self.discover = Some(discovery);
+        self
+    }
+}
+
+/// RFC-ACDP-0014 §8 revocation auto-discovery configuration.
+///
+/// When set on [`RevocationPolicy::discover`], this instructs
+/// verification to look up revocations itself — via
+/// [`find_revocations`](crate::revocation::find_revocations) and,
+/// when [`Self::include_registry_attested`] is `true`, additionally
+/// [`find_registry_attested_revocations`](crate::revocation::find_registry_attested_revocations)
+/// — instead of relying solely on [`RevocationPolicy::known`].
+///
+/// # Cost
+///
+/// Discovery is expensive, and every request it issues is **serial**.
+/// `MAX_SEARCH_PAGES = 10` (`crate::revocation`) bounds search
+/// round-trips *per `(type_form, status)` pair*, and there are **6**
+/// such pairs (2 type forms × 3 statuses) — so up to 60 search
+/// requests, each of which can name up to 100 per-candidate context
+/// retrieves (`GET /contexts/{id}`, capped at 1 MB apiece), for up to
+/// **6,000 + 60 + 100 = 6,160 requests / ~6.1 GB** in the worst case
+/// for *one* of the two discovery functions. The retrieve fan-out is
+/// **not** bounded by `MAX_LINEAGE_WALKS = 100` — that cap is only
+/// checked *after* the retrieves have already gone out. With
+/// [`Self::include_registry_attested`] set, both functions run:
+/// **≈12,321 requests / ~12.2 GB** worst case for the pair (the extra
+/// 1 is the unconditional `client.capabilities()` fetch
+/// `find_registry_attested_revocations` makes).
+///
+/// [`Self::total_timeout`] is an **availability bound, not a bytes or
+/// memory bound**: it stops verification from hanging forever against
+/// a slow or hostile registry, but a hostile registry on a fast link
+/// can still serve gigabytes of legitimate-looking traffic inside the
+/// window — the 1 MB cap applies per request, not in aggregate, and
+/// verified revocations accumulate in a `Vec` for the call's duration.
+/// There is no request-count or byte budget in this version, and no
+/// cache: every call re-discovers from scratch. A caller verifying
+/// many contexts against the same producer should discover once
+/// itself and pass the results via [`RevocationPolicy::known`] instead
+/// of setting `discover` on every call — the same hoisting guidance
+/// `crate::revocation`'s `find_registry_attested_revocations` doc
+/// already gives callers of that function directly (see its "Cost
+/// note for callers verifying many contexts").
+///
+/// # No `Default`
+///
+/// This type deliberately has **no [`Default`] impl** — construct it
+/// via [`Self::producer_signed_only`] or [`Self::all_trust_classes`].
+/// RFC-ACDP-0014 §6's "lost-everything" fallback means a producer that
+/// has lost every key it could sign a revocation with can *only* be
+/// revoked registry-attested — so the catastrophic case is exactly the
+/// one a silently-defaulted-off trust class would skip. A quiet
+/// `Default::default()` that leaves `include_registry_attested: false`
+/// would make that skip invisible at every call site; forcing a named
+/// constructor puts the choice at the type level instead, where a
+/// reviewer (and `git grep`) can see it. Callers protecting against
+/// key loss, or otherwise unwilling to assume a producer always
+/// retains signing capacity, MUST use [`Self::all_trust_classes`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RevocationDiscovery {
+    /// Whether to also run
+    /// [`find_registry_attested_revocations`](crate::revocation::find_registry_attested_revocations)
+    /// (the §6 registry-attested trust class), in addition to the
+    /// producer-signed search every discovery configuration runs.
+    /// Requires the registry to serve `/.well-known/acdp.json`; under
+    /// [`DiscoveryFailurePolicy::FailClosed`] a registry that serves no
+    /// capabilities document fails verification when this is `true`.
+    pub include_registry_attested: bool,
+    /// What to do when discovery itself fails (a transient transport
+    /// error from either search, or the search-safety-cap error
+    /// `AcdpError::SearchTruncated`). Default [`DiscoveryFailurePolicy::FailClosed`].
+    pub on_failure: DiscoveryFailurePolicy,
+    /// Wall-clock budget for the whole discovery step (both searches,
+    /// if [`Self::include_registry_attested`] is set). An **availability**
+    /// bound only — see the type-level cost section above. Matches this
+    /// crate's existing `ResolverOptions::total_timeout` precedent
+    /// (`crate::cross_registry`), defaulting to the same 30 s rather
+    /// than exceeding it on the core verify path.
+    pub total_timeout: Duration,
+}
+
+impl RevocationDiscovery {
+    /// Discover producer-signed revocations only
+    /// (`include_registry_attested: false`). Cheapest of the two
+    /// constructors, and the default choice for callers that are not
+    /// specifically defending against a producer that has lost every
+    /// signing key — see the "No `Default`" section above for who must
+    /// NOT stop here.
+    #[must_use]
+    pub fn producer_signed_only() -> Self {
+        Self {
+            include_registry_attested: false,
+            on_failure: DiscoveryFailurePolicy::FailClosed,
+            total_timeout: Duration::from_secs(30),
+        }
+    }
+
+    /// Discover both trust classes: producer-signed AND registry-attested
+    /// (`include_registry_attested: true`). Required to catch RFC-ACDP-0014
+    /// §6's "lost-everything" fallback, where a producer with no signing
+    /// key left can only be revoked registry-attested. Requires the
+    /// registry to serve a capabilities document.
+    #[must_use]
+    pub fn all_trust_classes() -> Self {
+        Self {
+            include_registry_attested: true,
+            on_failure: DiscoveryFailurePolicy::FailClosed,
+            total_timeout: Duration::from_secs(30),
+        }
+    }
+}
+
+/// What to do when RFC-ACDP-0014 §8 auto-discovery itself fails (a
+/// transient search/lookup error, or the discovery search functions'
+/// own safety-cap error).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum DiscoveryFailurePolicy {
+    /// Treat a discovery failure as a verification failure
+    /// (`AcdpError::RevocationDiscoveryFailed`). Default — matches this
+    /// crate's existing bias (§7's own lineage-walk and
+    /// verification-failure paths already fail closed; see
+    /// `crate::revocation`'s doc for the parallel reasoning) that an
+    /// authorization phase which could not run is not the same thing
+    /// as one that ran and found nothing.
+    #[default]
+    FailClosed,
+    /// Proceed using only [`RevocationPolicy::known`] when discovery
+    /// fails, silently dropping whatever discovery could not complete.
+    /// Use only when availability matters more than catching a
+    /// revocation that discovery would otherwise have found.
+    ProceedWithKnown,
+}
+
+/// What RFC-ACDP-0014 §8 auto-discovery actually did, distinguishing
+/// "this trust class was not queried" from "it was queried and found
+/// nothing" — the same distinction
+/// [`RevocationDiscovery`]'s no-`Default` design protects at the
+/// config level, carried through to the outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DiscoveryOutcome {
+    /// Count of producer-signed revocations discovery found.
+    pub producer_signed: usize,
+    /// Count of registry-attested revocations discovery found, or
+    /// `None` if [`RevocationDiscovery::include_registry_attested`]
+    /// was `false` and that trust class was never queried.
+    pub registry_attested: Option<usize>,
 }
 
 /// How to treat the optional `registry_receipt` on retrieval
@@ -1213,7 +1406,12 @@ impl DataRefFetcher for NoFetcher {
 
 #[cfg(test)]
 mod tests {
-    use super::{HistoricalKeyPolicy, ReceiptPolicy, VerificationPolicy};
+    use super::{
+        DiscoveryFailurePolicy, HistoricalKeyPolicy, ReceiptPolicy, RevocationDiscovery,
+        RevocationPolicy, VerificationPolicy,
+    };
+    use acdp_primitives::error::AcdpError;
+    use std::time::Duration;
 
     /// The RFC-ACDP-0001 §9.2 named constructor preserves exact v0.1.0
     /// semantics: receipts inert, assertionMethod-only keys. It is
@@ -1349,6 +1547,87 @@ mod tests {
              match for at least one pattern (verify_retrieved itself reads these \
              fields) — zero hits would mean the patterns are miscomputed, not that \
              the invariant holds"
+        );
+    }
+
+    /// issue #248 Phase 2, acceptance criterion 1 — `RevocationPolicy::default()`
+    /// stays behaviorally identical to the pre-Phase-2 shape: no known
+    /// revocations, discovery off.
+    #[test]
+    fn revocation_policy_default_is_unchanged() {
+        let policy = RevocationPolicy::default();
+        assert!(policy.known.is_empty());
+        assert!(policy.discover.is_none());
+    }
+
+    /// issue #248 Phase 2, acceptance criterion 1 (continued) — `::new`
+    /// produces the same shape as the old bare-literal `RevocationPolicy { known }`
+    /// this struct's `#[non_exhaustive]` retires.
+    #[test]
+    fn revocation_policy_new_leaves_discovery_off() {
+        let policy = RevocationPolicy::new(vec![]);
+        assert!(policy.known.is_empty());
+        assert!(policy.discover.is_none());
+    }
+
+    /// issue #248 Phase 2, acceptance criterion 3.
+    #[test]
+    fn discovery_failure_policy_defaults_to_fail_closed() {
+        assert_eq!(
+            DiscoveryFailurePolicy::default(),
+            DiscoveryFailurePolicy::FailClosed
+        );
+    }
+
+    /// issue #248 Phase 2, acceptance criterion 3.
+    #[test]
+    fn revocation_discovery_constructors_set_the_right_trust_classes() {
+        let producer_only = RevocationDiscovery::producer_signed_only();
+        assert!(!producer_only.include_registry_attested);
+        assert_eq!(producer_only.on_failure, DiscoveryFailurePolicy::FailClosed);
+        assert_eq!(producer_only.total_timeout, Duration::from_secs(30));
+
+        let all = RevocationDiscovery::all_trust_classes();
+        assert!(all.include_registry_attested);
+        assert_eq!(all.on_failure, DiscoveryFailurePolicy::FailClosed);
+        assert_eq!(all.total_timeout, Duration::from_secs(30));
+    }
+
+    /// issue #248 Phase 2, acceptance criterion 3 (continued) — D6:
+    /// `RevocationDiscovery` has no `Default` impl. This is a
+    /// compile-time property, not something a runtime assertion can
+    /// check; the doc comment on `RevocationDiscovery` records why.
+    /// This test exists to make that guarantee discoverable from the
+    /// test suite: if a future change adds `Default`, this comment is
+    /// the tripwire a reviewer reads, since nothing here would fail.
+    /// (An attempted `RevocationDiscovery::default()` call would be a
+    /// compile error today — that IS the enforcement.)
+    #[test]
+    fn revocation_discovery_has_no_default_by_design() {
+        // Deliberately empty: the guarantee is enforced by the type
+        // system (no `Default` impl exists), not by this test body.
+    }
+
+    /// issue #248 Phase 2, acceptance criterion 4 — `RevocationDiscoveryFailed`
+    /// delegates `is_transient` to its `source`, both ways.
+    #[test]
+    fn revocation_discovery_failed_delegates_is_transient_to_source() {
+        let transient = AcdpError::RevocationDiscoveryFailed {
+            source: Box::new(AcdpError::KeyResolutionUnreachable(
+                "did:web host unreachable".into(),
+            )),
+        };
+        assert!(
+            transient.is_transient(),
+            "a transient source must make the wrapper transient too"
+        );
+
+        let permanent = AcdpError::RevocationDiscoveryFailed {
+            source: Box::new(AcdpError::InvalidSignature("bad signature".into())),
+        };
+        assert!(
+            !permanent.is_transient(),
+            "a permanent source must make the wrapper permanent too"
         );
     }
 }

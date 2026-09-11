@@ -103,7 +103,8 @@ fn revocation_surface_reexported() {
     // exactly like the rest of the client surface.
     use acdp::client::{
         classify_under_revocation, find_registry_attested_revocations, find_revocations,
-        verify_revocation_body, RevocationPolicy,
+        verify_revocation_body, DiscoveryFailurePolicy, DiscoveryOutcome, RevocationDiscovery,
+        RevocationPolicy,
     };
     use acdp::types::revocation::{KeyRevocation, RevocationTrustClass};
 
@@ -117,6 +118,19 @@ fn revocation_surface_reexported() {
         KeyRevocation::cross_check_registry_binding;
     let _f = RevocationPolicy::default();
     let _g = RevocationTrustClass::ProducerSigned;
+
+    // issue #248 Phase 2: the auto-discovery policy surface resolves
+    // through the facade too. `DiscoveryOutcome` is `#[non_exhaustive]`
+    // with no public constructor (nothing produces one yet — Phase 4's
+    // job), so a type-position check is all that is available from
+    // outside the crate; that's still a genuine compile-time proof that
+    // the name resolves through `acdp::client`.
+    let _h = RevocationDiscovery::producer_signed_only();
+    let _i = RevocationDiscovery::all_trust_classes();
+    let _j = DiscoveryFailurePolicy::default();
+    fn _discovery_outcome_resolves(o: DiscoveryOutcome) -> DiscoveryOutcome {
+        o
+    }
 }
 
 #[cfg(feature = "client")]

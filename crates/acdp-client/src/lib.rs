@@ -27,8 +27,9 @@ pub use revocation::{
     find_revocations_in_lineage, verify_revocation_body,
 };
 pub use verified::{
-    HistoricalKeyPolicy, KeyAuthorization, LineageHeadPolicy, ReceiptPolicy, RevocationPolicy,
-    VerificationPolicy, VerificationReport, VerifiedContext,
+    DiscoveryFailurePolicy, DiscoveryOutcome, HistoricalKeyPolicy, KeyAuthorization,
+    LineageHeadPolicy, ReceiptPolicy, RevocationDiscovery, RevocationPolicy, VerificationPolicy,
+    VerificationReport, VerifiedContext,
 };
 pub use witness::{
     evaluate_witness_quorum, mint_cosignature_checked, verify_witness_cosignature_value,

@@ -1086,7 +1086,7 @@ async fn rev_002_fetch_pipeline_boundary_matrix() {
 
     let policy_with = |revs: Vec<KeyRevocation>, receipts: ReceiptPolicy| VerificationPolicy {
         receipts,
-        revocations: RevocationPolicy { known: revs },
+        revocations: RevocationPolicy::new(revs),
         ..Default::default()
     };
 
@@ -1202,7 +1202,7 @@ async fn report_parity_matrix() {
 
     let policy_with = |revs: Vec<KeyRevocation>, receipts: ReceiptPolicy| VerificationPolicy {
         receipts,
-        revocations: RevocationPolicy { known: revs },
+        revocations: RevocationPolicy::new(revs),
         ..Default::default()
     };
 
@@ -1378,9 +1378,7 @@ async fn report_diagnose_reports_revocation_without_erroring() {
     // publish time itself — inside the compromise window, must fail
     // closed (rev-002 case B).
     let post = VerificationPolicy {
-        revocations: RevocationPolicy {
-            known: vec![local_revocation(&producer_fp, receipt_time)],
-        },
+        revocations: RevocationPolicy::new(vec![local_revocation(&producer_fp, receipt_time)]),
         ..Default::default()
     };
 

@@ -318,3 +318,70 @@ silently. `npm ci` would have hard-failed the release.
 
 **Owner verdict:** none recorded for items 1-3. All three were settled by Opus under the
 standing delegation for this run and remain **pending the owner's review**.
+
+---
+
+## issue #248 — revocation auto-discovery (wave closed 2026-09-11, shipped in 0.12.0 + 0.13.0)
+
+All items below were settled by Opus under the standing delegation for this run and remain
+**pending the owner's review**. No `ASSUMPTIONS.md` entry was opened by this wave: the plan's
+open questions were all decided at plan time (D1–D7, LIM-1/LIM-2) and the four deliberate
+deferrals are now tracked as issues rather than register entries.
+
+**1. `Clone` on `AcdpError` — ADOPTED, after escalation.**
+Phase 4's executor added `#[derive(Clone)]` to `AcdpError` without it being in the plan. Because
+that is a permanent public commitment on the central type of a 13-crate published workspace, it
+was escalated to Fable as a one-way door rather than accepted as incidental plumbing.
+
+*Verdict: KEEP.* The premise is genuine — `VerifiedContext` and `VerificationReport` are sibling
+owned values returned from one call, so a borrow is self-referential and does not compile with
+`unsafe` forbidden. The decisive fact is that value semantics was **already** this type's design:
+`From<std::io::Error>` (`crates/acdp-primitives/src/error.rs:468-472`) and `From<reqwest::Error>`
+(`:474-481`) both stringify into `Http(String)`. `Clone` only makes explicit what the type
+already was. `Arc<AcdpError>` was the one real alternative and is worse — it would sit beside
+`policy_phase_error: Option<AcdpError>` and `data_ref_embedded` as bare errors, an asymmetry
+every downstream matcher pays for.
+
+*Foreclosure, stated rather than left implicit:* future variants' payloads must remain `Clone`;
+a variant needing a structured source uses `Arc<dyn Error + Send + Sync>` (Clone regardless of
+inner type, preserves `source()`), never `Box<dyn Error>` or a bare `io::Error`. That obligation
+is now written on the enum doc at `error.rs:36` — it was the only legitimate criticism of the
+decision, and it is closed.
+
+*Independently corroborated:* `cargo-semver-checks --workspace` on PR #256 reported exactly 1
+failure in 196 checks — `struct_marked_non_exhaustive` on `RevocationPolicy` — and did **not**
+flag `Clone`, confirming a new trait impl is additive.
+
+**2. Discovery executes inside `verify_retrieved`, not behind a wrapper (D1).**
+A `fetch_with_discovery` wrapper family was considered and rejected. #245 established
+`verify_retrieved` as the sole reader of the authorization-phase policy fields; a wrapper would
+discover revocations *outside* that phase while the spine-lock test stayed green — a tripwire
+standing over a violated invariant. Measured and confirmed: the lock does **not** block the
+wrapper shape, which is precisely why the wrapper is wrong.
+
+**3. Union without deduplication (D-series, Phase 4).**
+`effective_boundary` is a `filter().map().min()` fold, so duplicates are inert and two sources
+disagreeing resolves to the earliest — the fail-closed direction RFC-ACDP-0014 §4 mandates.
+Dedup is unavailable regardless: `KeyRevocation` is not `Hash` and the returned vectors carry no
+`ctx_id`.
+
+**4. `ProceedWithKnown` discards ALL discovery output when either lookup fails.**
+Partial success is deliberately not representable. A half-populated revocation set is
+indistinguishable from a complete one, so treating it as complete would reintroduce the same
+class of fail-open this wave existed to close. The failure is recorded on both
+`VerifiedContext::revocation_discovery_failure()` and `VerificationReport::revocation_discovery`.
+
+**5. Four items deliberately NOT built — filed, not deferred silently.**
+#257 (revocation cache, D4), #258 (request-count/byte budget, D4), #259 (§8's narrow trigger,
+D7 — unimplementable at the chosen insertion point, since discovery precedes the signature
+phase), #260 (`CrossRegistryResolver` policy injection, LIM-1 — blocked on #257, since
+`max_nodes: 100` makes per-node discovery unviable uncached).
+
+**6. `tokio-macros` in the binding lockfiles — fixed forward, guard NOT weakened (#261).**
+Enabling tokio's `macros` feature for `try_join!` pulled a new crate into the committed binding
+lockfiles, which failed `release-plz.yml`'s sync guard (`cargo update -w touched a non-version
+line`). The guard is correct: a release-time sync should bump versions, not pull a new crate
+into a published wheel's dependency graph. The structural change landed as its own reviewable
+commit instead of relaxing the assertion. **This was also the first live proof of the #240
+lockfile-pinning work** — the resulting sync commit changed exactly **32** `acdp*` version
+lines, matching that phase's stated acceptance criterion.

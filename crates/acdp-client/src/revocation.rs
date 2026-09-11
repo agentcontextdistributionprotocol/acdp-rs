@@ -183,27 +183,52 @@ pub async fn verify_revocation_body(
 /// derives no `Hash`, so its public return shape alone cannot feed a
 /// `ctx_id`-keyed dedupe set).
 ///
-/// A member that fails §5 verification is skipped exactly as in the
-/// existing search-driven loop — attacker-injected garbage in a lineage
-/// must not poison the set — logged via `tracing::warn!` when the
-/// `tracing` feature is enabled. Note the asymmetry with the two
-/// fail-closed cases below: a cryptographic-verification failure
-/// *inside* an otherwise well-formed, correctly-membered lineage is
-/// actually a **stronger** signal of registry (or upstream producer)
-/// misbehavior than an empty or mismatched lineage response is — a
-/// well-behaved registry simply does not have a signature-broken member
-/// to serve in the first place — yet it is the empty/mismatched cases
-/// that fail loudly here, not this one. That is a deliberate,
-/// asymmetric choice, not an oversight: accepting a signature failure
-/// as fatal would let one injected garbage member suppress every other
-/// genuine revocation in the lineage (the same "one bad apple poisons
+/// A member is only skipped when its §5 verification failure is
+/// **permanent** (`AcdpError::is_transient() == false` — a broken
+/// signature, a hash mismatch, a schema violation, a DID that resolves
+/// but denies the key) — attacker-injected garbage in a lineage must
+/// not poison the set — logged via `tracing::warn!` when the `tracing`
+/// feature is enabled. Note the asymmetry with the two fail-closed
+/// cases below: a cryptographic-verification failure *inside* an
+/// otherwise well-formed, correctly-membered lineage is actually a
+/// **stronger** signal of registry (or upstream producer) misbehavior
+/// than an empty or mismatched lineage response is — a well-behaved
+/// registry simply does not have a signature-broken member to serve in
+/// the first place — yet it is the empty/mismatched cases that fail
+/// loudly here, not this one. That is a deliberate, asymmetric choice,
+/// not an oversight: treating every verification failure as fatal
+/// would let one injected garbage member suppress every other genuine
+/// revocation in the lineage (the same "one bad apple poisons
 /// discovery" DoS this whole function exists to avoid), whereas
-/// dropping it and continuing costs nothing an attacker can turn into a
-/// false *authorization* — a dropped member is simply absent from the
-/// result, never wrongly present. It is currently invisible without the
-/// `tracing` feature; a future caller auditing registry health should
-/// not assume "no revocations found" means "no suspicious members were
-/// seen."
+/// dropping a **permanently** un-verifiable member and continuing
+/// costs nothing an attacker can turn into a false *authorization* —
+/// such a member was never going to contribute a valid
+/// `compromised_since` to [`effective_boundary`]'s fold, dropped or
+/// not. It is currently invisible without the `tracing` feature; a
+/// future caller auditing registry health should not assume "no
+/// revocations found" means "no suspicious members were seen."
+///
+/// **A transient failure (`is_transient() == true` — the DID host is
+/// unreachable, rate-limited, or otherwise could not be asked, as
+/// opposed to having answered and denied) is a different case and is
+/// NOT dropped: it propagates as `Err` instead (issue #248 Phase 1,
+/// "D5").** An earlier revision of this doc claimed a dropped member
+/// is "simply absent from the result, never wrongly present" — true
+/// only of the permanent case above, and false in general: a dropped
+/// member that *would* have named an earlier `compromised_since` than
+/// any survivor moves [`effective_boundary`]'s `.min()` fold **later**
+/// (`acdp_types::revocation::effective_boundary`), which silently
+/// authorizes activity that should have been inside the compromise
+/// window — a genuine false authorization, not a mere omission. A
+/// transient failure gives no information about what that member would
+/// have said, so silently continuing past it could produce exactly
+/// that outcome. Propagating instead tells the caller "this set is
+/// incomplete, do not trust it," which — per D5 — adds no new denial-
+/// of-service lever: this function already aborts unconditionally on
+/// `client.lineage` failing outright, so a hostile or merely-unlucky
+/// network path already had an abort lever before this change; this
+/// closes the one case that used to bypass it by masquerading as a
+/// clean, complete result.
 ///
 /// **Fails closed, rather than silently continuing, in two cases:**
 ///
@@ -305,6 +330,12 @@ async fn walk_revocation_lineage(
     for ctx in members {
         match verify_revocation_body(&ctx.body, resolver).await {
             Ok(rev) => out.push((ctx.body.ctx_id.clone(), rev)),
+            // D5 (issue #248 Phase 1): a transient failure means "could
+            // not check this member," not "this member is bad" — propagate
+            // it rather than silently treating it as if it had never
+            // existed. See the rustdoc block above for why the permanent
+            // case still drops and warns.
+            Err(e) if e.is_transient() => return Err(e),
             Err(_e) => {
                 #[cfg(feature = "tracing")]
                 tracing::warn!(
@@ -397,7 +428,8 @@ pub async fn find_revocations_in_lineage(
 /// hostile or buggy registry that ignored the `agent_id` search filter.
 ///
 /// Candidates dropped by either check, or that fail §5 verification
-/// outright — including self-signed "revocations", which are at most a
+/// outright with a **permanent** error (`AcdpError::is_transient() ==
+/// false`) — including self-signed "revocations", which are at most a
 /// hint (§5 step 2) — are omitted from the return value: returning a
 /// typed error for one bad or off-scope body would let anyone poison
 /// the whole discovery result for every caller — a cheap DoS on the
@@ -513,6 +545,21 @@ pub async fn find_revocations_in_lineage(
 /// call already aborts unconditionally on `client.search` and
 /// `client.retrieve` a few lines above, so failing closed here adds no
 /// availability exposure this function does not already have.
+///
+/// **Extended by issue #248 Phase 1 ("D5") to the per-candidate
+/// verification calls this function makes directly**, not only to
+/// `walk_revocation_lineage`'s own errors above: a *transient*
+/// [`verify_revocation_body`] failure (the candidate's DID host is
+/// unreachable, rate-limited, or otherwise could not be asked) now
+/// propagates via the same reasoning — an unresolved candidate could
+/// have named an earlier `compromised_since` than anything already
+/// found, so silently continuing is the same "quietly shrink a
+/// compromise window" outcome this paragraph already rejects for a
+/// failed lineage walk. Only a *permanent* verification failure (bad
+/// signature, hash mismatch, schema violation, or a DID that resolves
+/// but denies the key) is still dropped with a `tracing::warn!` — see
+/// `walk_revocation_lineage`'s doc above for the full DoS argument for
+/// why that narrower case remains safe to drop.
 pub async fn find_revocations(
     client: &RegistryClient,
     resolver: &WebResolver,
@@ -577,27 +624,42 @@ pub async fn find_revocations(
                         continue;
                     }
                     let ctx = client.retrieve(&m.ctx_id).await?;
-                    if let Ok(rev) = verify_revocation_body(&ctx.body, resolver).await {
-                        // Re-check query scope and trust class on the
-                        // verified body — do not trust `resp.matches`,
-                        // and do not accept a producer claiming to be
-                        // a registry (RFC-ACDP-0014 §4, §13).
-                        if rev.publisher == agent_id
-                            && rev.trust_class == RevocationTrustClass::ProducerSigned
-                        {
-                            revocations.push(rev);
-                        } else {
+                    match verify_revocation_body(&ctx.body, resolver).await {
+                        Ok(rev) => {
+                            // Re-check query scope and trust class on the
+                            // verified body — do not trust `resp.matches`,
+                            // and do not accept a producer claiming to be
+                            // a registry (RFC-ACDP-0014 §4, §13).
+                            if rev.publisher == agent_id
+                                && rev.trust_class == RevocationTrustClass::ProducerSigned
+                            {
+                                revocations.push(rev);
+                            } else {
+                                #[cfg(feature = "tracing")]
+                                tracing::warn!(
+                                    publisher = %rev.publisher,
+                                    trust_class = ?rev.trust_class,
+                                    ctx_id = %m.ctx_id,
+                                    filter = if rev.publisher != agent_id {
+                                        "publisher_scope"
+                                    } else {
+                                        "trust_class"
+                                    },
+                                    "find_revocations: dropped candidate outside query scope/trust class"
+                                );
+                            }
+                        }
+                        // D5 (issue #248 Phase 1): transient means "could
+                        // not look," not "clean" — propagate rather than
+                        // let the candidate vanish into an empty Vec that
+                        // `classify_under_revocation` reads as "proceed."
+                        Err(e) if e.is_transient() => return Err(e),
+                        Err(_e) => {
                             #[cfg(feature = "tracing")]
                             tracing::warn!(
-                                publisher = %rev.publisher,
-                                trust_class = ?rev.trust_class,
                                 ctx_id = %m.ctx_id,
-                                filter = if rev.publisher != agent_id {
-                                    "publisher_scope"
-                                } else {
-                                    "trust_class"
-                                },
-                                "find_revocations: dropped candidate outside query scope/trust class"
+                                error = %_e,
+                                "find_revocations: dropped candidate failing §5 verification"
                             );
                         }
                     }
@@ -647,7 +709,10 @@ pub async fn find_revocations(
     // `compromised_since` (RFC-ACDP-0014 §4), so silently dropping a
     // lineage could only ever move the effective compromise boundary
     // later (or, if the whole set is dropped, make enforcement inert) —
-    // never safer to omit than to fail closed on.
+    // never safer to omit than to fail closed on. A member failing §5
+    // verification transiently (issue #248 Phase 1, "D5") also aborts
+    // the walk this way, rather than being skipped like a permanent
+    // failure.
     for lineage_id in &lineage_order {
         let expect = lineage_expect.get(lineage_id.as_str());
         let walked = walk_revocation_lineage(client, resolver, lineage_id, expect).await?;
@@ -742,10 +807,12 @@ pub async fn find_revocations(
 ///    client actually talks to.
 ///
 /// As with [`find_revocations`], candidates dropped by (2) or (3), or
-/// that fail §5 outright, are omitted rather than surfaced as errors —
-/// a single bad or off-scope body must not poison the whole discovery
-/// result. With the `tracing` feature enabled, each drop is logged via
-/// `tracing::warn!` naming the publisher, controller, and `ctx_id`.
+/// that fail §5 outright with a **permanent** error
+/// (`AcdpError::is_transient() == false`), are omitted rather than
+/// surfaced as errors — a single bad or off-scope body must not poison
+/// the whole discovery result. With the `tracing` feature enabled,
+/// each drop is logged via `tracing::warn!` naming the publisher,
+/// controller, and `ctx_id`.
 ///
 /// **Propagates, rather than swallows, a `capabilities()` error.**
 /// `CapabilitiesDocument.registry_did` is a required, non-`Option`
@@ -797,7 +864,12 @@ pub async fn find_revocations(
 /// Phase 3): a partial `Vec` is indistinguishable from a complete one
 /// to the caller, and feeds the same `effective_boundary` `.min()` this
 /// crate uses to enforce RFC-ACDP-0014 §4, so a dropped lineage must
-/// fail the call rather than silently narrow the result.
+/// fail the call rather than silently narrow the result. The same doc's
+/// issue #248 Phase 1 ("D5") extension applies here identically: a
+/// *transient* per-candidate [`verify_revocation_body`] failure in the
+/// search loop below also propagates as `Err` rather than being
+/// silently dropped — only a *permanent* one is dropped with a
+/// `tracing::warn!`.
 pub async fn find_registry_attested_revocations(
     client: &RegistryClient,
     resolver: &WebResolver,
@@ -860,24 +932,40 @@ pub async fn find_registry_attested_revocations(
                         continue;
                     }
                     let ctx = client.retrieve(&m.ctx_id).await?;
-                    if let Ok(rev) = verify_revocation_body(&ctx.body, resolver).await {
-                        if rev.revoked_key_controller == controller
-                            && rev
-                                .cross_check_registry_binding(
-                                    &serving_authority,
-                                    &caps.registry_did,
-                                )
-                                .is_ok()
-                        {
-                            revocations.push(rev);
-                        } else {
+                    match verify_revocation_body(&ctx.body, resolver).await {
+                        Ok(rev) => {
+                            if rev.revoked_key_controller == controller
+                                && rev
+                                    .cross_check_registry_binding(
+                                        &serving_authority,
+                                        &caps.registry_did,
+                                    )
+                                    .is_ok()
+                            {
+                                revocations.push(rev);
+                            } else {
+                                #[cfg(feature = "tracing")]
+                                tracing::warn!(
+                                    publisher = %rev.publisher,
+                                    controller = %rev.revoked_key_controller,
+                                    ctx_id = %m.ctx_id,
+                                    "find_registry_attested_revocations: dropped candidate \
+                                     outside controller scope or failing registry-binding check"
+                                );
+                            }
+                        }
+                        // D5 (issue #248 Phase 1): transient means "could
+                        // not look," not "clean" — propagate rather than
+                        // let the candidate vanish into an empty Vec that
+                        // `classify_under_revocation` reads as "proceed."
+                        Err(e) if e.is_transient() => return Err(e),
+                        Err(_e) => {
                             #[cfg(feature = "tracing")]
                             tracing::warn!(
-                                publisher = %rev.publisher,
-                                controller = %rev.revoked_key_controller,
                                 ctx_id = %m.ctx_id,
+                                error = %_e,
                                 "find_registry_attested_revocations: dropped candidate \
-                                 outside controller scope or failing registry-binding check"
+                                 failing §5 verification"
                             );
                         }
                     }

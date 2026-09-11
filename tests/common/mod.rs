@@ -123,6 +123,45 @@ impl TlsTestServer {
         }
     }
 
+    /// Abort the background task serving this endpoint and wait until
+    /// the port genuinely stops accepting connections.
+    ///
+    /// Used to simulate a `did:web` host going from reachable (at
+    /// publish time) to truly unreachable (at query time) — a real
+    /// connection refusal (`AcdpError::KeyResolutionUnreachable`,
+    /// transient), as opposed to a 404 (host reachable, route just
+    /// missing — `AcdpError::KeyResolution`, permanent). Issue #248
+    /// Phase 1's discovery tests need that distinction, which a merely-
+    /// unregistered route cannot produce on its own since the rest of
+    /// the harness (search/retrieve/lineage) is served by a different,
+    /// still-live `TlsTestServer`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the port is still accepting connections 5s after
+    /// `abort()` — in test context, that is the correct loud-fail
+    /// behavior rather than a false pass on a still-live server.
+    pub async fn shutdown(self) {
+        self._handle.abort();
+        // `abort()` only requests cancellation; the task (and the
+        // listener it owns) is actually dropped at its next await
+        // point, asynchronously. Poll rather than assume a fixed delay
+        // is long enough — mirrors `wait_until_ready`'s style, inverted.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if tokio::net::TcpStream::connect(self.addr).await.is_err() {
+                return;
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!(
+                    "TlsTestServer at {} did not stop accepting connections within 5s of shutdown()",
+                    self.addr
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    }
+
     /// `localhost:<port>` — host portion only.
     pub fn host(&self) -> String {
         format!("localhost:{}", self.addr.port())

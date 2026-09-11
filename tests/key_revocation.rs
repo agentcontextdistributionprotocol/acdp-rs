@@ -39,7 +39,7 @@ use acdp::types::revocation::{KeyRevocation, RevocationTrustClass};
 use acdp::types::{AgentDid, Body, ContentHash, ContextType, CtxId, LineageId, Visibility};
 use axum::{routing::get, Json, Router};
 use chrono::{DateTime, Utc};
-use common::{ed25519_did_doc, TlsTestServer};
+use common::{did_doc_router, ed25519_did_doc, TlsTestServer};
 use serde_json::json;
 
 // ── rev-001 pinned values ────────────────────────────────────────────────────
@@ -1414,7 +1414,8 @@ async fn report_diagnose_reports_revocation_without_erroring() {
 // ── §8 discovery: find_revocations over a searchable harness ────────────────
 
 /// `find_revocations` returns the producer's verified revocations and
-/// silently skips candidates that fail §5 — here a "revocation" signed
+/// silently skips candidates that fail §5 with a permanent error
+/// (`AcdpError::is_transient() == false`) — here a "revocation" signed
 /// by the very key it revokes, which is at most a hint (§5 step 2).
 #[tokio::test]
 async fn find_revocations_returns_only_verified() {
@@ -3090,8 +3091,9 @@ async fn find_revocations_in_lineage_returns_superseded_and_current_member() {
 
 /// **Negative test.** A lineage member whose signature is broken is
 /// excluded from `find_revocations_in_lineage`'s output — dropped
-/// exactly as the existing search-driven loop drops an unverifiable
-/// candidate — rather than surfaced as (or turned into) an error.
+/// exactly as the existing search-driven loop drops a permanently
+/// unverifiable candidate — rather than surfaced as (or turned into)
+/// an error.
 #[tokio::test]
 async fn find_revocations_in_lineage_drops_broken_signature_member() {
     use std::collections::HashMap;
@@ -3409,5 +3411,271 @@ async fn find_revocations_errors_when_candidate_lineages_exceed_walk_cap() {
     assert!(
         matches!(err, AcdpError::SearchTruncated(_)),
         "expected SearchTruncated, got {err:?}"
+    );
+}
+
+// ── issue #248 Phase 1 (D5): transient verification failures propagate ─────
+//
+// `find_revocations`, `find_registry_attested_revocations`, and
+// `find_revocations_in_lineage` must turn a *transient*
+// `verify_revocation_body` failure — the candidate's `did:web` host is
+// unreachable, not merely answering with something that fails §5 — into
+// `Err`, not a silently empty/short `Vec`. `classify_under_revocation(&[],
+// …)` reads an empty set as "proceed" (`revocation.rs:86-88`), so an
+// unreachable DID host must never be allowed to look identical to "no
+// revocations exist."
+
+/// Publishes exactly one `key-revocation` candidate under a `did:web`
+/// host that is reachable at publish time and then shut down — a real
+/// connection refusal at query time
+/// ([`common::TlsTestServer::shutdown`]), not a 404. A 404 means the
+/// host answered and the route was missing, which maps to the
+/// *permanent* `AcdpError::KeyResolution` and is exactly what the two
+/// "must stay green, unchanged" tests already cover
+/// (`find_revocations_returns_only_verified`,
+/// `find_revocations_in_lineage_drops_broken_signature_member`). This
+/// harness instead reproduces the plan's actual motivating scenario —
+/// "a producer's `did:web` host being unreachable" — which is a
+/// *transient* `AcdpError::KeyResolutionUnreachable`.
+///
+/// Search, retrieve, and lineage all succeed normally against a
+/// separate, still-live `TlsTestServer` — only DID resolution fails, so
+/// the resulting `Err` is attributable specifically to the D5 split
+/// under test, not to some other already-covered abort lever (hostile
+/// `client.search` / `client.retrieve` / `client.lineage` failures).
+///
+/// `include_lineage_member` controls the `/lineages/{id}` response:
+///
+/// - `true` — returns the one candidate as the lineage's sole member.
+///   Needed by the `find_revocations_in_lineage` test, which walks the
+///   lineage directly.
+/// - `false` — returns an empty array. **Required** to isolate the
+///   `find_revocations` / `find_registry_attested_revocations` tests:
+///   both functions unconditionally walk every search match's lineage
+///   *in addition to* verifying the match inline, so with `true` here,
+///   reverting *only* the inline-verify site under test would still go
+///   `Err` — via the still-correct lineage walk hitting the very same
+///   unreachable DID — and the falsifiability probe would (wrongly)
+///   read green. An empty lineage makes that walk fail with the
+///   unrelated, permanent `IncompleteLineage` the moment it is
+///   reached, which only happens *after* the inline-verify site has
+///   already had its chance to return — so with the code correctly
+///   fixed, the inline site's `Err(KeyResolutionUnreachable)` returns
+///   first and the walk (and the empty response) is never reached at
+///   all.
+///
+/// Returns a client/resolver pair pinned against the live server, plus
+/// the candidate's own `agent_id` and `lineage_id`.
+async fn discover_with_unreachable_did(
+    include_lineage_member: bool,
+) -> (RegistryClient, WebResolver, AgentDid, LineageId) {
+    use std::collections::HashMap;
+
+    let seed = [0x99u8; 32];
+    let pub_key = SigningKey::from_bytes(&seed).verifying_key_bytes();
+
+    // DID-only server: reachable during publish, shut down below before
+    // the caller runs discovery. `start_with` hands back the
+    // kernel-assigned port so the DID document (and the producer's own
+    // `agent_id`) can embed it via the percent-encoded `did:web:
+    // localhost%3A<port>` form (`TlsTestServer::did`'s doc explains the
+    // encoding).
+    let tls_did = TlsTestServer::start_with(|port| {
+        let did = format!("did:web:localhost%3A{port}");
+        let doc = ed25519_did_doc(&did, "key-1", &pub_key);
+        did_doc_router(doc)
+    })
+    .await;
+    let producer_did = tls_did.did();
+
+    let server =
+        RegistryServer::try_new(InMemoryStore::new(), caps(), REGISTRY_AUTHORITY).expect("server");
+    let producer = Producer::new(
+        SigningKey::from_bytes(&seed),
+        AgentDid::new(&producer_did),
+        format!("{producer_did}#key-1"),
+    );
+    let req = producer
+        .publish_request()
+        .acdp_version("0.3.0")
+        .title("candidate behind a DID host that goes unreachable")
+        .context_type(ContextType::KeyRevocation)
+        .visibility(Visibility::Public)
+        .metadata(json!({
+            "revoked_key_fingerprint": K1_FP,
+            "compromised_since": T,
+        }))
+        .build()
+        .expect("build");
+
+    let publish_resolver =
+        WebResolver::with_test_endpoint(&tls_did.root_cert_pem, "localhost", tls_did.addr)
+            .expect("pinned resolver");
+    let resp = server
+        .publish_verified(&req, None, &publish_resolver)
+        .await
+        .expect("publish");
+    let full = server
+        .store()
+        .get(&resp.ctx_id)
+        .expect("get")
+        .expect("present");
+    let lineage_id = full.body.lineage_id.clone();
+    let full_value = serde_json::to_value(&full).unwrap();
+
+    // The host the candidate's DID resolves to is now taken down —
+    // permanently, for the rest of this harness's life. Any later
+    // attempt to connect to `tls_did.addr` gets a genuine connection
+    // refusal, not a 404.
+    tls_did.shutdown().await;
+
+    // A second, independent server backs search/retrieve/lineage and
+    // stays live for the whole discovery call — proving the failure
+    // this test asserts on comes from DID resolution alone.
+    let matches = vec![json!({
+        "ctx_id": full.body.ctx_id.as_str(),
+        "lineage_id": full.body.lineage_id.as_str(),
+        "agent_id": producer_did,
+        "title": full.body.title,
+        "type": "key-revocation",
+        "created_at": "2026-05-02T08:00:00.000Z",
+        "status": "active",
+        "visibility": "public",
+    })];
+    let router = Router::new()
+        .route(
+            "/contexts/search",
+            get({
+                let matches = matches.clone();
+                move |axum::extract::Query(_): axum::extract::Query<HashMap<String, String>>| {
+                    let matches = matches.clone();
+                    async move { Json(json!({ "matches": matches })) }
+                }
+            }),
+        )
+        .route(
+            "/contexts/{id}",
+            get({
+                let full_value = full_value.clone();
+                move |axum::extract::Path(_): axum::extract::Path<String>| {
+                    let full_value = full_value.clone();
+                    async move { Json(full_value) }
+                }
+            }),
+        )
+        .route(
+            "/lineages/{id}",
+            get({
+                let lineage_body = if include_lineage_member {
+                    json!([full_value])
+                } else {
+                    json!([])
+                };
+                move |axum::extract::Path(_): axum::extract::Path<String>| {
+                    let lineage_body = lineage_body.clone();
+                    async move { Json(lineage_body) }
+                }
+            }),
+        )
+        .route(
+            "/.well-known/acdp.json",
+            get(move || async move { Json(caps()) }),
+        );
+
+    let tls = TlsTestServer::start(router).await;
+    // The PEM used here is irrelevant to whether DID resolution
+    // succeeds: the candidate's `did:web` URL carries its own explicit
+    // (now-dead) port, so that connection is refused at the TCP layer,
+    // long before TLS certificate validation would matter.
+    let resolver = WebResolver::with_test_endpoint(&tls.root_cert_pem, "localhost", tls.addr)
+        .expect("pinned resolver");
+    let client = RegistryClient::with_test_endpoint(
+        &format!("https://{REGISTRY_AUTHORITY}"),
+        tls.addr,
+        &tls.root_cert_pem,
+    )
+    .expect("pinned client");
+
+    (client, resolver, AgentDid::new(&producer_did), lineage_id)
+}
+
+/// Falsifiability target for `find_revocations`'s D5 split
+/// (`revocation.rs` — the search-driven candidate loop): reverting the
+/// `match … Err(e) if e.is_transient() => return Err(e) …` back to
+/// `if let Ok(rev) = …` must turn this red.
+#[tokio::test]
+async fn find_revocations_propagates_transient_resolution_failure() {
+    use acdp::client::find_revocations;
+
+    let (client, resolver, agent_id, _lineage_id) = discover_with_unreachable_did(false).await;
+
+    let err = find_revocations(&client, &resolver, &agent_id)
+        .await
+        .expect_err(
+            "a candidate behind an unreachable DID host must not read as a clean \
+             \"no revocations found\" — D5, issue #248 Phase 1",
+        );
+    assert!(
+        err.is_transient(),
+        "expected a transient error, got {err:?}"
+    );
+    assert!(
+        matches!(err, AcdpError::KeyResolutionUnreachable(_)),
+        "expected KeyResolutionUnreachable specifically, got {err:?}"
+    );
+}
+
+/// Falsifiability target for `find_registry_attested_revocations`'s D5
+/// split (the same shape, in its own search-driven candidate loop).
+/// The `controller` passed here never matters: verification — and the
+/// transient failure under test — happens before the controller/
+/// registry-binding checks are ever reached.
+#[tokio::test]
+async fn find_registry_attested_revocations_propagates_transient_resolution_failure() {
+    use acdp::client::find_registry_attested_revocations;
+
+    let (client, resolver, _agent_id, _lineage_id) = discover_with_unreachable_did(false).await;
+
+    let err =
+        find_registry_attested_revocations(&client, &resolver, &AgentDid::new(LOCAL_PRODUCER_DID))
+            .await
+            .expect_err(
+                "a candidate behind an unreachable DID host must not read as a clean \
+             \"no revocations found\" — D5, issue #248 Phase 1",
+            );
+    assert!(
+        err.is_transient(),
+        "expected a transient error, got {err:?}"
+    );
+    assert!(
+        matches!(err, AcdpError::KeyResolutionUnreachable(_)),
+        "expected KeyResolutionUnreachable specifically, got {err:?}"
+    );
+}
+
+/// Falsifiability target for `walk_revocation_lineage`'s D5 split (the
+/// member loop `find_revocations_in_lineage` wraps): reverting
+/// `Err(e) if e.is_transient() => return Err(e)` back to a bare
+/// `Err(_e) => { warn!(...) }` (dropping the new arm entirely) must
+/// turn this red.
+#[tokio::test]
+async fn find_revocations_in_lineage_propagates_transient_resolution_failure() {
+    use acdp::client::find_revocations_in_lineage;
+
+    let (client, resolver, _agent_id, lineage_id) = discover_with_unreachable_did(true).await;
+
+    let err = find_revocations_in_lineage(&client, &resolver, &lineage_id)
+        .await
+        .expect_err(
+            "a lineage member behind an unreachable DID host must not read as a clean \
+             \"no revocations found\" — D5, issue #248 Phase 1",
+        );
+    assert!(
+        err.is_transient(),
+        "expected a transient error, got {err:?}"
+    );
+    assert!(
+        matches!(err, AcdpError::KeyResolutionUnreachable(_)),
+        "expected KeyResolutionUnreachable specifically, got {err:?}"
     );
 }

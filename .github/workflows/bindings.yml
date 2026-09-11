@@ -112,6 +112,10 @@ jobs:
       - name: Install @napi-rs/cli
         working-directory: bindings/acdp-node
         run: npm install
+      - name: Assert the pinned @napi-rs/cli version
+        working-directory: bindings/acdp-node      # REQUIRED — `working-directory` is per-step,
+                                                    # and `node -e` resolves require() against cwd
+        run: node -e 'if(require("./node_modules/@napi-rs/cli/package.json").version!=="3.8.6")process.exit(1)'
       - name: Build the native binary
         working-directory: bindings/acdp-node
         # `napi build` (which this script wraps) has no documented --locked
@@ -383,9 +387,9 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '20'
-      # No committed package-lock.json (see .gitignore's acdp-node
-      # section) — `npm install` resolves fresh, same reproducibility
-      # caveat as bindings-deny above.
+      # bindings/acdp-node/package-lock.json is committed (see .gitignore's
+      # acdp-node section) and `npm install` honors it, resolving the pinned
+      # graph rather than fresh.
       - working-directory: bindings/acdp-node
         run: npm install
       - working-directory: bindings/acdp-node

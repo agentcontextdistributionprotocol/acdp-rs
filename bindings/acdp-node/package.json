@@ -37,7 +37,7 @@
     "test": "node --test tests/*.mjs"
   },
   "devDependencies": {
-    "@napi-rs/cli": "^3.8.6"
+    "@napi-rs/cli": "3.8.6"
   },
   "engines": {
     "node": ">=20"

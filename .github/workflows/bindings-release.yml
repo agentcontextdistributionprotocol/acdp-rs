@@ -78,6 +78,11 @@ jobs:
           version: 0.13.0
       - name: Install dependencies
         run: npm install
+      # The committed lockfile pins the toolchain; this asserts the pin
+      # actually held.
+      - name: Assert the pinned @napi-rs/cli version
+        working-directory: bindings/acdp-node
+        run: node -e 'if(require("./node_modules/@napi-rs/cli/package.json").version!=="3.8.6")process.exit(1)'
       # Gate the THIRD-PARTY dependency graph against the committed
       # Cargo.lock *before* the version stamp below touches Cargo.toml.
       # This must run pre-stamp, not post-stamp, for the same reason as
@@ -159,6 +164,11 @@ jobs:
           jq --arg v "$V" '.version=$v' package.json > package.json.tmp && mv package.json.tmp package.json
       - name: Install dependencies
         run: npm install
+      # The committed lockfile pins the toolchain; this asserts the pin
+      # actually held.
+      - name: Assert the pinned @napi-rs/cli version
+        working-directory: bindings/acdp-node
+        run: node -e 'if(require("./node_modules/@napi-rs/cli/package.json").version!=="3.8.6")process.exit(1)'
       - name: Download all .node artifacts
         uses: actions/download-artifact@v8
         with:

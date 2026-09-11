@@ -21,6 +21,9 @@ Run from ``bindings/interop/`` after building both bindings::
     pytest
 
 or simply ``make interop``, which builds both bindings first.
+
+``acdp-node``'s ``package-lock.json`` is committed, so the ``npm install``
+above resolves the pinned dependency graph rather than a fresh one.
 """
 
 import json

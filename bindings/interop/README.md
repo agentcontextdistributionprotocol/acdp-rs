@@ -21,7 +21,9 @@ JSON.
 
 ## Run
 
-Build both bindings first:
+Build both bindings first (the Node side's `package-lock.json` is
+committed, so its `npm install` resolves the pinned dependency graph
+rather than fresh):
 
 ```bash
 (cd ../acdp-py   && maturin develop)

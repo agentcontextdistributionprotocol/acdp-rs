@@ -19,6 +19,10 @@ Prebuilt native binaries are published for macOS (x64/arm64) and Linux
 
 ## Install (development)
 
+`package-lock.json` is committed, so `npm install` here resolves the pinned
+dependency graph (including an exact `@napi-rs/cli` version) rather than
+re-resolving fresh.
+
 ```bash
 npm install                  # installs @napi-rs/cli
 npm run build:debug          # produces index.js + acdp.<platform>.node

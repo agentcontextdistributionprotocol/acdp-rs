@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- *(client)* [**breaking**] `verify_retrieved` can auto-discover revocations instead of
+  relying solely on caller-supplied ones
+  ([#248](https://github.com/agentcontextdistributionprotocol/acdp-rs/issues/248))
+
+  RFC-ACDP-0014 §8 says consumers SHOULD discover revocations rather than depend entirely
+  on an out-of-band feed. `RevocationPolicy` gains `discover: Option<RevocationDiscovery>`
+  alongside the existing `known`: when set, `verify_retrieved` itself runs
+  `find_revocations` and (opt-in) `find_registry_attested_revocations` — concurrently,
+  under one `total_timeout` — and unions the result with `known` before applying the §7
+  boundary rule. `known` keeps working exactly as before; `discover` is purely additive on
+  top of it. New `RevocationDiscovery` (constructed via `producer_signed_only()` or
+  `all_trust_classes()` — deliberately no `Default`, since silently skipping the
+  registry-attested trust class would hide RFC-ACDP-0014 §6's "lost every key" fallback),
+  `DiscoveryFailurePolicy` (`FailClosed` default, or `ProceedWithKnown`), and
+  `DiscoveryOutcome` (counts discovery *output* only, never `known`). New
+  `AcdpError::RevocationDiscoveryFailed`, no wire code. New
+  `VerifiedContext::revocation_discovery_failure()` and
+  `VerificationReport::revocation_discovery` so a `ProceedWithKnown` swallow is never
+  silent. Honored by all five policy-taking entry points (`fetch_with_policy`,
+  `fetch_current_with_policy`, `fetch_report`, `fetch_report_diagnose`,
+  `fetch_report_with_fetcher`); `fetch`/`fetch_current` hardcode the default policy and
+  `CrossRegistryResolver` has no policy-injection point, so neither can carry `discover`
+  (documented limitations, not oversights).
+
+  **BREAKING.** `RevocationPolicy` is now `#[non_exhaustive]`. Migrate
+  `RevocationPolicy { known: revs }` to `RevocationPolicy::new(revs)` (identical
+  behavior — `discover` defaults to `None`). `AcdpError` now derives `Clone` (additive,
+  not breaking) so a discovery failure under `ProceedWithKnown` can be independently
+  owned by both new surfaces from a single call.
+
+  **Cost.** Discovery is opt-in but expensive when enabled: up to ~6,160 requests for
+  producer-signed-only, ~12,321 for both trust classes, in the worst case against a
+  hostile registry (see `RevocationDiscovery`'s rustdoc for the derivation).
+  `total_timeout` (default 30s, matching `ResolverOptions::total_timeout`) bounds wall
+  clock only — not bytes or memory. Setting `discover` puts a Tokio time-driver
+  requirement (`enable_time`) on the core verify path.
+
 ## [0.12.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.11.0...acdp-v0.12.0) - 2026-09-11
 
 ### Fixed

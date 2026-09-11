@@ -19,7 +19,30 @@ use thiserror::Error;
 /// that matches on `AcdpError` exhaustively. Same rationale as
 /// `SsrfReason` in `crates/acdp-safe-http/src/lib.rs` ("future spec
 /// revisions may add ranges"); match with a wildcard arm.
-#[derive(Debug, Error)]
+/// `Clone` (added for issue #248 Phase 4): `VerifiedContext` and
+/// `VerificationReport` each need an independently-owned copy of a
+/// `ProceedWithKnown`-swallowed revocation-discovery failure — one via
+/// `VerifiedContext::revocation_discovery_failure()`, the other via
+/// `VerificationReport::revocation_discovery` — so both surfaces stay
+/// non-silent from a single call. Every variant field (`String`,
+/// `&'static str`, `ContentHash`, `WireError`, `SupersessionReason`,
+/// and the recursive `Box<AcdpError>` in `RevocationDiscoveryFailed`)
+/// is already `Clone`, so this is a free addition with no wire-format
+/// or matching impact.
+///
+/// This is a standing constraint on every future variant, not just the
+/// ones that exist today: every future variant's payloads must remain
+/// `Clone`. A variant that needs a structured source should hold
+/// `Arc<dyn std::error::Error + Send + Sync>` (which is `Clone`
+/// regardless of the inner type, and still preserves `source()`
+/// chaining), never `Box<dyn Error>` or a bare `io::Error` (neither is
+/// `Clone`). This is not a new tradeoff introduced by adding `Clone`
+/// here — `From<std::io::Error>` and `From<reqwest::Error>` already
+/// stringify into `Http(String)` rather than carry the error value, so
+/// value semantics over reference/source-chain semantics was already
+/// the twice-exercised choice for this type; `Clone` just makes it a
+/// documented rule instead of an implicit pattern.
+#[derive(Debug, Clone, Error)]
 #[non_exhaustive]
 pub enum AcdpError {
     // ── Cryptography ─────────────────────────────────────────────────────────
@@ -115,6 +138,35 @@ pub enum AcdpError {
     /// partial `Vec`.
     #[error("search truncated: {0}")]
     SearchTruncated(String),
+
+    /// Locally detected: RFC-ACDP-0014 §8 revocation auto-discovery
+    /// (`RevocationPolicy::discover` in `acdp-client`) failed under
+    /// `DiscoveryFailurePolicy::FailClosed`. Not a wire code — the same
+    /// rationale as [`AcdpError::ContextIdMismatch`],
+    /// [`AcdpError::IncompleteLineage`], and [`AcdpError::SearchTruncated`]:
+    /// this is a client-local decision about how to react to a failure
+    /// the registry already reported some other way, so it wraps that
+    /// failure rather than inventing a new wire vocabulary entry for it.
+    /// `source` is boxed rather than inline: this variant recurses
+    /// (`AcdpError` containing `AcdpError`), and an unboxed recursive
+    /// field would make the enum infinite-sized. `Box<AcdpError>` still
+    /// gets `Clone` for free from [`AcdpError`]'s own derive (added for
+    /// issue #248 Phase 4 — see the enum's doc), which is what lets a
+    /// `ProceedWithKnown`-swallowed discovery failure be independently
+    /// owned by both `VerifiedContext::revocation_discovery_failure`
+    /// and `VerificationReport::revocation_discovery` from one call.
+    /// `AcdpError` still has no `PartialEq`.
+    #[error("revocation auto-discovery failed: {source}")]
+    RevocationDiscoveryFailed {
+        /// The underlying error discovery hit — typically a transport
+        /// failure from the search or lineage-walk requests
+        /// (`AcdpError::KeyResolutionUnreachable`, `AcdpError::Http`,
+        /// …) or `AcdpError::SearchTruncated` from exhausting a
+        /// discovery safety cap. [`AcdpError::is_transient`] delegates
+        /// to this field, so a retry-aware caller still gets a correct
+        /// answer through the wrapper.
+        source: Box<AcdpError>,
+    },
 
     /// Wire code: `hash_mismatch`. The remote registry rejected a
     /// publish request because its independent hash recomputation did
@@ -348,7 +400,15 @@ impl AcdpError {
     /// All cryptographic, schema, and authorization errors are NOT
     /// transient: a malformed body or invalid signature will not
     /// magically validate on retry.
+    ///
+    /// [`AcdpError::RevocationDiscoveryFailed`] is a wrapper, not a
+    /// wire code, so it is exempted from the list above and instead
+    /// delegates to its own `source` — a retry-aware caller unwrapping
+    /// the wrapper still gets the right answer.
     pub fn is_transient(&self) -> bool {
+        if let AcdpError::RevocationDiscoveryFailed { source } = self {
+            return source.is_transient();
+        }
         matches!(
             self,
             AcdpError::KeyResolutionUnreachable(_)

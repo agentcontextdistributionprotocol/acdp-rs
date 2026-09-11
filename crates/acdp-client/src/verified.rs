@@ -6,6 +6,7 @@ use acdp_did::WebResolver;
 use acdp_primitives::error::AcdpError;
 use acdp_types::{body::FullContext, primitives::CtxId};
 use acdp_verify::Verifier;
+use std::time::Duration;
 
 /// Consumer-tunable strictness for [`VerifiedContext::fetch_with_policy`],
 /// [`VerifiedContext::fetch_current_with_policy`], and the
@@ -114,14 +115,18 @@ impl Default for VerificationPolicy {
 /// Consumer-held key revocations to enforce during verification
 /// (ACDP 0.3, RFC-ACDP-0014 §7).
 ///
-/// The revocation signal is **pull-based**: the pipeline does not go
-/// looking for revocations on its own — the caller supplies the
+/// [`Self::known`] is **pull-based**: the pipeline does not go looking
+/// for those revocations on its own — the caller supplies the
 /// **verified** revocations it holds (from
 /// [`find_revocations`](crate::revocation::find_revocations),
 /// [`find_registry_attested_revocations`](crate::revocation::find_registry_attested_revocations),
 /// an out-of-band channel, or its own indefinite cache — the statement
-/// is permanent, cache accordingly). When `known` is empty the phase
-/// is inert and verification behaves exactly as before RFC-ACDP-0014.
+/// is permanent, cache accordingly). [`Self::discover`] (RFC-ACDP-0014
+/// §8) is the opt-in complement: when set, `verify_retrieved` itself
+/// runs those same two lookups and unions their result with `known`
+/// (see [`RevocationDiscovery`]). When `known` is empty AND `discover`
+/// is `None`, the phase is inert and verification behaves exactly as
+/// before RFC-ACDP-0014.
 ///
 /// When the body's signing key matches a supplied revocation, §7
 /// applies: a receipt-attested publish time strictly before the
@@ -134,16 +139,27 @@ impl Default for VerificationPolicy {
 /// an unverified receipt provides no publish time, so a revoked key's
 /// contexts all fail closed under it.
 ///
-/// This applies uniformly to every entry point that accepts a
+/// This applies uniformly to every entry point that *accepts* a
 /// [`VerificationPolicy`] — [`VerifiedContext::fetch_with_policy`],
 /// [`VerifiedContext::fetch_current_with_policy`], and the
-/// `fetch_report*` family — since they all reach this phase through the
-/// same internal pipeline. On [`VerifiedContext::fetch_report_diagnose`]
-/// specifically, "fails closed" means the returned [`VerifiedContext`]
-/// handle is withheld and the cause is recorded in
-/// `VerificationReport::policy_phase_error`, rather than the call
-/// returning `Err` — that method never short-circuits on a policy-phase
-/// failure by design.
+/// `fetch_report*` family (five entry points in total) — since they all
+/// reach this phase through the same internal pipeline. On
+/// [`VerifiedContext::fetch_report_diagnose`] specifically, "fails
+/// closed" means the returned [`VerifiedContext`] handle is withheld
+/// and the cause is recorded in `VerificationReport::policy_phase_error`,
+/// rather than the call returning `Err` — that method never
+/// short-circuits on a policy-phase failure by design.
+///
+/// "Uniformly" has two carve-outs, both structural rather than a policy
+/// choice: [`VerifiedContext::fetch`] and
+/// [`VerifiedContext::fetch_current`] hardcode
+/// [`VerificationPolicy::default`] and so can never carry a non-empty
+/// `known` or a `discover`; callers wanting either use the
+/// `_with_policy` forms instead. And
+/// [`crate::CrossRegistryResolver`] builds its own internal policy with
+/// no injection point, so neither `known` nor `discover` can reach a
+/// cross-registry walk at all. Both are recorded as known limitations
+/// (issue #248 LIM-1/LIM-2) rather than silently true.
 ///
 /// Only put revocations here that you have verified (strict body
 /// pipeline + the §5 not-self-signed rule) and, per §6, that you have
@@ -159,7 +175,16 @@ impl Default for VerificationPolicy {
 /// those from
 /// [`find_registry_attested_revocations`](crate::revocation::find_registry_attested_revocations)
 /// instead.
+///
+/// `#[non_exhaustive]`: this struct grew a second field
+/// ([`Self::discover`], RFC-ACDP-0014 §8 auto-discovery) after having
+/// shipped with exactly one, and a caller constructing this with a
+/// bare struct literal would otherwise break on every future field the
+/// same way. Construct with [`Self::new`] (equivalent to today's
+/// `RevocationPolicy { known }`) and, when opting into discovery,
+/// [`Self::with_discovery`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct RevocationPolicy {
     /// Verified revocations to enforce, matched against the signing
     /// key's RFC-ACDP-0010 §6 fingerprint. The §4 earliest-
@@ -179,6 +204,232 @@ pub struct RevocationPolicy {
     /// producer/trust-class scope filter. Populate `known` from one of
     /// these rather than hand-assembling a lineage.
     pub known: Vec<acdp_types::revocation::KeyRevocation>,
+
+    /// RFC-ACDP-0014 §8 auto-discovery configuration. `None` (the
+    /// default) is exactly today's behavior: the caller supplies
+    /// everything via [`Self::known`] and this phase does no network
+    /// I/O of its own. `Some` opts into running
+    /// [`find_revocations`](crate::revocation::find_revocations) and,
+    /// depending on [`RevocationDiscovery::include_registry_attested`],
+    /// [`find_registry_attested_revocations`](crate::revocation::find_registry_attested_revocations)
+    /// as part of verification, merging their results with
+    /// [`Self::known`].
+    pub discover: Option<RevocationDiscovery>,
+}
+
+impl RevocationPolicy {
+    /// Construct a policy from a caller-supplied revocation set with
+    /// discovery left off (`discover: None`) — the same shape as the
+    /// bare `RevocationPolicy { known }` literal this struct's
+    /// `#[non_exhaustive]` retires.
+    #[must_use]
+    pub fn new(known: Vec<acdp_types::revocation::KeyRevocation>) -> Self {
+        Self {
+            known,
+            discover: None,
+        }
+    }
+
+    /// Opt into RFC-ACDP-0014 §8 auto-discovery on top of any
+    /// caller-supplied [`Self::known`] revocations. See
+    /// [`RevocationDiscovery`] for cost and the required explicit
+    /// trust-class choice.
+    #[must_use]
+    pub fn with_discovery(mut self, discovery: RevocationDiscovery) -> Self {
+        self.discover = Some(discovery);
+        self
+    }
+}
+
+/// RFC-ACDP-0014 §8 revocation auto-discovery configuration.
+///
+/// When set on [`RevocationPolicy::discover`], this instructs
+/// verification to look up revocations itself — via
+/// [`find_revocations`](crate::revocation::find_revocations) and,
+/// when [`Self::include_registry_attested`] is `true`, additionally
+/// [`find_registry_attested_revocations`](crate::revocation::find_registry_attested_revocations)
+/// — instead of relying solely on [`RevocationPolicy::known`].
+///
+/// # Cost
+///
+/// Discovery is expensive, and every request it issues is **serial**.
+/// `MAX_SEARCH_PAGES = 10` (`crate::revocation`) bounds search
+/// round-trips *per `(type_form, status)` pair*, and there are **6**
+/// such pairs (2 type forms × 3 statuses) — so up to 60 search
+/// requests, each of which can name up to 100 per-candidate context
+/// retrieves (`GET /contexts/{id}`, capped at 1 MB apiece), for up to
+/// **6,000 + 60 + 100 = 6,160 requests / ~6.1 GB** in the worst case
+/// for *one* of the two discovery functions. The retrieve fan-out is
+/// **not** bounded by `MAX_LINEAGE_WALKS = 100` — that cap is only
+/// checked *after* the retrieves have already gone out. With
+/// [`Self::include_registry_attested`] set, both functions run:
+/// **≈12,321 requests / ~12.2 GB** worst case for the pair (the extra
+/// 1 is the unconditional `client.capabilities()` fetch
+/// `find_registry_attested_revocations` makes).
+///
+/// [`Self::total_timeout`] is an **availability bound, not a bytes or
+/// memory bound**: it stops verification from hanging forever against
+/// a slow or hostile registry, but a hostile registry on a fast link
+/// can still serve gigabytes of legitimate-looking traffic inside the
+/// window — the 1 MB cap applies per request, not in aggregate, and
+/// verified revocations accumulate in a `Vec` for the call's duration.
+/// There is no request-count or byte budget in this version, and no
+/// cache: every call re-discovers from scratch. A caller verifying
+/// many contexts against the same producer should discover once
+/// itself and pass the results via [`RevocationPolicy::known`] instead
+/// of setting `discover` on every call — the same hoisting guidance
+/// `crate::revocation`'s `find_registry_attested_revocations` doc
+/// already gives callers of that function directly (see its "Cost
+/// note for callers verifying many contexts").
+///
+/// # Reentrancy
+///
+/// Discovery calls back into verification, and that reentrancy has two
+/// consequences worth stating explicitly rather than leaving implicit:
+///
+/// 1. Each candidate body [`find_revocations`](crate::revocation::find_revocations)
+///    turns up is verified via `Verifier::new(resolver).verify_body` —
+///    **not** `verify_retrieved` — so discovered revocation bodies are
+///    themselves checked *without* revocation checking of their own.
+///    That is defensible under RFC-ACDP-0014 §5 step 1's "currently
+///    authorized key," but it is an assumption this type is making on
+///    the caller's behalf, not an accident.
+/// 2. Verifying a `key-revocation` context now *also* triggers
+///    discovery against the same producer, so the revocation-fetch path
+///    itself becomes fragile under [`DiscoveryFailurePolicy::FailClosed`]:
+///    a producer whose revocation search is briefly unreachable can no
+///    longer be verified as revoked, either.
+///
+/// # No `Default`
+///
+/// This type deliberately has **no [`Default`] impl** — construct it
+/// via [`Self::producer_signed_only`] or [`Self::all_trust_classes`].
+/// RFC-ACDP-0014 §6's "lost-everything" fallback means a producer that
+/// has lost every key it could sign a revocation with can *only* be
+/// revoked registry-attested — so the catastrophic case is exactly the
+/// one a silently-defaulted-off trust class would skip. A quiet
+/// `Default::default()` that leaves `include_registry_attested: false`
+/// would make that skip invisible at every call site; forcing a named
+/// constructor puts the choice at the type level instead, where a
+/// reviewer (and `git grep`) can see it. Callers protecting against
+/// key loss, or otherwise unwilling to assume a producer always
+/// retains signing capacity, MUST use [`Self::all_trust_classes`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RevocationDiscovery {
+    /// Whether to also run
+    /// [`find_registry_attested_revocations`](crate::revocation::find_registry_attested_revocations)
+    /// (the §6 registry-attested trust class), in addition to the
+    /// producer-signed search every discovery configuration runs.
+    /// Requires the registry to serve `/.well-known/acdp.json`; under
+    /// [`DiscoveryFailurePolicy::FailClosed`] a registry that serves no
+    /// capabilities document fails verification when this is `true`.
+    pub include_registry_attested: bool,
+    /// What to do when discovery itself fails (a transient transport
+    /// error from either search, or the search-safety-cap error
+    /// `AcdpError::SearchTruncated`). Default [`DiscoveryFailurePolicy::FailClosed`].
+    ///
+    /// **`SearchTruncated` and a transport error (e.g. a 503) are NOT
+    /// equivalent, even though both take this same `on_failure` path.**
+    /// `SearchTruncated` means "this producer has more revocations than
+    /// we will page through" (`MAX_SEARCH_PAGES`) — an
+    /// **attacker-inducible security downgrade**, since a hostile
+    /// producer or registry can pad the result set specifically to
+    /// exhaust the page cap and hide a real revocation from discovery.
+    /// A 503 is an ordinary availability blip. Under
+    /// [`DiscoveryFailurePolicy::ProceedWithKnown`] both are treated the
+    /// same way (proceed on [`RevocationPolicy::known`] alone, record
+    /// the failure) — choose `ProceedWithKnown` knowing it also waives
+    /// truncation, not just transient unavailability.
+    pub on_failure: DiscoveryFailurePolicy,
+    /// Wall-clock budget for the whole discovery step (both searches,
+    /// if [`Self::include_registry_attested`] is set). An **availability**
+    /// bound only — see the type-level cost section above. Matches this
+    /// crate's existing `ResolverOptions::total_timeout` precedent
+    /// (`crate::cross_registry`), defaulting to the same 30 s rather
+    /// than exceeding it on the core verify path.
+    ///
+    /// Enforced via [`tokio::time::timeout`], which requires the
+    /// executing Tokio runtime to have its **time driver enabled**
+    /// (`#[tokio::main]` and `#[tokio::test]` enable it by default;
+    /// a hand-built `Builder::new_current_thread()` runtime does
+    /// **not** unless `.enable_time()` or `.enable_all()` is called).
+    /// Calling `verify_retrieved` with `discover: Some(..)` from a
+    /// runtime without the time driver **panics** — it does not
+    /// return `Err` — the same requirement `ResolverOptions::total_timeout`
+    /// (`crate::cross_registry`) already carries on its opt-in walk,
+    /// but here it sits on the core verify path whenever discovery is
+    /// configured, not just on an explicit cross-registry walk.
+    pub total_timeout: Duration,
+}
+
+impl RevocationDiscovery {
+    /// Discover producer-signed revocations only
+    /// (`include_registry_attested: false`). Cheapest of the two
+    /// constructors, and the default choice for callers that are not
+    /// specifically defending against a producer that has lost every
+    /// signing key — see the "No `Default`" section above for who must
+    /// NOT stop here.
+    #[must_use]
+    pub fn producer_signed_only() -> Self {
+        Self {
+            include_registry_attested: false,
+            on_failure: DiscoveryFailurePolicy::FailClosed,
+            total_timeout: Duration::from_secs(30),
+        }
+    }
+
+    /// Discover both trust classes: producer-signed AND registry-attested
+    /// (`include_registry_attested: true`). Required to catch RFC-ACDP-0014
+    /// §6's "lost-everything" fallback, where a producer with no signing
+    /// key left can only be revoked registry-attested. Requires the
+    /// registry to serve a capabilities document.
+    #[must_use]
+    pub fn all_trust_classes() -> Self {
+        Self {
+            include_registry_attested: true,
+            on_failure: DiscoveryFailurePolicy::FailClosed,
+            total_timeout: Duration::from_secs(30),
+        }
+    }
+}
+
+/// What to do when RFC-ACDP-0014 §8 auto-discovery itself fails (a
+/// transient search/lookup error, or the discovery search functions'
+/// own safety-cap error).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum DiscoveryFailurePolicy {
+    /// Treat a discovery failure as a verification failure
+    /// (`AcdpError::RevocationDiscoveryFailed`). Default — matches this
+    /// crate's existing bias (§7's own lineage-walk and
+    /// verification-failure paths already fail closed; see
+    /// `crate::revocation`'s doc for the parallel reasoning) that an
+    /// authorization phase which could not run is not the same thing
+    /// as one that ran and found nothing.
+    #[default]
+    FailClosed,
+    /// Proceed using only [`RevocationPolicy::known`] when discovery
+    /// fails, silently dropping whatever discovery could not complete.
+    /// Use only when availability matters more than catching a
+    /// revocation that discovery would otherwise have found.
+    ProceedWithKnown,
+}
+
+/// What RFC-ACDP-0014 §8 auto-discovery actually did, distinguishing
+/// "this trust class was not queried" from "it was queried and found
+/// nothing" — the same distinction
+/// [`RevocationDiscovery`]'s no-`Default` design protects at the
+/// config level, carried through to the outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DiscoveryOutcome {
+    /// Count of producer-signed revocations discovery found.
+    pub producer_signed: usize,
+    /// Count of registry-attested revocations discovery found, or
+    /// `None` if [`RevocationDiscovery::include_registry_attested`]
+    /// was `false` and that trust class was never queried.
+    pub registry_attested: Option<usize>,
 }
 
 /// How to treat the optional `registry_receipt` on retrieval
@@ -393,7 +644,31 @@ pub struct VerifiedContext {
     /// within policy; `None` when there is no verified head receipt or
     /// the max-age knob is disabled.
     head_receipt_stale: Option<bool>,
+    /// RFC-ACDP-0014 §8 auto-discovery failure, when
+    /// `policy.revocations.discover` was `Some`, discovery failed, and
+    /// [`DiscoveryFailurePolicy::ProceedWithKnown`] let verification
+    /// proceed on [`RevocationPolicy::known`] alone anyway. `None` when
+    /// discovery was off, succeeded, or was never attempted because
+    /// [`DiscoveryFailurePolicy::FailClosed`] turned the failure into
+    /// this call's `Err` instead (so no `VerifiedContext` was ever
+    /// constructed to carry it). Exposed so `ProceedWithKnown` is never
+    /// silent on the plain `fetch*` paths — see
+    /// [`Self::revocation_discovery_failure`].
+    revocation_discovery_failure: Option<AcdpError>,
 }
+
+/// `verify_retrieved`'s return type — private and free to shape (issue
+/// #248 Phase 4 grew a third tuple element for the discovery outcome).
+/// Named only to keep clippy's `type_complexity` lint quiet; every
+/// caller destructures it positionally exactly as before.
+type VerifyRetrievedResult = Result<
+    (
+        KeyAuthorization,
+        Option<acdp_types::receipt::RegistryReceipt>,
+        Option<Result<DiscoveryOutcome, AcdpError>>,
+    ),
+    AcdpError,
+>;
 
 impl VerifiedContext {
     /// Retrieve a context and verify its signature using the strict
@@ -445,14 +720,19 @@ impl VerifiedContext {
         policy: &VerificationPolicy,
     ) -> Result<Self, AcdpError> {
         let ctx = client.retrieve(ctx_id).await?;
-        let (key_status, verified_receipt) =
+        let (key_status, verified_receipt, revocation_discovery) =
             Self::verify_retrieved(client, resolver, &ctx, ctx_id, policy).await?;
+        let revocation_discovery_failure = match revocation_discovery {
+            Some(Err(e)) => Some(e),
+            _ => None,
+        };
         Ok(Self {
             inner: ctx,
             key_status,
             verified_receipt,
             verified_head_receipt: None,
             head_receipt_stale: None,
+            revocation_discovery_failure,
         })
     }
 
@@ -514,8 +794,12 @@ impl VerifiedContext {
     ) -> Result<Self, AcdpError> {
         let ctx = client.current(lineage_id).await?;
         let served_ctx_id = ctx.body.ctx_id.clone();
-        let (key_status, verified_receipt) =
+        let (key_status, verified_receipt, revocation_discovery) =
             Self::verify_retrieved(client, resolver, &ctx, &served_ctx_id, policy).await?;
+        let revocation_discovery_failure = match revocation_discovery {
+            Some(Err(e)) => Some(e),
+            _ => None,
+        };
 
         // ── Lineage-head receipt phase (RFC-ACDP-0011) ──────────────
         let (verified_head_receipt, head_receipt_stale) =
@@ -564,6 +848,7 @@ impl VerifiedContext {
             verified_receipt,
             verified_head_receipt,
             head_receipt_stale,
+            revocation_discovery_failure,
         })
     }
 
@@ -586,13 +871,7 @@ impl VerifiedContext {
         ctx: &FullContext,
         expected_ctx_id: &CtxId,
         policy: &VerificationPolicy,
-    ) -> Result<
-        (
-            KeyAuthorization,
-            Option<acdp_types::receipt::RegistryReceipt>,
-        ),
-        AcdpError,
-    > {
+    ) -> VerifyRetrievedResult {
         // Identifier binding — RFC-ACDP-0006 §4.1 step 7 (NORMATIVE, "Bind
         // the resolved identity"): refuse a served body whose `ctx_id`
         // differs from the one requested, before any crypto or network
@@ -661,6 +940,101 @@ impl VerifiedContext {
             }
         };
 
+        // ── Revocation discovery phase (RFC-ACDP-0014 §8) ────────────
+        // Runs `policy.revocations.discover`'s two independent lookups
+        // — producer-signed always, registry-attested only when
+        // `include_registry_attested` — CONCURRENTLY under
+        // `tokio::try_join!`, with the pair wrapped in a single
+        // `tokio::time::timeout(discover.total_timeout, ..)` (D4). This
+        // puts a Tokio **time-driver requirement** (`enable_time`) on
+        // the core verify path, gated behind `discover: Some` — the
+        // same requirement `CrossRegistryResolver::walk_derived_from`
+        // already carries on its opt-in walk (`cross_registry.rs`).
+        //
+        // Reentrancy: `find_revocations` verifies each candidate body
+        // via `Verifier::new(resolver).verify_body` — never
+        // `verify_retrieved` — so discovered revocation bodies are
+        // themselves checked WITHOUT revocation checking. That is
+        // defensible under §5 step 1's "currently authorized key," but
+        // it is an assumption, not an accident: verifying a
+        // `key-revocation` context now *also* triggers discovery
+        // against the same producer, so the revocation-fetch path
+        // itself becomes fragile under `FailClosed` (a producer whose
+        // revocation search is briefly unreachable can no longer be
+        // verified as revoked, either).
+        //
+        // A `SearchTruncated` failure and a 503 both take the
+        // `on_failure` path, but they are NOT equivalent: truncation
+        // means "this producer has more revocations than we will page
+        // through" — an attacker-inducible security downgrade, since a
+        // hostile producer/registry can pad the result set specifically
+        // to exhaust `MAX_SEARCH_PAGES` — whereas a 503 is an ordinary
+        // availability blip. `ProceedWithKnown` treats both the same
+        // way (proceed on `known` alone, record the failure); naming
+        // the asymmetry here is so that choice is made with open eyes.
+        let (discovered, revocation_discovery) = match &policy.revocations.discover {
+            None => (Vec::new(), None),
+            Some(discovery) => {
+                let agent_id = &ctx.body.agent_id;
+                let include_attested = discovery.include_registry_attested;
+                let discovery_fut = async {
+                    tokio::try_join!(
+                        super::revocation::find_revocations(client, resolver, agent_id),
+                        async {
+                            if include_attested {
+                                super::revocation::find_registry_attested_revocations(
+                                    client, resolver, agent_id,
+                                )
+                                .await
+                            } else {
+                                Ok(Vec::new())
+                            }
+                        },
+                    )
+                };
+                match tokio::time::timeout(discovery.total_timeout, discovery_fut).await {
+                    Ok(Ok((producer_signed, registry_attested))) => {
+                        let outcome = DiscoveryOutcome {
+                            producer_signed: producer_signed.len(),
+                            registry_attested: if include_attested {
+                                Some(registry_attested.len())
+                            } else {
+                                None
+                            },
+                        };
+                        let mut merged = producer_signed;
+                        merged.extend(registry_attested);
+                        (merged, Some(Ok(outcome)))
+                    }
+                    Ok(Err(e)) => {
+                        let wrapped = AcdpError::RevocationDiscoveryFailed {
+                            source: Box::new(e),
+                        };
+                        match discovery.on_failure {
+                            DiscoveryFailurePolicy::FailClosed => return Err(wrapped),
+                            DiscoveryFailurePolicy::ProceedWithKnown => {
+                                (Vec::new(), Some(Err(wrapped)))
+                            }
+                        }
+                    }
+                    Err(_elapsed) => {
+                        let wrapped = AcdpError::RevocationDiscoveryFailed {
+                            source: Box::new(AcdpError::CrossRegistryResolutionFailed(format!(
+                                "revocation auto-discovery exceeded total_timeout={:?}",
+                                discovery.total_timeout
+                            ))),
+                        };
+                        match discovery.on_failure {
+                            DiscoveryFailurePolicy::FailClosed => return Err(wrapped),
+                            DiscoveryFailurePolicy::ProceedWithKnown => {
+                                (Vec::new(), Some(Err(wrapped)))
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
         // ── Revocation phase (RFC-ACDP-0014 §7) ─────────────────────
         // Runs after the receipt phase because the boundary comparison
         // accepts ONLY a receipt-attested publish time (§7 step 1 —
@@ -669,7 +1043,23 @@ impl VerifiedContext {
         // cross-checked against the body's signing key above (§8 step
         // 5), so `verified_receipt.created_at` genuinely places THIS
         // key's signature in time.
-        let revocation_verdict = if policy.revocations.known.is_empty() {
+        //
+        // `effective` is the union of `policy.revocations.known` and
+        // whatever `discovered` above (empty when `discover` is `None`,
+        // or when discovery failed under `ProceedWithKnown`) —
+        // deliberately WITHOUT deduplication: `effective_boundary` is a
+        // `filter().map().min()` fold, so duplicate entries are inert
+        // and two sources disagreeing resolves to the earliest
+        // boundary, the fail-closed direction §4 mandates. Dedup is
+        // unavailable anyway — `KeyRevocation` is not `Hash`.
+        let effective: Vec<acdp_types::revocation::KeyRevocation> = policy
+            .revocations
+            .known
+            .iter()
+            .cloned()
+            .chain(discovered)
+            .collect();
+        let revocation_verdict = if effective.is_empty() {
             None
         } else {
             let fingerprint = acdp_crypto::fingerprint::fingerprint_for_key_id(
@@ -679,7 +1069,7 @@ impl VerifiedContext {
             )
             .await?;
             super::revocation::classify_under_revocation(
-                &policy.revocations.known,
+                &effective,
                 &fingerprint,
                 verified_receipt.as_ref().map(|r| r.created_at),
             )?
@@ -727,7 +1117,7 @@ impl VerifiedContext {
             }
         }
 
-        Ok((key_status, verified_receipt))
+        Ok((key_status, verified_receipt, revocation_discovery))
     }
 
     /// Retrieve + verify, returning a structured [`VerificationReport`]
@@ -807,6 +1197,7 @@ impl VerifiedContext {
             ctx_id_ok: ctx.body.ctx_id == *ctx_id,
             key_status: None,
             policy_phase_error: None,
+            revocation_discovery: None,
         };
 
         // Schema (structural) — record pass/fail.
@@ -866,14 +1257,20 @@ impl VerifiedContext {
             )
             .await; // borrow of `ctx` ends here
             match outcome {
-                Ok((key_status, verified_receipt)) => {
+                Ok((key_status, verified_receipt, revocation_discovery)) => {
                     report.key_status = Some(key_status);
+                    let revocation_discovery_failure = match &revocation_discovery {
+                        Some(Err(e)) => Some(e.clone()),
+                        _ => None,
+                    };
+                    report.revocation_discovery = revocation_discovery;
                     Some(Self {
                         inner: ctx,
                         key_status,
                         verified_receipt,
                         verified_head_receipt: None,
                         head_receipt_stale: None,
+                        revocation_discovery_failure,
                     })
                 }
                 Err(e) => {
@@ -933,6 +1330,7 @@ impl VerifiedContext {
             ctx_id_ok: true,
             key_status: None,
             policy_phase_error: None,
+            revocation_discovery: None,
         };
 
         // Structural-only schema validation — embedded-hash checks are
@@ -963,12 +1361,17 @@ impl VerifiedContext {
         // derived policy forces `validate_body_schema` off (P1 was already
         // handled, structurally-only, above) and passes everything else
         // through verbatim — see `VerificationPolicy::derived_for_report`.
-        let (key_status, verified_receipt) =
+        let (key_status, verified_receipt, revocation_discovery) =
             Self::verify_retrieved(client, resolver, &ctx, ctx_id, &policy.derived_for_report())
                 .await?;
         report.body_hash_ok = true;
         report.signature_ok = true;
         report.key_status = Some(key_status);
+        let revocation_discovery_failure = match &revocation_discovery {
+            Some(Err(e)) => Some(e.clone()),
+            _ => None,
+        };
+        report.revocation_discovery = revocation_discovery;
 
         // External fetches — record per-ref outcomes when a fetcher is
         // supplied; otherwise leave each slot as `None` so callers can
@@ -988,6 +1391,7 @@ impl VerifiedContext {
                 verified_receipt,
                 verified_head_receipt: None,
                 head_receipt_stale: None,
+                revocation_discovery_failure,
             },
             report,
         ))
@@ -1046,6 +1450,20 @@ impl VerifiedContext {
     /// verified head receipt or the max-age knob is disabled.
     pub fn head_receipt_stale(&self) -> Option<bool> {
         self.head_receipt_stale
+    }
+
+    /// RFC-ACDP-0014 §8 auto-discovery failure that
+    /// [`DiscoveryFailurePolicy::ProceedWithKnown`] swallowed to let
+    /// this `VerifiedContext` exist at all. `None` when discovery was
+    /// off ([`RevocationPolicy::discover`] is `None`), succeeded, or
+    /// was never attempted — a [`DiscoveryFailurePolicy::FailClosed`]
+    /// failure turns into this call's `Err` instead, so there is no
+    /// `VerifiedContext` to carry it in that case. See
+    /// [`VerificationReport::revocation_discovery`] for the twin
+    /// surface on the report family, populated from the same event on
+    /// the `fetch_report*` paths.
+    pub fn revocation_discovery_failure(&self) -> Option<&AcdpError> {
+        self.revocation_discovery_failure.as_ref()
     }
 
     /// Raw registry receipt value as served on the wire
@@ -1139,7 +1557,11 @@ impl VerifiedContext {
 ///   `Some(Err(_))` on any failure (SSRF rejection, hash mismatch,
 ///   timeout, …).
 ///
-/// `AcdpError` doesn't implement `Clone`, so the report is move-only.
+/// `AcdpError` implements `Clone` (see its doc), which is what lets
+/// [`Self::revocation_discovery`]'s failure also be independently owned
+/// by [`VerifiedContext::revocation_discovery_failure`] from the same
+/// `fetch_report*` call; `AcdpError` still has no `PartialEq`, so
+/// asserting on any `AcdpError`-carrying field here wants `matches!`.
 ///
 /// `#[non_exhaustive]`: this struct has already gained a field once as a
 /// non-optional consequence of a security fix (the RFC-ACDP-0006 §4.1
@@ -1186,11 +1608,29 @@ pub struct VerificationReport {
     /// revocation, signature/historical-key, unknown-status) failed, when
     /// one did. `None` when every phase passed, or when `verify_retrieved`
     /// was never invoked because a top-level probe failed first.
-    /// `AcdpError` is not `Clone`, so — like `data_ref_embedded` above —
-    /// this field is populated by moving the error in, and asserting on it
-    /// requires `matches!` rather than `==`/`assert_eq!` (`AcdpError`
-    /// derives only `Debug, Error`).
+    /// `AcdpError` derives `Clone` (see its doc — added for this field's
+    /// and [`VerifiedContext::revocation_discovery_failure`]'s sake), but
+    /// asserting on it still wants `matches!` over `==`/`assert_eq!`:
+    /// `AcdpError` has no `PartialEq`.
     pub policy_phase_error: Option<AcdpError>,
+    /// What RFC-ACDP-0014 §8 auto-discovery did, when
+    /// `policy.revocations.discover` was `Some` and `verify_retrieved`
+    /// was reached (a top-level probe failure or a
+    /// [`DiscoveryFailurePolicy::FailClosed`] discovery failure both
+    /// leave this `None` — the latter surfaces via
+    /// [`Self::policy_phase_error`] instead, since `verify_retrieved`
+    /// returned `Err` before there was any outcome to record). `Some(Ok(_))`
+    /// on success; `Some(Err(_))` when
+    /// [`DiscoveryFailurePolicy::ProceedWithKnown`] swallowed a
+    /// discovery failure and verification proceeded on
+    /// [`RevocationPolicy::known`] alone — see
+    /// [`VerifiedContext::revocation_discovery_failure`] for the twin
+    /// surface on the verified handle itself, populated from the same
+    /// event. The counts inside [`DiscoveryOutcome`] are discovery
+    /// output only, never `known` — appended last, after
+    /// `policy_phase_error`, for the same "fail loudly on stale
+    /// positional construction" reason that field was.
+    pub revocation_discovery: Option<Result<DiscoveryOutcome, AcdpError>>,
 }
 
 /// Sentinel `DataRefFetcher` used as the type parameter for
@@ -1213,7 +1653,12 @@ impl DataRefFetcher for NoFetcher {
 
 #[cfg(test)]
 mod tests {
-    use super::{HistoricalKeyPolicy, ReceiptPolicy, VerificationPolicy};
+    use super::{
+        DiscoveryFailurePolicy, HistoricalKeyPolicy, ReceiptPolicy, RevocationDiscovery,
+        RevocationPolicy, VerificationPolicy,
+    };
+    use acdp_primitives::error::AcdpError;
+    use std::time::Duration;
 
     /// The RFC-ACDP-0001 §9.2 named constructor preserves exact v0.1.0
     /// semantics: receipts inert, assertionMethod-only keys. It is
@@ -1343,12 +1788,165 @@ mod tests {
             }
             offset += line.len();
         }
+
+        // Second pass — whitespace-normalized, to catch a read rustfmt
+        // has wrapped across lines (e.g. a `policy` / `.revocations` /
+        // `.known` chain on three separate lines), which the
+        // line-by-line pass above cannot see since the pattern never
+        // sits contiguously on any single line. Build a copy of `SRC`
+        // with whitespace immediately touching a `.` removed — folding
+        // any such wrapped chain back to its unwrapped spelling — while
+        // recording, for every byte kept, the byte offset it came from
+        // in the original `SRC`. Every match here is re-validated
+        // against its ORIGINAL line for the same comment / string
+        // exclusions the first pass applies, so this pass only adds
+        // coverage; it does not relax anything the first pass enforces.
+        let mut normalized = String::with_capacity(SRC.len());
+        let mut orig_offsets: Vec<usize> = Vec::with_capacity(SRC.len());
+        let mut after_dot = false;
+        for (i, ch) in SRC.char_indices() {
+            if ch == '.' {
+                while let Some(last) = normalized.chars().last() {
+                    if !last.is_whitespace() {
+                        break;
+                    }
+                    normalized.pop();
+                    let new_len = orig_offsets.len() - last.len_utf8();
+                    orig_offsets.truncate(new_len);
+                }
+                normalized.push(ch);
+                orig_offsets.push(i);
+                after_dot = true;
+                continue;
+            }
+            if after_dot && ch.is_whitespace() {
+                continue; // swallow whitespace immediately after a dot
+            }
+            after_dot = false;
+            normalized.push(ch);
+            for _ in 0..ch.len_utf8() {
+                orig_offsets.push(i);
+            }
+        }
+        debug_assert_eq!(normalized.len(), orig_offsets.len());
+
+        let is_comment_line_at = |pos: usize| -> bool {
+            let line_start = SRC[..pos].rfind('\n').map_or(0, |i| i + 1);
+            let line_end = SRC[pos..].find('\n').map_or(SRC.len(), |i| pos + i);
+            SRC[line_start..line_end].trim_start().starts_with("//")
+        };
+        let in_string_literal_at = |pos: usize| -> bool {
+            let line_start = SRC[..pos].rfind('\n').map_or(0, |i| i + 1);
+            SRC[line_start..pos].matches('"').count() % 2 == 1
+        };
+
+        for pattern in &patterns {
+            let mut search_from = 0usize;
+            while let Some(rel) = normalized[search_from..].find(pattern.as_str()) {
+                let match_col = search_from + rel;
+                let orig_start = orig_offsets[match_col];
+                if !is_comment_line_at(orig_start) && !in_string_literal_at(orig_start) {
+                    checked_any = true;
+                    assert!(
+                        orig_start >= body_open && orig_start < body_close,
+                        "found `{pattern}` (whitespace-normalized) outside \
+                         verify_retrieved's body (original byte offset {orig_start}) \
+                         — every authorization-policy-field read must live inside \
+                         verify_retrieved, the sole reader, even when rustfmt has \
+                         wrapped the field-access chain across multiple lines"
+                    );
+                }
+                search_from = match_col + pattern.len();
+            }
+        }
+
         assert!(
             checked_any,
             "sanity: the scan must find at least one non-comment, non-string-literal \
              match for at least one pattern (verify_retrieved itself reads these \
              fields) — zero hits would mean the patterns are miscomputed, not that \
              the invariant holds"
+        );
+    }
+
+    /// issue #248 Phase 2, acceptance criterion 1 — `RevocationPolicy::default()`
+    /// stays behaviorally identical to the pre-Phase-2 shape: no known
+    /// revocations, discovery off.
+    #[test]
+    fn revocation_policy_default_is_unchanged() {
+        let policy = RevocationPolicy::default();
+        assert!(policy.known.is_empty());
+        assert!(policy.discover.is_none());
+    }
+
+    /// issue #248 Phase 2, acceptance criterion 1 (continued) — `::new`
+    /// produces the same shape as the old bare-literal `RevocationPolicy { known }`
+    /// this struct's `#[non_exhaustive]` retires.
+    #[test]
+    fn revocation_policy_new_leaves_discovery_off() {
+        let policy = RevocationPolicy::new(vec![]);
+        assert!(policy.known.is_empty());
+        assert!(policy.discover.is_none());
+    }
+
+    /// issue #248 Phase 2, acceptance criterion 3.
+    #[test]
+    fn discovery_failure_policy_defaults_to_fail_closed() {
+        assert_eq!(
+            DiscoveryFailurePolicy::default(),
+            DiscoveryFailurePolicy::FailClosed
+        );
+    }
+
+    /// issue #248 Phase 2, acceptance criterion 3.
+    #[test]
+    fn revocation_discovery_constructors_set_the_right_trust_classes() {
+        let producer_only = RevocationDiscovery::producer_signed_only();
+        assert!(!producer_only.include_registry_attested);
+        assert_eq!(producer_only.on_failure, DiscoveryFailurePolicy::FailClosed);
+        assert_eq!(producer_only.total_timeout, Duration::from_secs(30));
+
+        let all = RevocationDiscovery::all_trust_classes();
+        assert!(all.include_registry_attested);
+        assert_eq!(all.on_failure, DiscoveryFailurePolicy::FailClosed);
+        assert_eq!(all.total_timeout, Duration::from_secs(30));
+    }
+
+    /// issue #248 Phase 2, acceptance criterion 3 (continued) — D6:
+    /// `RevocationDiscovery` has no `Default` impl. This is a
+    /// compile-time property, not something a runtime assertion can
+    /// check; the doc comment on `RevocationDiscovery` records why.
+    /// This test exists to make that guarantee discoverable from the
+    /// test suite: if a future change adds `Default`, this comment is
+    /// the tripwire a reviewer reads, since nothing here would fail.
+    /// (An attempted `RevocationDiscovery::default()` call would be a
+    /// compile error today — that IS the enforcement.)
+    #[test]
+    fn revocation_discovery_has_no_default_by_design() {
+        // Deliberately empty: the guarantee is enforced by the type
+        // system (no `Default` impl exists), not by this test body.
+    }
+
+    /// issue #248 Phase 2, acceptance criterion 4 — `RevocationDiscoveryFailed`
+    /// delegates `is_transient` to its `source`, both ways.
+    #[test]
+    fn revocation_discovery_failed_delegates_is_transient_to_source() {
+        let transient = AcdpError::RevocationDiscoveryFailed {
+            source: Box::new(AcdpError::KeyResolutionUnreachable(
+                "did:web host unreachable".into(),
+            )),
+        };
+        assert!(
+            transient.is_transient(),
+            "a transient source must make the wrapper transient too"
+        );
+
+        let permanent = AcdpError::RevocationDiscoveryFailed {
+            source: Box::new(AcdpError::InvalidSignature("bad signature".into())),
+        };
+        assert!(
+            !permanent.is_transient(),
+            "a permanent source must make the wrapper permanent too"
         );
     }
 }

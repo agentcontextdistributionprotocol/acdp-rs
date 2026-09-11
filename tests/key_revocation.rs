@@ -23,8 +23,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use acdp::client::{
-    classify_under_revocation, verify_revocation_body, KeyAuthorization, ReceiptPolicy,
-    RegistryClient, RevocationPolicy, VerificationPolicy, VerifiedContext,
+    classify_under_revocation, verify_revocation_body, DiscoveryFailurePolicy, HttpsDataRefFetcher,
+    KeyAuthorization, ReceiptPolicy, RegistryClient, RevocationDiscovery, RevocationPolicy,
+    VerificationPolicy, VerifiedContext,
 };
 use acdp::crypto::{
     canonicalize_value, compute_content_hash, derive_lineage_id, fingerprint_ed25519,
@@ -37,7 +38,7 @@ use acdp::registry::{InMemoryStore, RegistryServer, RegistryStore as _};
 use acdp::types::receipt::ReceiptSigner;
 use acdp::types::revocation::{KeyRevocation, RevocationTrustClass};
 use acdp::types::{AgentDid, Body, ContentHash, ContextType, CtxId, LineageId, Visibility};
-use axum::{routing::get, Json, Router};
+use axum::{response::IntoResponse, routing::get, Json, Router};
 use chrono::{DateTime, Utc};
 use common::{did_doc_router, ed25519_did_doc, TlsTestServer};
 use serde_json::json;
@@ -1086,7 +1087,7 @@ async fn rev_002_fetch_pipeline_boundary_matrix() {
 
     let policy_with = |revs: Vec<KeyRevocation>, receipts: ReceiptPolicy| VerificationPolicy {
         receipts,
-        revocations: RevocationPolicy { known: revs },
+        revocations: RevocationPolicy::new(revs),
         ..Default::default()
     };
 
@@ -1202,7 +1203,7 @@ async fn report_parity_matrix() {
 
     let policy_with = |revs: Vec<KeyRevocation>, receipts: ReceiptPolicy| VerificationPolicy {
         receipts,
-        revocations: RevocationPolicy { known: revs },
+        revocations: RevocationPolicy::new(revs),
         ..Default::default()
     };
 
@@ -1378,9 +1379,7 @@ async fn report_diagnose_reports_revocation_without_erroring() {
     // publish time itself — inside the compromise window, must fail
     // closed (rev-002 case B).
     let post = VerificationPolicy {
-        revocations: RevocationPolicy {
-            known: vec![local_revocation(&producer_fp, receipt_time)],
-        },
+        revocations: RevocationPolicy::new(vec![local_revocation(&producer_fp, receipt_time)]),
         ..Default::default()
     };
 
@@ -2910,33 +2909,287 @@ fn lifecycle_caps() -> CapabilitiesDocument {
 /// and a `lifecycle` flag (rather than hardcoding `caps()`/always
 /// calling `with_lifecycle()`) so Phase 4/5 additions can reuse this
 /// harness with lifecycle enabled without reopening this constructor.
+///
+/// **issue #248 Phase 3 — why this harness, extended, and not a
+/// fourth type.** Phase 4's headline assertion needs, simultaneously:
+/// a receipt-bearing target context (RFC-ACDP-0014 §7 fails closed
+/// without a receipt-attested publish time), real `/contexts/search`
+/// and `/lineages/{id}`, producer + registry DID hosting, an optional
+/// `/.well-known/acdp.json` (`find_registry_attested_revocations`
+/// fetches capabilities unconditionally), and injectable error
+/// statuses / delays / hit counts. Neither pre-existing harness in
+/// this file could do all of that:
+///
+/// - `Harness` (`start_harness`/`publish_with_receipt`, above) has DID
+///   routes and a receipt signer, but its `/contexts/{id}` route
+///   serves one static `Arc<RwLock<Option<Value>>>` blob regardless of
+///   the requested id, has no `/contexts/search` or `/lineages/{id}`
+///   route at all, and its `RegistryServer` is a throwaway created and
+///   dropped inside `publish_with_receipt` — nothing persists across
+///   calls.
+/// - `LineageServerHarness` itself, pre-Phase-3, had a real persisted
+///   `RegistryServer<InMemoryStore>` behind genuine search/retrieve/
+///   lineage handlers, but no DID routes (its 3 existing tests use
+///   `Producer::new_did_key`, resolved offline), no receipt signer, no
+///   well-known routes, and no error/delay/hit-count injection — so
+///   nothing verified through it could satisfy `ReceiptPolicy::Require`
+///   and no test could simulate a registry that is failing or slow.
+///
+/// So it is extended in place rather than forked a third time: the
+/// hard part (a real persisted registry with genuine status/query
+/// projection) was already here. `LineageServerHarnessBuilder` below
+/// adds DID hosting, an optional receipt signer, an optional
+/// `/.well-known/acdp.json`, and a uniform per-route hit-counter /
+/// error-injection / delay layer (`RouteState`) — while
+/// `LineageServerHarness::start` (the two-arg constructor the 3
+/// pre-Phase-3 tests call) keeps its exact prior signature and
+/// behavior unchanged, as a thin call into the builder with every new
+/// knob left off. Assertions about *what discovery finds* must still
+/// run against this real server, never a hand-built mock — the mocks
+/// elsewhere in this file hardcode `"status": "active"` on every
+/// match regardless of reality (see `discover_with_candidates`),
+/// which would make a search-only assertion pass spuriously.
+///
+/// If a *fifth* harness is ever tempted, read this comment first.
 struct LineageServerHarness {
     tls: TlsTestServer,
     server: Arc<RegistryServer<InMemoryStore>>,
     resolver: WebResolver,
+    /// Per-route hit-counter / error-injection / delay state, keyed by
+    /// route name: `"search"`, `"context"`, `"lineage"`, `"current"`
+    /// (`/lineages/{id}/current` — added for issue #248 Phase 4's
+    /// `fetch_current_with_policy` coverage; `LineageServerHarness`
+    /// pre-Phase-4 had no route for it at all) always present;
+    /// `"registry_did"` and `"acdp_json"` present when the builder's
+    /// corresponding `with_*` was called; a producer's own path string
+    /// (e.g. `"agent"`) present once per
+    /// [`LineageServerHarnessBuilder::with_producer_did`] /
+    /// [`LineageServerHarnessBuilder::with_producer_did_document`] call.
+    routes: std::collections::HashMap<String, Arc<RouteState>>,
 }
 
-impl LineageServerHarness {
-    async fn start(caps: CapabilitiesDocument, lifecycle: bool) -> Self {
+/// One harness route's runtime-injectable behavior: a hit counter, an
+/// optional HTTP status to return instead of normal handling, and an
+/// optional delay applied before responding either way. Precedent for
+/// each piece existed separately in this file before Phase 3 —
+/// `caps_hits` (`:1761`, a hit counter) and `counting_router`
+/// (`tests/verify_algorithm.rs:73`) — but nothing combined them or
+/// added error injection (this file had no `StatusCode`/404/500/503
+/// construct anywhere pre-Phase-3); this generalizes the idiom so
+/// every route on the Phase-4-capable harness gets all three
+/// uniformly.
+#[derive(Default)]
+struct RouteState {
+    hits: std::sync::atomic::AtomicUsize,
+    /// 0 = no injected error; otherwise a valid HTTP status code.
+    error_status: std::sync::atomic::AtomicU16,
+    /// 0 = no delay.
+    delay_ms: std::sync::atomic::AtomicU64,
+}
+
+impl RouteState {
+    /// Count this hit, apply any configured delay, then either produce
+    /// an injected-error response (short-circuiting the caller, which
+    /// must return it as-is) or signal "proceed normally" with `None`.
+    async fn intercept(&self) -> Option<axum::response::Response> {
+        use std::sync::atomic::Ordering;
+
+        self.hits.fetch_add(1, Ordering::SeqCst);
+        let delay_ms = self.delay_ms.load(Ordering::SeqCst);
+        if delay_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        }
+        let status = self.error_status.load(Ordering::SeqCst);
+        if status == 0 {
+            return None;
+        }
+        let code = axum::http::StatusCode::from_u16(status)
+            .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        // Wire code `internal_error` → `AcdpError::RegistryInternal`,
+        // which `is_transient() == true` — a reasonable single choice
+        // for "this route is currently failing" regardless of which
+        // HTTP status a test injects; this harness does not attempt to
+        // model every wire-code/status pairing, only "currently down."
+        Some(
+            (
+                code,
+                Json(json!({
+                    "error": {
+                        "code": "internal_error",
+                        "message": "harness: injected test error"
+                    }
+                })),
+            )
+                .into_response(),
+        )
+    }
+}
+
+/// Builds a [`LineageServerHarness`]. Every capability beyond the base
+/// search/retrieve/lineage trio is opt-in, so
+/// `LineageServerHarness::start(caps, lifecycle)` — unchanged, still
+/// called by the 3 pre-Phase-3 tests — is exactly
+/// `LineageServerHarness::builder(caps).lifecycle(lifecycle).build()`.
+struct LineageServerHarnessBuilder {
+    caps: CapabilitiesDocument,
+    lifecycle: bool,
+    receipt_signer: Option<ReceiptSigner>,
+    registry_did_doc: Option<serde_json::Value>,
+    producer_dids: Vec<(String, serde_json::Value)>,
+    well_known_acdp: bool,
+}
+
+/// Route names reserved by the harness itself — a producer path
+/// registered via [`LineageServerHarnessBuilder::with_producer_did`]
+/// must not collide with one of these in the shared `routes` map.
+const RESERVED_ROUTE_NAMES: [&str; 6] = [
+    "search",
+    "context",
+    "lineage",
+    "current",
+    "registry_did",
+    "acdp_json",
+];
+
+impl LineageServerHarnessBuilder {
+    fn new(caps: CapabilitiesDocument) -> Self {
+        Self {
+            caps,
+            lifecycle: false,
+            receipt_signer: None,
+            registry_did_doc: None,
+            producer_dids: Vec::new(),
+            well_known_acdp: false,
+        }
+    }
+
+    fn lifecycle(mut self, on: bool) -> Self {
+        self.lifecycle = on;
+        self
+    }
+
+    /// Mint a registry receipt for every subsequent verified publish
+    /// (`server.publish_verified`/`publish_verified_did_key`), and host
+    /// the registry's own `did:web:localhost` document at
+    /// `/.well-known/did.json` (mirroring `start_harness`'s registry
+    /// DID hosting) so `WebResolver` can resolve the receipt signing
+    /// key. `key_fragment` becomes both the DID document's
+    /// verification-method id and the receipt signer's `key_id`
+    /// fragment. Required for AC3 — a context verified through the
+    /// resulting harness satisfies `ReceiptPolicy::Require`.
+    fn with_receipt_signer(mut self, signer_key: SigningKey, key_fragment: &str) -> Self {
+        let pub_key = signer_key.verifying_key_bytes();
+        self.registry_did_doc = Some(ed25519_did_doc(REGISTRY_DID, key_fragment, &pub_key));
+        self.receipt_signer = Some(
+            ReceiptSigner::new(
+                signer_key,
+                REGISTRY_DID,
+                format!("{REGISTRY_DID}#{key_fragment}"),
+            )
+            .expect("receipt signer"),
+        );
+        self
+    }
+
+    /// Host a `did:web` producer document at `did:web:localhost:{path}`
+    /// (served at `/{path}/did.json`, via the same `candidate_did` /
+    /// `candidate_did_route` convention `discover_with_candidates`
+    /// uses), so a did:web-signed context published through this
+    /// harness resolves without any external network. Panics if `path`
+    /// is empty, reserved, or registered twice.
+    fn with_producer_did(mut self, path: &str, key_fragment: &str, pub_key: &[u8; 32]) -> Self {
+        assert!(
+            !path.is_empty(),
+            "producer DID path must be non-empty (empty is reserved for the registry)"
+        );
+        assert!(
+            !RESERVED_ROUTE_NAMES.contains(&path),
+            "producer DID path '{path}' collides with a reserved harness route name"
+        );
+        assert!(
+            self.producer_dids.iter().all(|(p, _)| p != path),
+            "producer DID path '{path}' registered twice"
+        );
+        let did = candidate_did(path);
+        self.producer_dids.push((
+            path.to_string(),
+            ed25519_did_doc(&did, key_fragment, pub_key),
+        ));
+        self
+    }
+
+    /// Like [`Self::with_producer_did`], but hosts a caller-supplied DID
+    /// document instead of building a single-key one via
+    /// [`ed25519_did_doc`] — added for issue #248 Phase 4's key-rotation
+    /// tests, which need a producer with TWO independently-resolvable
+    /// keys: one that signed the target context (later revoked), a
+    /// different one that signs the revocation itself (RFC-ACDP-0014 §5
+    /// step 2 forbids a key revoking itself, so `seed_revocations`
+    /// against a single-key producer identity always fails
+    /// `check_not_self_signed`). Panics under the same conditions as
+    /// [`Self::with_producer_did`].
+    fn with_producer_did_document(mut self, path: &str, doc: serde_json::Value) -> Self {
+        assert!(
+            !path.is_empty(),
+            "producer DID path must be non-empty (empty is reserved for the registry)"
+        );
+        assert!(
+            !RESERVED_ROUTE_NAMES.contains(&path),
+            "producer DID path '{path}' collides with a reserved harness route name"
+        );
+        assert!(
+            self.producer_dids.iter().all(|(p, _)| p != path),
+            "producer DID path '{path}' registered twice"
+        );
+        self.producer_dids.push((path.to_string(), doc));
+        self
+    }
+
+    /// Serve `server.capabilities()` at `/.well-known/acdp.json` —
+    /// needed by `find_registry_attested_revocations`, which fetches
+    /// capabilities unconditionally before its search loop.
+    fn with_well_known_acdp(mut self) -> Self {
+        self.well_known_acdp = true;
+        self
+    }
+
+    async fn build(self) -> LineageServerHarness {
         use std::collections::HashMap;
 
-        let mut server = RegistryServer::try_new(InMemoryStore::new(), caps, REGISTRY_AUTHORITY)
-            .expect("server");
-        if lifecycle {
+        let mut server =
+            RegistryServer::try_new(InMemoryStore::new(), self.caps, REGISTRY_AUTHORITY)
+                .expect("server");
+        if self.lifecycle {
             server = server.with_lifecycle().expect("lifecycle enabled");
+        }
+        if let Some(signer) = self.receipt_signer {
+            server = server
+                .with_receipt_signer(signer)
+                .expect("receipt signer accepted");
         }
         let server = Arc::new(server);
 
-        let router = Router::new()
+        let mut routes: HashMap<String, Arc<RouteState>> = HashMap::new();
+        routes.insert("search".into(), Arc::new(RouteState::default()));
+        routes.insert("context".into(), Arc::new(RouteState::default()));
+        routes.insert("lineage".into(), Arc::new(RouteState::default()));
+        routes.insert("current".into(), Arc::new(RouteState::default()));
+
+        let mut router = Router::new()
             .route(
                 "/contexts/search",
                 get({
                     let server = server.clone();
+                    let state = routes["search"].clone();
                     move |axum::extract::Query(raw): axum::extract::Query<
                         HashMap<String, String>,
                     >| {
                         let server = server.clone();
+                        let state = state.clone();
                         async move {
+                            if let Some(resp) = state.intercept().await {
+                                return resp;
+                            }
                             let params = acdp::types::SearchParams {
                                 q: raw.get("q").cloned(),
                                 context_type: raw.get("type").cloned(),
@@ -2958,7 +3211,7 @@ impl LineageServerHarness {
                                 cursor: raw.get("cursor").cloned(),
                             };
                             let resp = server.search(&params, None).expect("search");
-                            Json(resp)
+                            Json(resp).into_response()
                         }
                     }
                 }),
@@ -2967,15 +3220,20 @@ impl LineageServerHarness {
                 "/contexts/{id}",
                 get({
                     let server = server.clone();
+                    let state = routes["context"].clone();
                     move |axum::extract::Path(id): axum::extract::Path<String>| {
                         let server = server.clone();
+                        let state = state.clone();
                         async move {
+                            if let Some(resp) = state.intercept().await {
+                                return resp;
+                            }
                             let ctx_id = CtxId(id);
                             let full = server
                                 .retrieve(&ctx_id, None)
                                 .expect("retrieve")
                                 .expect("found");
-                            Json(full)
+                            Json(full).into_response()
                         }
                     }
                 }),
@@ -2984,25 +3242,127 @@ impl LineageServerHarness {
                 "/lineages/{id}",
                 get({
                     let server = server.clone();
+                    let state = routes["lineage"].clone();
                     move |axum::extract::Path(id): axum::extract::Path<String>| {
                         let server = server.clone();
+                        let state = state.clone();
                         async move {
+                            if let Some(resp) = state.intercept().await {
+                                return resp;
+                            }
                             let lineage_id = LineageId(id);
                             let all = server.lineage(&lineage_id, None).expect("lineage");
-                            Json(all)
+                            Json(all).into_response()
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/lineages/{id}/current",
+                get({
+                    let server = server.clone();
+                    let state = routes["current"].clone();
+                    move |axum::extract::Path(id): axum::extract::Path<String>| {
+                        let server = server.clone();
+                        let state = state.clone();
+                        async move {
+                            if let Some(resp) = state.intercept().await {
+                                return resp;
+                            }
+                            let lineage_id = LineageId(id);
+                            let full = server
+                                .current(&lineage_id, None)
+                                .expect("current")
+                                .expect("lineage has a head");
+                            Json(full).into_response()
                         }
                     }
                 }),
             );
 
+        if let Some(doc) = self.registry_did_doc {
+            let state = Arc::new(RouteState::default());
+            routes.insert("registry_did".into(), state.clone());
+            let doc = Arc::new(doc);
+            router = router.route(
+                "/.well-known/did.json",
+                get(move || {
+                    let doc = doc.clone();
+                    let state = state.clone();
+                    async move {
+                        if let Some(resp) = state.intercept().await {
+                            return resp;
+                        }
+                        Json((*doc).clone()).into_response()
+                    }
+                }),
+            );
+        }
+
+        for (path, doc) in self.producer_dids {
+            let state = Arc::new(RouteState::default());
+            routes.insert(path.clone(), state.clone());
+            let doc = Arc::new(doc);
+            router = router.route(
+                &candidate_did_route(&path),
+                get(move || {
+                    let doc = doc.clone();
+                    let state = state.clone();
+                    async move {
+                        if let Some(resp) = state.intercept().await {
+                            return resp;
+                        }
+                        Json((*doc).clone()).into_response()
+                    }
+                }),
+            );
+        }
+
+        if self.well_known_acdp {
+            let state = Arc::new(RouteState::default());
+            routes.insert("acdp_json".into(), state.clone());
+            let server = server.clone();
+            router = router.route(
+                "/.well-known/acdp.json",
+                get(move || {
+                    let server = server.clone();
+                    let state = state.clone();
+                    async move {
+                        if let Some(resp) = state.intercept().await {
+                            return resp;
+                        }
+                        Json(server.capabilities().clone()).into_response()
+                    }
+                }),
+            );
+        }
         let tls = TlsTestServer::start(router).await;
         let resolver = WebResolver::with_test_endpoint(&tls.root_cert_pem, "localhost", tls.addr)
             .expect("pinned resolver");
-        Self {
+        LineageServerHarness {
             tls,
             server,
             resolver,
+            routes,
         }
+    }
+}
+
+/// One producer-signed `key-revocation` context seeded by
+/// [`LineageServerHarness::seed_revocations`].
+struct SeededRevocation {
+    ctx_id: CtxId,
+    lineage_id: LineageId,
+    revocation: KeyRevocation,
+}
+
+impl LineageServerHarness {
+    async fn start(caps: CapabilitiesDocument, lifecycle: bool) -> Self {
+        Self::builder(caps).lifecycle(lifecycle).build().await
+    }
+
+    fn builder(caps: CapabilitiesDocument) -> LineageServerHarnessBuilder {
+        LineageServerHarnessBuilder::new(caps)
     }
 
     fn client(&self) -> RegistryClient {
@@ -3012,6 +3372,124 @@ impl LineageServerHarness {
             &self.tls.root_cert_pem,
         )
         .expect("pinned client")
+    }
+
+    fn route_state(&self, route: &str) -> &Arc<RouteState> {
+        self.routes.get(route).unwrap_or_else(|| {
+            let known: Vec<&String> = self.routes.keys().collect();
+            panic!("harness: no such route '{route}' (registered: {known:?})")
+        })
+    }
+
+    /// Requests served so far for `route` (see [`LineageServerHarness::routes`]
+    /// for valid names). AC4.
+    fn hits(&self, route: &str) -> usize {
+        self.route_state(route)
+            .hits
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// From the next request onward, `route` returns `status` instead
+    /// of its normal handling. AC2 — e.g.
+    /// `set_error("search", axum::http::StatusCode::SERVICE_UNAVAILABLE)`.
+    fn set_error(&self, route: &str, status: axum::http::StatusCode) {
+        self.route_state(route)
+            .error_status
+            .store(status.as_u16(), std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Undo [`Self::set_error`].
+    fn clear_error(&self, route: &str) {
+        self.route_state(route)
+            .error_status
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// From the next request onward, `route` sleeps `delay` before
+    /// responding (whether or not an error is also injected). AC5.
+    fn set_delay(&self, route: &str, delay: std::time::Duration) {
+        self.route_state(route).delay_ms.store(
+            u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+    }
+
+    /// Undo [`Self::set_delay`].
+    fn clear_delay(&self, route: &str) {
+        self.route_state(route)
+            .delay_ms
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Seed `boundaries.len()` distinct producer-signed
+    /// `key-revocation` contexts, all published under `producer`'s own
+    /// identity (so a later `find_revocations(client, resolver,
+    /// producer_agent_id)` call can discover them) and all naming
+    /// `revoked_key_fingerprint`. Each boundary becomes its own fresh
+    /// v1 — its own lineage — so `boundaries.len() == 1` gives exactly
+    /// the "≥1 lineage" floor and `> 1` gives that many distinct
+    /// lineages. AC6: Phase 4's `known`-vs-discovered split (e.g. R1
+    /// held back, R2 left for `discover` to find) is just the caller's
+    /// choice of which returned `SeededRevocation`s to place in
+    /// `RevocationPolicy::new(known)`. A caller wanting a supersession
+    /// *chain* within one lineage instead can call
+    /// `Producer::supersede_body` /
+    /// `server.publish_verified_did_key` directly, exactly as
+    /// `find_revocations_in_lineage_returns_superseded_and_current_member`
+    /// (above) already does — this helper deliberately covers only the
+    /// simpler, sufficient shape.
+    ///
+    /// Uses `server.publish_verified` (not the did:key-only
+    /// `publish_verified_did_key` shortcut), so it works uniformly
+    /// whether `producer` is did:key (resolved offline) or a did:web
+    /// identity hosted by this same harness via
+    /// [`LineageServerHarnessBuilder::with_producer_did`]. Each seeded
+    /// body is round-tripped through `verify_revocation_body` against
+    /// the harness's own resolver before being returned, so callers get
+    /// back exactly the `KeyRevocation` shape `find_revocations` would
+    /// produce.
+    async fn seed_revocations(
+        &self,
+        producer: &Producer,
+        revoked_key_fingerprint: &str,
+        boundaries: &[DateTime<Utc>],
+    ) -> Vec<SeededRevocation> {
+        let mut out = Vec::with_capacity(boundaries.len());
+        for (i, &t) in boundaries.iter().enumerate() {
+            let req = producer
+                .publish_request()
+                .acdp_version("0.3.0")
+                .title(format!("seeded revocation #{i}"))
+                .context_type(ContextType::KeyRevocation)
+                .visibility(Visibility::Public)
+                .metadata(json!({
+                    "revoked_key_fingerprint": revoked_key_fingerprint,
+                    "compromised_since": acdp::time::trunc_ms(t)
+                        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                }))
+                .build()
+                .expect("seeded revocation build");
+            let resp = self
+                .server
+                .publish_verified(&req, None, &self.resolver)
+                .await
+                .expect("seeded revocation publish");
+            let full = self
+                .server
+                .store()
+                .get(&resp.ctx_id)
+                .expect("get")
+                .expect("seeded revocation present");
+            let revocation = verify_revocation_body(&full.body, &self.resolver)
+                .await
+                .expect("seeded revocation must itself verify");
+            out.push(SeededRevocation {
+                ctx_id: resp.ctx_id,
+                lineage_id: resp.lineage_id,
+                revocation,
+            });
+        }
+        out
     }
 }
 
@@ -3678,4 +4156,1015 @@ async fn find_revocations_in_lineage_propagates_transient_resolution_failure() {
         matches!(err, AcdpError::KeyResolutionUnreachable(_)),
         "expected KeyResolutionUnreachable specifically, got {err:?}"
     );
+}
+
+// ── issue #248 Phase 3: self-tests for the extended LineageServerHarness ────
+//
+// These exercise `LineageServerHarnessBuilder`'s new capabilities in
+// isolation. Phase 4 (a separate PR) is the actual consumer of this
+// harness for the discovery-in-`verify_retrieved` assertions; nothing
+// here reads `policy.revocations.discover`.
+
+/// AC1 (all six routes from one instance) + AC3 (receipt minting
+/// satisfies `ReceiptPolicy::Require`) + AC7 (portability proof): this
+/// reproduces the pre-compromise-historical and fail-closed-at-boundary
+/// outcomes of `rev_002_fetch_pipeline_boundary_matrix`'s cases A and B
+/// — same intent, same assertions — through `LineageServerHarness`
+/// instead of the older `Harness`/`start_harness`/`publish_with_receipt`
+/// trio, proving the merged harness can replace what that one did.
+#[tokio::test]
+async fn discovery_harness_serves_all_six_routes_and_satisfies_receipt_require() {
+    let registry_signer_key = SigningKey::from_bytes(&[0xB1u8; 32]);
+    let producer_key = SigningKey::from_bytes(&[0xB2u8; 32]);
+    let producer_pub = producer_key.verifying_key_bytes();
+    let producer_fp = fingerprint_ed25519(&producer_pub);
+    let producer_path = "harness-agent";
+    let producer_did = candidate_did(producer_path);
+
+    let h = LineageServerHarness::builder(lifecycle_caps())
+        .with_receipt_signer(registry_signer_key, "receipt-key-1")
+        .with_producer_did(producer_path, "key-1", &producer_pub)
+        .with_well_known_acdp()
+        .build()
+        .await;
+
+    let producer = Producer::new(
+        producer_key,
+        AgentDid::new(producer_did.as_str()),
+        format!("{producer_did}#key-1"),
+    );
+    let req = producer
+        .publish_request()
+        .acdp_version("0.3.0")
+        .title("harness-hosted receipt-bearing target context")
+        .context_type(ContextType::Analysis)
+        .visibility(Visibility::Public)
+        .build()
+        .expect("build");
+    let resp = h
+        .server
+        .publish_verified(&req, None, &h.resolver)
+        .await
+        .expect("publish with receipt minting");
+
+    // Publish-time verification already hit the producer's DID route
+    // to check the signature (minting itself needs no network — the
+    // registry signs with its own locally-held `ReceiptSigner` key;
+    // the registry's DID route is instead hit below, when a consumer
+    // resolves that key to *verify* the receipt).
+    assert!(
+        h.hits(producer_path) > 0,
+        "producer DID route must have been hit resolving the publish-time signature"
+    );
+    // Receipts are minted with the registry's own locally-held
+    // `ReceiptSigner` key (a pure local signing operation — see
+    // `crates/acdp-types/src/receipt.rs`), so publish never resolves
+    // the registry's own DID over the network. The registry DID route
+    // is hit only consumer-side, inside `verify_receipt_value`
+    // (`crates/acdp-client/src/receipt.rs`), when a consumer verifies
+    // the receipt below.
+    assert_eq!(
+        h.hits("registry_did"),
+        0,
+        "registry DID route must not be hit at publish time — receipts are minted with a \
+         locally-held key, not a resolved one"
+    );
+
+    let client = h.client();
+
+    // ── AC1: search, retrieve, lineage, and capabilities — all from
+    // this one instance. ────────────────────────────────────────────
+    let search_params = acdp::types::SearchParamsBuilder::new()
+        .agent_id(producer_did.as_str())
+        .limit(10)
+        .build();
+    let via_search = client.search(&search_params).await.expect("search");
+    assert_eq!(
+        via_search.matches.len(),
+        1,
+        "search must find the published context"
+    );
+
+    let via_retrieve = client.retrieve(&resp.ctx_id).await.expect("retrieve");
+    assert_eq!(via_retrieve.body.ctx_id, resp.ctx_id);
+
+    let via_lineage = client.lineage(&resp.lineage_id).await.expect("lineage");
+    assert_eq!(via_lineage.len(), 1);
+
+    let via_caps = client.capabilities().await.expect("capabilities");
+    assert_eq!(via_caps.registry_did, REGISTRY_DID);
+    assert!(h.hits("acdp_json") > 0);
+
+    // ── AC3: the context verified through this harness satisfies
+    // `ReceiptPolicy::Require`. ─────────────────────────────────────
+    let require_policy = VerificationPolicy {
+        receipts: ReceiptPolicy::Require,
+        ..Default::default()
+    };
+    let verified =
+        VerifiedContext::fetch_with_policy(&client, &h.resolver, &resp.ctx_id, &require_policy)
+            .await
+            .expect("a context verified through this harness must satisfy ReceiptPolicy::Require");
+    let receipt_time = verified
+        .verified_receipt()
+        .expect("receipt must be present and verified")
+        .created_at;
+    assert_eq!(verified.key_status(), KeyAuthorization::CurrentlyAuthorized);
+    assert!(
+        h.hits("registry_did") > 0,
+        "registry DID route must have been hit resolving the receipt signing key to verify it"
+    );
+
+    // ── AC7 port of rev-002 case A: boundary strictly after the
+    // receipt-attested publish time → historically authorized
+    // (pre-compromise, receipt-attested). ───────────────────────────
+    let revocation_at = |t: DateTime<Utc>| KeyRevocation {
+        revoked_key_fingerprint: producer_fp.clone(),
+        compromised_since: acdp::time::trunc_ms(t),
+        reason: Some("ported from rev_002_fetch_pipeline_boundary_matrix".into()),
+        revoked_key_id: Some(format!("{producer_did}#key-1")),
+        revoked_key_controller: AgentDid::new(producer_did.as_str()),
+        publisher: AgentDid::new(producer_did.as_str()),
+        trust_class: RevocationTrustClass::ProducerSigned,
+    };
+    let pre = VerificationPolicy {
+        receipts: ReceiptPolicy::VerifyIfPresent,
+        revocations: RevocationPolicy::new(vec![revocation_at(
+            receipt_time + chrono::Duration::days(1),
+        )]),
+        ..Default::default()
+    };
+    let verified = VerifiedContext::fetch_with_policy(&client, &h.resolver, &resp.ctx_id, &pre)
+        .await
+        .expect("pre-compromise context must verify");
+    assert_eq!(
+        verified.key_status(),
+        KeyAuthorization::HistoricallyAuthorizedPreCompromise
+    );
+
+    // ── AC7 port of rev-002 case B: boundary at/before the
+    // receipt-attested publish time → fail closed despite the valid
+    // receipt. ───────────────────────────────────────────────────────
+    let post = VerificationPolicy {
+        receipts: ReceiptPolicy::VerifyIfPresent,
+        revocations: RevocationPolicy::new(vec![revocation_at(receipt_time)]),
+        ..Default::default()
+    };
+    let err = VerifiedContext::fetch_with_policy(&client, &h.resolver, &resp.ctx_id, &post)
+        .await
+        .expect_err("inside the compromise window must fail closed");
+    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+}
+
+/// AC2: a named route can be made to return an explicit error status —
+/// specifically 503 on `/contexts/search`, which is exactly what Phase
+/// 4 AC4 consumes — while `/contexts/{id}` on the same instance keeps
+/// working normally, and clearing the injection restores it.
+#[tokio::test]
+async fn discovery_harness_injects_503_on_contexts_search() {
+    let h = LineageServerHarness::start(lifecycle_caps(), false).await;
+    let producer = Producer::new_did_key(SigningKey::from_bytes(&[0xB3u8; 32]));
+    let req = producer
+        .publish_request()
+        .acdp_version("0.3.0")
+        .title("AC2 target")
+        .context_type(ContextType::Analysis)
+        .visibility(Visibility::Public)
+        .build()
+        .expect("build");
+    let resp = h
+        .server
+        .publish_verified_did_key(&req, None)
+        .expect("publish");
+    let client = h.client();
+
+    h.set_error("search", axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    let params = acdp::types::SearchParamsBuilder::new().limit(10).build();
+    let err = client
+        .search(&params)
+        .await
+        .expect_err("search must fail while the injected 503 is active");
+    assert!(
+        err.is_transient(),
+        "expected a transient error, got {err:?}"
+    );
+    assert!(matches!(err, AcdpError::RegistryInternal(_)), "got {err:?}");
+
+    // Per-route, not global: `/contexts/{id}` is unaffected.
+    let via_retrieve = client
+        .retrieve(&resp.ctx_id)
+        .await
+        .expect("retrieve must still work while search is failing");
+    assert_eq!(via_retrieve.body.ctx_id, resp.ctx_id);
+
+    h.clear_error("search");
+    let ok = client
+        .search(&params)
+        .await
+        .expect("search must succeed once the injected error is cleared");
+    assert_eq!(ok.matches.len(), 1);
+}
+
+/// AC4: a per-route hit counter, independent per route — precedent
+/// `caps_hits` (`:1761`) generalized to every route on this harness.
+#[tokio::test]
+async fn discovery_harness_counts_hits_per_route() {
+    let h = LineageServerHarness::start(lifecycle_caps(), false).await;
+    let producer = Producer::new_did_key(SigningKey::from_bytes(&[0xB4u8; 32]));
+    let req = producer
+        .publish_request()
+        .acdp_version("0.3.0")
+        .title("AC4 target")
+        .context_type(ContextType::Analysis)
+        .visibility(Visibility::Public)
+        .build()
+        .expect("build");
+    let resp = h
+        .server
+        .publish_verified_did_key(&req, None)
+        .expect("publish");
+    let client = h.client();
+
+    assert_eq!(h.hits("search"), 0);
+    assert_eq!(h.hits("context"), 0);
+    assert_eq!(h.hits("lineage"), 0);
+
+    let params = acdp::types::SearchParamsBuilder::new().limit(10).build();
+    client.search(&params).await.expect("search 1");
+    client.search(&params).await.expect("search 2");
+    client.retrieve(&resp.ctx_id).await.expect("retrieve");
+
+    assert_eq!(h.hits("search"), 2, "search hit exactly twice");
+    assert_eq!(h.hits("context"), 1, "context hit exactly once");
+    assert_eq!(
+        h.hits("lineage"),
+        0,
+        "lineage route never called — request counts are unchanged when unused, \
+         exactly the shape Phase 4 AC1 needs for discover: None"
+    );
+}
+
+/// AC5: a configurable per-route delay, enough to prove a short
+/// client-side timeout elapses. Phase 4 AC7 uses this shape with a 2s
+/// timeout against a 30s-delayed route.
+///
+/// The delay/timeout pair here (2s / 100ms) is deliberately wide, not
+/// merely fast: a cold process pays a one-time cost (rustls-provider
+/// install, first TLS handshake) that has been measured at roughly
+/// 20ms, so a delay/timeout pair close to that order can be satisfied
+/// by init cost alone even with `set_delay` never taking effect — a
+/// spurious pass that only shows up running this test solo (in the
+/// full suite the harness is already warm). A warm-up request through
+/// this same harness before `set_delay` pays that cost up front, and
+/// the 20x margin between the 100ms timeout and the 2s delay means
+/// the assertion can only be satisfied by the injected delay actually
+/// applying. The test still returns quickly because `timeout` fires
+/// at 100ms, not at the 2s delay.
+#[tokio::test]
+async fn discovery_harness_delay_elapses_a_short_timeout() {
+    let h = LineageServerHarness::start(lifecycle_caps(), false).await;
+    let client = h.client();
+    let params = acdp::types::SearchParamsBuilder::new().limit(10).build();
+
+    // Warm-up: pay one-time TLS/crypto init cost before the timed
+    // call, so the timed assertion below measures the injected delay,
+    // not process startup.
+    client.search(&params).await.expect("warm-up search");
+
+    h.set_delay("search", std::time::Duration::from_secs(2));
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        client.search(&params),
+    )
+    .await;
+    assert!(
+        result.is_err(),
+        "a 100ms client timeout must elapse against a 2s-delayed route"
+    );
+
+    h.clear_delay("search");
+    let result =
+        tokio::time::timeout(std::time::Duration::from_secs(5), client.search(&params)).await;
+    assert!(
+        result.is_ok(),
+        "search must complete promptly once the delay is cleared"
+    );
+}
+
+/// AC6: a seeding helper placing N distinct revocations across ≥1
+/// lineage, in a shape directly usable for Phase 4 AC6's "hold R1 in
+/// `known`, discover R2" split — demonstrated here by holding the
+/// first seeded revocation aside and recovering both only through
+/// `find_revocations`.
+#[tokio::test]
+async fn discovery_harness_seed_revocations_places_n_across_lineages() {
+    use acdp::client::find_revocations;
+
+    let h = LineageServerHarness::start(lifecycle_caps(), true).await;
+    let seed = [0xB5u8; 32];
+    let producer = Producer::new_did_key(SigningKey::from_bytes(&seed));
+    let did =
+        acdp::did::key::did_key_from_ed25519(&SigningKey::from_bytes(&seed).verifying_key_bytes());
+    let agent_id = AgentDid::new(did);
+
+    let seeded = h
+        .seed_revocations(
+            &producer,
+            K1_FP,
+            &[
+                at("2026-04-01T00:00:00.000Z"),
+                at("2026-05-01T00:00:00.000Z"),
+            ],
+        )
+        .await;
+    assert_eq!(seeded.len(), 2);
+    assert_ne!(seeded[0].ctx_id, seeded[1].ctx_id);
+    assert_ne!(
+        seeded[0].lineage_id, seeded[1].lineage_id,
+        "each boundary is seeded as its own fresh v1 — its own lineage"
+    );
+    for s in &seeded {
+        assert_eq!(s.revocation.revoked_key_fingerprint, K1_FP);
+        assert_eq!(s.revocation.publisher, agent_id);
+        assert_eq!(
+            s.revocation.trust_class,
+            RevocationTrustClass::ProducerSigned
+        );
+    }
+
+    // Phase 4 AC6's shape: `known` would carry only `seeded[0]`;
+    // discovery must still recover `seeded[1]` (and, redundantly,
+    // `seeded[0]` too — this harness makes no attempt to hide already-
+    // known revocations from search).
+    let known_boundary = seeded[0].revocation.compromised_since;
+    let client = h.client();
+    let mut discovered = find_revocations(&client, &h.resolver, &agent_id)
+        .await
+        .expect("find_revocations must recover both seeded lineages");
+    discovered.sort_by_key(|r| r.compromised_since);
+    assert_eq!(discovered.len(), 2);
+    assert_eq!(discovered[0].compromised_since, known_boundary);
+    assert_eq!(
+        discovered[1].compromised_since,
+        seeded[1].revocation.compromised_since
+    );
+}
+
+// ── issue #248 Phase 4 — discovery executed inside `verify_retrieved` ──────
+//
+// Every test below runs against the real `LineageServerHarness` (Phase 3),
+// never a hand-built mock — the mocks elsewhere in this file hardcode
+// `"status": "active"` on every match regardless of reality, which would
+// make a discovery assertion pass spuriously (see the harness's own doc).
+
+/// A DID document exposing TWO independently-resolvable Ed25519
+/// verification methods under one `did:web` identity, both in
+/// `assertionMethod`. [`discovery_rig`] needs this rather than
+/// [`ed25519_did_doc`]'s single-key shape: `key-1` signs the target
+/// context (later revoked), `key-2` signs the revocation itself.
+/// RFC-ACDP-0014 §5 step 2 forbids a key revoking itself
+/// (`check_not_self_signed`), so seeding a discoverable revocation
+/// against a single-key producer identity always fails that check.
+fn two_key_ed25519_did_doc(
+    did: &str,
+    frag1: &str,
+    pub1: &[u8; 32],
+    frag2: &str,
+    pub2: &[u8; 32],
+) -> serde_json::Value {
+    use base64::Engine as _;
+    let encode = |pk: &[u8; 32]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(pk);
+    let vm1 = format!("{did}#{frag1}");
+    let vm2 = format!("{did}#{frag2}");
+    json!({
+        "id": did,
+        "verificationMethod": [
+            {
+                "id": vm1,
+                "type": "JsonWebKey2020",
+                "controller": did,
+                "publicKeyJwk": { "kty": "OKP", "crv": "Ed25519", "x": encode(pub1) }
+            },
+            {
+                "id": vm2,
+                "type": "JsonWebKey2020",
+                "controller": did,
+                "publicKeyJwk": { "kty": "OKP", "crv": "Ed25519", "x": encode(pub2) }
+            }
+        ],
+        "assertionMethod": [vm1, vm2],
+    })
+}
+
+/// Shared rig for the Phase 4 tests: a receipt-minting harness with a
+/// did:web-hosted producer identity and `/.well-known/acdp.json` (so both
+/// `producer_signed_only()` and `all_trust_classes()` scenarios can reuse
+/// it), plus one receipt-bearing target context already published under
+/// that identity's `key-1` — `receipt_time` is that publish's
+/// receipt-attested `created_at`, the boundary every test below positions
+/// its seeded revocations relative to. `producer` signs with the
+/// identity's OTHER key (`key-2`), so `h.seed_revocations(&rig.producer,
+/// &rig.producer_fp, ..)` produces a genuine rotated-key revocation of
+/// `key-1` rather than tripping `check_not_self_signed`.
+struct DiscoveryRig {
+    h: LineageServerHarness,
+    client: RegistryClient,
+    /// Signs with `key-2` — used to seed revocations of `key-1`.
+    producer: Producer,
+    producer_did: String,
+    /// Fingerprint of `key-1`, the key that signed `target_ctx_id` — the
+    /// key every seeded revocation in these tests names.
+    producer_fp: String,
+    target_ctx_id: CtxId,
+    target_lineage_id: LineageId,
+    receipt_time: DateTime<Utc>,
+}
+
+impl DiscoveryRig {
+    fn agent_id(&self) -> AgentDid {
+        AgentDid::new(self.producer_did.as_str())
+    }
+}
+
+async fn discovery_rig(seed: u8) -> DiscoveryRig {
+    let registry_signer_key = SigningKey::from_bytes(&[seed; 32]);
+    let target_key = SigningKey::from_bytes(&[seed.wrapping_add(1); 32]);
+    let target_pub = target_key.verifying_key_bytes();
+    let target_fp = fingerprint_ed25519(&target_pub);
+    let revoker_key = SigningKey::from_bytes(&[seed.wrapping_add(2); 32]);
+    let revoker_pub = revoker_key.verifying_key_bytes();
+    let producer_path = format!("phase4-agent-{seed:02x}");
+    let producer_did = candidate_did(&producer_path);
+    let did_doc =
+        two_key_ed25519_did_doc(&producer_did, "key-1", &target_pub, "key-2", &revoker_pub);
+
+    let h = LineageServerHarness::builder(lifecycle_caps())
+        .with_receipt_signer(registry_signer_key, "receipt-key-1")
+        .with_producer_did_document(&producer_path, did_doc)
+        .with_well_known_acdp()
+        .build()
+        .await;
+
+    let target_producer = Producer::new(
+        target_key,
+        AgentDid::new(producer_did.as_str()),
+        format!("{producer_did}#key-1"),
+    );
+    let req = target_producer
+        .publish_request()
+        .acdp_version("0.3.0")
+        .title("phase-4 discovery target")
+        .context_type(ContextType::Analysis)
+        .visibility(Visibility::Public)
+        .build()
+        .expect("build");
+    let resp = h
+        .server
+        .publish_verified(&req, None, &h.resolver)
+        .await
+        .expect("publish with receipt minting");
+
+    let client = h.client();
+    let verified = VerifiedContext::fetch_with_policy(
+        &client,
+        &h.resolver,
+        &resp.ctx_id,
+        &VerificationPolicy::default(),
+    )
+    .await
+    .expect("target must verify cleanly before any revocation exists");
+    assert_eq!(verified.key_status(), KeyAuthorization::CurrentlyAuthorized);
+    let receipt_time = verified
+        .verified_receipt()
+        .expect("receipt must be present and verified")
+        .created_at;
+
+    let revoker = Producer::new(
+        revoker_key,
+        AgentDid::new(producer_did.as_str()),
+        format!("{producer_did}#key-2"),
+    );
+
+    DiscoveryRig {
+        h,
+        client,
+        producer: revoker,
+        producer_did,
+        producer_fp: target_fp,
+        target_ctx_id: resp.ctx_id,
+        target_lineage_id: resp.lineage_id,
+        receipt_time,
+    }
+}
+
+/// AC1: with `discover: None`, behavior and request count are unchanged —
+/// the discovery phase must never call `/contexts/search` or
+/// `/lineages/{id}` at all.
+#[tokio::test]
+async fn phase4_ac1_discover_none_leaves_behavior_and_request_count_unchanged() {
+    let rig = discovery_rig(0xC1).await;
+    assert_eq!(rig.h.hits("search"), 0);
+    assert_eq!(rig.h.hits("lineage"), 0);
+
+    let policy = VerificationPolicy::default();
+    let verified = VerifiedContext::fetch_with_policy(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &policy,
+    )
+    .await
+    .expect("must verify exactly as before discovery existed");
+    assert_eq!(verified.key_status(), KeyAuthorization::CurrentlyAuthorized);
+    assert!(verified.revocation_discovery_failure().is_none());
+
+    assert_eq!(
+        rig.h.hits("search"),
+        0,
+        "discover: None must never call /contexts/search"
+    );
+    assert_eq!(
+        rig.h.hits("lineage"),
+        0,
+        "discover: None must never call /lineages/{{id}}"
+    );
+}
+
+/// AC2: `discover: Some(..)` plus a revocation reachable ONLY by
+/// discovery (never placed in `known`) makes a previously-successful
+/// verification fail `KeyNotAuthorized`.
+#[tokio::test]
+async fn phase4_ac2_discovery_only_revocation_flips_success_to_key_not_authorized() {
+    let rig = discovery_rig(0xC2).await;
+
+    // Confirmed clean beforehand, with no revocations known and no discovery.
+    let baseline = VerifiedContext::fetch_with_policy(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &VerificationPolicy::default(),
+    )
+    .await
+    .expect("must succeed before any revocation exists");
+    assert_eq!(baseline.key_status(), KeyAuthorization::CurrentlyAuthorized);
+
+    // Seed a revocation reachable only by discovery — never placed in `known`.
+    // Boundary AT the receipt time: RFC-ACDP-0014 §7 fails closed at/after
+    // the boundary regardless of receipt validity.
+    rig.h
+        .seed_revocations(&rig.producer, &rig.producer_fp, &[rig.receipt_time])
+        .await;
+
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default()
+            .with_discovery(RevocationDiscovery::producer_signed_only()),
+        ..Default::default()
+    };
+    let err = VerifiedContext::fetch_with_policy(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &policy,
+    )
+    .await
+    .expect_err("a revocation reachable only by discovery must now fail verification");
+    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+    assert!(rig.h.hits("search") > 0, "discovery must have searched");
+}
+
+/// AC3: all FIVE policy-taking entry points honor `discover` —
+/// `fetch_with_policy`, `fetch_current_with_policy`, `fetch_report`,
+/// `fetch_report_diagnose`, `fetch_report_with_fetcher`. (`fetch` /
+/// `fetch_current` hardcode the default policy and `CrossRegistryResolver`
+/// has no policy-injection point — LIM-1/LIM-2, out of scope by design.)
+///
+/// Split into five independent `#[tokio::test]` functions (one per entry
+/// point, each with its own `discovery_rig` seed) rather than one test
+/// running all five sequentially: a regression in one entry point (e.g.
+/// `fetch_with_policy`) used to `panic!`/`expect_err` out of the shared
+/// test function and mask whether the other four still honored `discover`
+/// at all. Each function below is a decomposition of the original body —
+/// same setup shape, same assertions per entry point — not a rewrite.
+#[tokio::test]
+async fn phase4_ac3_fetch_with_policy_honors_discover() {
+    let rig = discovery_rig(0xD0).await;
+    rig.h
+        .seed_revocations(&rig.producer, &rig.producer_fp, &[rig.receipt_time])
+        .await;
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default()
+            .with_discovery(RevocationDiscovery::producer_signed_only()),
+        ..Default::default()
+    };
+
+    let err = VerifiedContext::fetch_with_policy(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &policy,
+    )
+    .await
+    .expect_err("fetch_with_policy must honor discover");
+    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+}
+
+#[tokio::test]
+async fn phase4_ac3_fetch_current_with_policy_honors_discover() {
+    let rig = discovery_rig(0xD1).await;
+    rig.h
+        .seed_revocations(&rig.producer, &rig.producer_fp, &[rig.receipt_time])
+        .await;
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default()
+            .with_discovery(RevocationDiscovery::producer_signed_only()),
+        ..Default::default()
+    };
+
+    let err = VerifiedContext::fetch_current_with_policy(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_lineage_id,
+        &policy,
+    )
+    .await
+    .expect_err("fetch_current_with_policy must honor discover");
+    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+}
+
+#[tokio::test]
+async fn phase4_ac3_fetch_report_honors_discover() {
+    let rig = discovery_rig(0xD2).await;
+    rig.h
+        .seed_revocations(&rig.producer, &rig.producer_fp, &[rig.receipt_time])
+        .await;
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default()
+            .with_discovery(RevocationDiscovery::producer_signed_only()),
+        ..Default::default()
+    };
+
+    let err =
+        VerifiedContext::fetch_report(&rig.client, &rig.h.resolver, &rig.target_ctx_id, &policy)
+            .await
+            .expect_err("fetch_report must honor discover");
+    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+}
+
+#[tokio::test]
+async fn phase4_ac3_fetch_report_with_fetcher_honors_discover() {
+    let rig = discovery_rig(0xD3).await;
+    rig.h
+        .seed_revocations(&rig.producer, &rig.producer_fp, &[rig.receipt_time])
+        .await;
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default()
+            .with_discovery(RevocationDiscovery::producer_signed_only()),
+        ..Default::default()
+    };
+
+    let fetcher = HttpsDataRefFetcher::new();
+    let err = VerifiedContext::fetch_report_with_fetcher(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &policy,
+        &fetcher,
+    )
+    .await
+    .expect_err("fetch_report_with_fetcher must honor discover");
+    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+}
+
+#[tokio::test]
+async fn phase4_ac3_fetch_report_diagnose_honors_discover() {
+    let rig = discovery_rig(0xD4).await;
+    rig.h
+        .seed_revocations(&rig.producer, &rig.producer_fp, &[rig.receipt_time])
+        .await;
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default()
+            .with_discovery(RevocationDiscovery::producer_signed_only()),
+        ..Default::default()
+    };
+
+    let (verified, report) = VerifiedContext::fetch_report_diagnose(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &policy,
+    )
+    .await
+    .expect("fetch_report_diagnose never returns Err for a policy-phase failure");
+    assert!(
+        verified.is_none(),
+        "the handle must be withheld when the policy phase fails"
+    );
+    assert!(
+        matches!(
+            report.policy_phase_error,
+            Some(AcdpError::KeyNotAuthorized(_))
+        ),
+        "got {:?}",
+        report.policy_phase_error
+    );
+}
+
+/// AC4: under `FailClosed`, a 503 from `/contexts/search` yields
+/// `Err(RevocationDiscoveryFailed)` from the four `Err`-propagating entry
+/// points, and `VerificationReport::policy_phase_error` from
+/// `fetch_report_diagnose`. The harness maps every injected status to
+/// wire code `internal_error` → `AcdpError::RegistryInternal`, which is
+/// transient — assert transience, not a status-specific variant.
+#[tokio::test]
+async fn phase4_ac4_fail_closed_503_propagates_as_revocation_discovery_failed() {
+    let rig = discovery_rig(0xC4).await;
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default()
+            .with_discovery(RevocationDiscovery::producer_signed_only()),
+        ..Default::default()
+    };
+    rig.h
+        .set_error("search", axum::http::StatusCode::SERVICE_UNAVAILABLE);
+
+    let err = VerifiedContext::fetch_with_policy(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &policy,
+    )
+    .await
+    .expect_err("FailClosed must propagate a discovery failure");
+    assert!(
+        matches!(err, AcdpError::RevocationDiscoveryFailed { .. }),
+        "got {err:?}"
+    );
+    assert!(err.is_transient(), "got {err:?}");
+
+    let err = VerifiedContext::fetch_current_with_policy(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_lineage_id,
+        &policy,
+    )
+    .await
+    .expect_err("fetch_current_with_policy must also propagate");
+    assert!(matches!(err, AcdpError::RevocationDiscoveryFailed { .. }));
+    assert!(err.is_transient());
+
+    let err =
+        VerifiedContext::fetch_report(&rig.client, &rig.h.resolver, &rig.target_ctx_id, &policy)
+            .await
+            .expect_err("fetch_report must also propagate");
+    assert!(matches!(err, AcdpError::RevocationDiscoveryFailed { .. }));
+    assert!(err.is_transient());
+
+    let fetcher = HttpsDataRefFetcher::new();
+    let err = VerifiedContext::fetch_report_with_fetcher(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &policy,
+        &fetcher,
+    )
+    .await
+    .expect_err("fetch_report_with_fetcher must also propagate");
+    assert!(matches!(err, AcdpError::RevocationDiscoveryFailed { .. }));
+    assert!(err.is_transient());
+
+    let (verified, report) = VerifiedContext::fetch_report_diagnose(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &policy,
+    )
+    .await
+    .expect("fetch_report_diagnose never returns Err");
+    assert!(verified.is_none());
+    match &report.policy_phase_error {
+        Some(e @ AcdpError::RevocationDiscoveryFailed { .. }) => assert!(e.is_transient()),
+        other => panic!("expected Some(RevocationDiscoveryFailed), got {other:?}"),
+    }
+
+    rig.h.clear_error("search");
+}
+
+/// AC5: under `ProceedWithKnown`, the same 503 yields `Ok`, verification
+/// proceeds on `known` alone, and the failure is retrievable via BOTH
+/// `VerifiedContext::revocation_discovery_failure()` and
+/// `VerificationReport::revocation_discovery` — never silent.
+#[tokio::test]
+async fn phase4_ac5_proceed_with_known_surfaces_failure_without_erroring() {
+    let rig = discovery_rig(0xC5).await;
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.on_failure = DiscoveryFailurePolicy::ProceedWithKnown;
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+    rig.h
+        .set_error("search", axum::http::StatusCode::SERVICE_UNAVAILABLE);
+
+    let verified = VerifiedContext::fetch_with_policy(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &policy,
+    )
+    .await
+    .expect("ProceedWithKnown must let verification succeed on `known` alone");
+    assert_eq!(verified.key_status(), KeyAuthorization::CurrentlyAuthorized);
+    assert!(
+        verified.revocation_discovery_failure().is_some(),
+        "the swallowed failure must still be observable on the plain fetch path"
+    );
+
+    let (verified2, report) =
+        VerifiedContext::fetch_report(&rig.client, &rig.h.resolver, &rig.target_ctx_id, &policy)
+            .await
+            .expect("ProceedWithKnown must let fetch_report succeed too");
+    assert!(verified2.revocation_discovery_failure().is_some());
+    match &report.revocation_discovery {
+        Some(Err(e)) => assert!(matches!(e, AcdpError::RevocationDiscoveryFailed { .. })),
+        other => panic!("expected Some(Err(RevocationDiscoveryFailed)), got {other:?}"),
+    }
+
+    rig.h.clear_error("search");
+}
+
+/// AC6: union proven. `known` holds an entry irrelevant to the signing
+/// key (mirrors `revocation::tests::unrelated_fingerprint_is_inert` —
+/// alone it changes nothing), discovery finds the one that actually
+/// matches; the merged set is what classification acts on, and
+/// `VerificationReport::revocation_discovery` reports `Ok(1)` — discovery
+/// output only, never `known`'s count. (A scenario where BOTH entries
+/// match and jointly tighten the boundary can only be demonstrated by
+/// pushing the union into `KeyNotAuthorized`, which discards the report
+/// via the same "no partial state past a failing phase" rule that already
+/// applies to every other `verify_retrieved` phase — e.g. `key_status`
+/// stays `None` if the signature phase fails after the receipt phase
+/// passed. The min-fold itself is already proven directly at the pure-
+/// function level by `revocation::tests::earliest_boundary_wins`.)
+#[tokio::test]
+async fn phase4_ac6_union_of_known_and_discovered_is_merged_before_classification() {
+    let rig = discovery_rig(0xC6).await;
+
+    let r1 = KeyRevocation {
+        revoked_key_fingerprint: K1_FP.to_string(),
+        compromised_since: acdp::time::trunc_ms(rig.receipt_time - chrono::Duration::days(1)),
+        reason: Some("AC6: known, deliberately unrelated fingerprint".into()),
+        revoked_key_id: Some(format!("{}#unrelated-key", rig.producer_did)),
+        revoked_key_controller: rig.agent_id(),
+        publisher: rig.agent_id(),
+        trust_class: RevocationTrustClass::ProducerSigned,
+    };
+
+    // Baseline: `known = [R1]` alone, no discovery — R1's fingerprint
+    // doesn't match the signing key at all, so it must be completely inert.
+    let known_only = VerificationPolicy {
+        revocations: RevocationPolicy::new(vec![r1.clone()]),
+        ..Default::default()
+    };
+    let baseline = VerifiedContext::fetch_with_policy(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &known_only,
+    )
+    .await
+    .expect("R1 alone must not affect an unrelated signing key");
+    assert_eq!(baseline.key_status(), KeyAuthorization::CurrentlyAuthorized);
+
+    // R2 — reachable only via discovery, matches the producer's actual
+    // signing key, boundary strictly after the receipt-attested publish
+    // time (safe/pre-compromise on its own).
+    rig.h
+        .seed_revocations(
+            &rig.producer,
+            &rig.producer_fp,
+            &[rig.receipt_time + chrono::Duration::days(5)],
+        )
+        .await;
+
+    let union_policy = VerificationPolicy {
+        revocations: RevocationPolicy::new(vec![r1])
+            .with_discovery(RevocationDiscovery::producer_signed_only()),
+        ..Default::default()
+    };
+    let (verified, report) = VerifiedContext::fetch_report(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &union_policy,
+    )
+    .await
+    .expect("union of an inert known entry plus a real discovered one must still verify");
+    assert_eq!(
+        verified.key_status(),
+        KeyAuthorization::HistoricallyAuthorizedPreCompromise,
+        "the discovered R2 must have been merged in and applied — the verdict changed \
+         from the R1-only baseline above"
+    );
+    match report.revocation_discovery {
+        Some(Ok(outcome)) => {
+            assert_eq!(
+                outcome.producer_signed, 1,
+                "count is discovery output only — must not include `known`'s R1"
+            );
+            assert_eq!(
+                outcome.registry_attested, None,
+                "producer_signed_only must never query the registry-attested class"
+            );
+        }
+        other => panic!(
+            "expected Some(Ok(DiscoveryOutcome {{ producer_signed: 1, .. }})), got {other:?}"
+        ),
+    }
+
+    // Second half: prove the merge is a genuine UNION, not "whichever
+    // side is non-empty wins". `known` now holds a REVOCATION THAT
+    // MATCHES the signing key with a boundary BEFORE the receipt time
+    // (alone it would already fail closed); discovery finds R2 again
+    // (boundary AFTER the receipt time, individually safe). Only a true
+    // union's min-fold correctly fails closed here — a "discovered
+    // replaces known" merge would drop R3 and wrongly let this verify,
+    // since R2 alone is safe.
+    let r3 = KeyRevocation {
+        revoked_key_fingerprint: rig.producer_fp.clone(),
+        compromised_since: acdp::time::trunc_ms(rig.receipt_time - chrono::Duration::days(1)),
+        reason: Some("AC6: known, relevant, earlier boundary than the discovered R2".into()),
+        revoked_key_id: Some(format!("{}#key-1", rig.producer_did)),
+        revoked_key_controller: rig.agent_id(),
+        publisher: rig.agent_id(),
+        trust_class: RevocationTrustClass::ProducerSigned,
+    };
+    let union_with_relevant_known_policy = VerificationPolicy {
+        revocations: RevocationPolicy::new(vec![r3])
+            .with_discovery(RevocationDiscovery::producer_signed_only()),
+        ..Default::default()
+    };
+    let err = VerifiedContext::fetch_with_policy(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &union_with_relevant_known_policy,
+    )
+    .await
+    .expect_err(
+        "known's earlier boundary must still apply even though discovery also found a \
+         later, individually-safe revocation — proves the merge is a union, not a \
+         replacement",
+    );
+    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+}
+
+/// AC7: `total_timeout` proven two-sided against a `/contexts/search`
+/// route sleeping 30s with a 2s `total_timeout`: (i) elapsed >= 2s, (ii)
+/// elapsed < 10s — which fails if the per-request `RegistryClient` cap
+/// (30s) fired instead — and (iii) the error is `RevocationDiscoveryFailed`
+/// whose source names the timeout, not a transport error.
+#[tokio::test]
+async fn phase4_ac7_total_timeout_bounds_wall_clock_and_names_the_timeout() {
+    let rig = discovery_rig(0xC7).await;
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.total_timeout = std::time::Duration::from_secs(2);
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+    rig.h
+        .set_delay("search", std::time::Duration::from_secs(30));
+
+    let start = std::time::Instant::now();
+    let err = VerifiedContext::fetch_with_policy(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &policy,
+    )
+    .await
+    .expect_err("discovery must time out against a 30s-delayed search route");
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed >= std::time::Duration::from_secs(2),
+        "elapsed = {elapsed:?}, must be at least the 2s total_timeout"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "elapsed = {elapsed:?} — must be well under the per-request RegistryClient cap (30s); \
+         a value near 30s means that cap fired instead of total_timeout"
+    );
+    match &err {
+        AcdpError::RevocationDiscoveryFailed { source } => {
+            let msg = source.to_string();
+            assert!(
+                matches!(**source, AcdpError::CrossRegistryResolutionFailed(_))
+                    && msg.contains("total_timeout"),
+                "source must name the timeout, not a transport error; got {source:?}"
+            );
+        }
+        other => panic!("expected RevocationDiscoveryFailed, got {other:?}"),
+    }
+
+    rig.h.clear_delay("search");
 }

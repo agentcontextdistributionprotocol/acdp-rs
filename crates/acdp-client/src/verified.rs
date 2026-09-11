@@ -7,7 +7,39 @@ use acdp_primitives::error::AcdpError;
 use acdp_types::{body::FullContext, primitives::CtxId};
 use acdp_verify::Verifier;
 
-/// Consumer-tunable strictness for [`VerifiedContext::fetch_with_policy`].
+/// Consumer-tunable strictness for [`VerifiedContext::fetch_with_policy`],
+/// [`VerifiedContext::fetch_current_with_policy`], and the
+/// `fetch_report*` family ([`VerifiedContext::fetch_report`],
+/// [`VerifiedContext::fetch_report_with_fetcher`],
+/// [`VerifiedContext::fetch_report_diagnose`]). All three surfaces
+/// consult the same policy fields through the same `verify_retrieved`
+/// spine — but they do not always *agree*, because
+/// [`VerifiedContext::fetch_report_diagnose`] differs in more than just
+/// how a failure surfaces:
+///
+/// - [`VerifiedContext::fetch_report`] and
+///   [`VerifiedContext::fetch_report_with_fetcher`] run
+///   `verify_retrieved` directly once their own top-level probes pass,
+///   and surface a phase failure as `Err`.
+/// - [`VerifiedContext::fetch_report_diagnose`] runs its own
+///   independent, strict, assertionMethod-only signature *probe* first
+///   (recorded as `VerificationReport::signature_ok`). That probe has
+///   no historical-key fallback and runs *before* `verify_retrieved` is
+///   ever invoked. If it fails, `diagnose` withholds the
+///   [`VerifiedContext`] handle with `policy_phase_error: None` — the
+///   spine never ran, so there is no phase error to record — even in
+///   cases where `verify_retrieved` itself, as run by `fetch_report`,
+///   would have accepted the key historically under the default
+///   `historical_keys: HistoricalKeyPolicy::AcceptWithReceipt` plus a
+///   verified receipt. Concretely: for a key rotated out of
+///   `assertionMethod` with a valid receipt, `fetch_report` returns
+///   `Ok` with [`KeyAuthorization::HistoricallyAuthorized`], while
+///   `diagnose` returns no handle at all for the same input and policy.
+///   Only once `diagnose`'s own probes all pass does it fall through to
+///   `verify_retrieved` and, from that point on, withhold the handle /
+///   record [`VerificationReport::policy_phase_error`] instead of
+///   returning `Err` — that part of the behavior *is* shared with the
+///   other two.
 ///
 /// For ACDP v0.1.0 the verification profile is **always strict**:
 ///
@@ -27,6 +59,14 @@ pub struct VerificationPolicy {
     /// any cryptographic check. Default `true`. Set `false` only in
     /// diagnostic paths that want to attempt signature verification
     /// despite a body known to fail structural checks.
+    ///
+    /// The `fetch_report*` family forces this field off unconditionally
+    /// on the internal policy it derives from the caller's — they run
+    /// `validate_body_structural` (schema only) themselves and record
+    /// per-`DataRef` embedded-hash outcomes in
+    /// [`VerificationReport::data_ref_embedded`] instead of treating a
+    /// mismatch as fatal. This field's value as set by the caller is
+    /// otherwise irrelevant to the report family.
     pub validate_body_schema: bool,
 
     /// If true, accept `Status::Other` values (degrade to active per
@@ -46,7 +86,11 @@ pub struct VerificationPolicy {
     /// RFC-ACDP-0011). Only consulted by
     /// [`VerifiedContext::fetch_current_with_policy`]; plain retrieval
     /// preserves any `lineage_head_receipt` verbatim without verifying
-    /// it. Default [`LineageHeadPolicy::default`].
+    /// it. Default [`LineageHeadPolicy::default`]. This is the ONE
+    /// field on this struct with restricted scope — `allow_unknown_status`,
+    /// `receipts`, `historical_keys`, and `revocations` above and below
+    /// are each honored by every entry point that accepts a
+    /// [`VerificationPolicy`], including the `fetch_report*` family.
     pub lineage_head: LineageHeadPolicy,
 
     /// Key-revocation handling (ACDP 0.3, RFC-ACDP-0014 §7). Default:
@@ -89,6 +133,17 @@ impl Default for VerificationPolicy {
 /// own validity. Note the interaction with [`ReceiptPolicy::Ignore`]:
 /// an unverified receipt provides no publish time, so a revoked key's
 /// contexts all fail closed under it.
+///
+/// This applies uniformly to every entry point that accepts a
+/// [`VerificationPolicy`] — [`VerifiedContext::fetch_with_policy`],
+/// [`VerifiedContext::fetch_current_with_policy`], and the
+/// `fetch_report*` family — since they all reach this phase through the
+/// same internal pipeline. On [`VerifiedContext::fetch_report_diagnose`]
+/// specifically, "fails closed" means the returned [`VerifiedContext`]
+/// handle is withheld and the cause is recorded in
+/// `VerificationReport::policy_phase_error`, rather than the call
+/// returning `Err` — that method never short-circuits on a policy-phase
+/// failure by design.
 ///
 /// Only put revocations here that you have verified (strict body
 /// pipeline + the §5 not-self-signed rule) and, per §6, that you have
@@ -141,6 +196,14 @@ pub enum ReceiptPolicy {
     /// the deployment requires audit-grade provenance — registry
     /// claims (`ctx_id`, `created_at`, `origin_registry`) are
     /// assertions, not proofs, without a receipt.
+    ///
+    /// Honored identically by every entry point that accepts a
+    /// [`VerificationPolicy`] — `fetch_with_policy`,
+    /// `fetch_current_with_policy` (via [`LineageHeadPolicy::receipts`]),
+    /// and the `fetch_report*` family. On
+    /// [`VerifiedContext::fetch_report_diagnose`] the failure surfaces as
+    /// a withheld handle plus `VerificationReport::policy_phase_error`,
+    /// not an `Err` — see that method's doc.
     Require,
 }
 
@@ -224,10 +287,16 @@ pub enum KeyAuthorization {
     /// Deliberately distinguishable from BOTH
     /// [`Self::CurrentlyAuthorized`] and the no-revocation
     /// [`Self::HistoricallyAuthorized`]: the revocation and its
-    /// boundary MUST be visible in the verdict. Contexts by the same
-    /// key at/after the boundary — or with no verifiable publish time
-    /// — never reach a status at all: they fail closed with
-    /// `key_not_authorized` (§7 steps 3–4).
+    /// boundary MUST be visible in the verdict — even a key still
+    /// listed in `assertionMethod` MUST NOT be reported as fully
+    /// current once revoked. This holds for every entry point that
+    /// accepts a [`VerificationPolicy`], including the `fetch_report*`
+    /// family: they derive `key_status` from the same `verify_retrieved`
+    /// phase `fetch_with_policy` uses, so a revoked key cannot silently
+    /// surface as [`Self::CurrentlyAuthorized`] on any of them. Contexts
+    /// by the same key at/after the boundary — or with no verifiable
+    /// publish time — never reach a status at all: they fail closed
+    /// with `key_not_authorized` (§7 steps 3–4).
     HistoricallyAuthorizedPreCompromise,
 }
 
@@ -263,6 +332,29 @@ impl VerificationPolicy {
             // A 0.1.0-pinned consumer predates RFC-ACDP-0014 and is
             // unaffected by it (§10): no revocations enforced.
             revocations: RevocationPolicy::default(),
+        }
+    }
+
+    /// The policy the report family (`fetch_report`,
+    /// `fetch_report_with_fetcher`, `fetch_report_diagnose`) passes to
+    /// [`VerifiedContext::verify_retrieved`].
+    ///
+    /// `validate_body_schema` is forced `false` unconditionally,
+    /// independent of the caller: P1 (schema) is always handled by the
+    /// report path itself — `validate_body_structural` plus per-`DataRef`
+    /// non-fatal recording of embedded-hash outcomes into
+    /// `VerificationReport::data_ref_embedded` — so the spine must always
+    /// skip its own full `validate_body` (structural + fatal embedded-hash
+    /// check) here. Every other field passes through verbatim. Do **not**
+    /// pass the caller's policy directly to `verify_retrieved` from a
+    /// report entry point; doing so reinstates the fatal embedded-hash
+    /// check the report path deliberately downgrades to non-fatal (see
+    /// `tests/tls_conformance.rs`'s
+    /// `fetch_report_records_embedded_hash_failure`).
+    fn derived_for_report(&self) -> Self {
+        Self {
+            validate_body_schema: false,
+            ..self.clone()
         }
     }
 }
@@ -479,6 +571,15 @@ impl VerifiedContext {
     /// hash recomputation, RFC-ACDP-0010 receipt phase, signature
     /// phase (with the receipt-gated historical-key fallback), and the
     /// unknown-status policy check.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(
+            name = "acdp.verify_retrieved",
+            skip_all,
+            fields(ctx_id = %expected_ctx_id),
+            err(Display)
+        )
+    )]
     async fn verify_retrieved(
         client: &RegistryClient,
         resolver: &WebResolver,
@@ -658,9 +759,17 @@ impl VerifiedContext {
     /// short-circuits on a top-level failure — schema, body-hash, and
     /// signature outcomes are each recorded individually in the
     /// returned [`VerificationReport`]. Returns `Ok((None, report))`
-    /// when any top-level stage failed (the report shows which one);
+    /// when any top-level probe failed (the report shows which one);
     /// `Ok((Some(verified), report))` only when every check passed
-    /// (FEAT-05).
+    /// (FEAT-05) — and "every check" now genuinely means every
+    /// authorization phase (receipt, revocation, signature/
+    /// historical-key, unknown-status), not just the top-level probes:
+    /// once the probes pass, this method additionally runs the same
+    /// `verify_retrieved` phase `fetch_with_policy` does, and withholds
+    /// the handle — recording the cause in
+    /// [`VerificationReport::policy_phase_error`] — if that phase fails
+    /// too. Either way the method still returns `Ok`; it never converts
+    /// a policy-phase failure into an `Err`.
     ///
     /// Use cases:
     /// - Audit walkers that need to classify failures by stage.
@@ -669,9 +778,19 @@ impl VerifiedContext {
     ///   verification failed" (key compromise / DID resolution
     ///   problem).
     ///
-    /// Network errors (retrieve, DID resolution) still propagate as
+    /// Network errors from the initial retrieval still propagate as
     /// `Err` — there's no body to inspect when the registry is
-    /// unreachable.
+    /// unreachable. But network/DID-resolution errors that occur
+    /// *inside* the `verify_retrieved` phase (e.g. resolving the
+    /// fingerprint for a receipt cross-check, or the historical-key
+    /// fallback) are caught there and land in
+    /// [`VerificationReport::policy_phase_error`] instead of `Err`,
+    /// same as any other phase failure — this method never
+    /// short-circuits once retrieval has succeeded. That means a
+    /// transient network flake at that stage can read as a policy
+    /// rejection (`Ok((None, report))`) rather than an `Err`. A caller
+    /// that needs to tell a flake from a genuine rejection should
+    /// inspect `policy_phase_error`'s [`AcdpError::is_transient`].
     pub async fn fetch_report_diagnose(
         client: &RegistryClient,
         resolver: &WebResolver,
@@ -686,6 +805,8 @@ impl VerifiedContext {
             data_ref_embedded: Vec::with_capacity(ctx.body.data_refs.len()),
             data_ref_external: Vec::with_capacity(ctx.body.data_refs.len()),
             ctx_id_ok: ctx.body.ctx_id == *ctx_id,
+            key_status: None,
+            policy_phase_error: None,
         };
 
         // Schema (structural) — record pass/fail.
@@ -720,19 +841,48 @@ impl VerifiedContext {
             report.data_ref_external.push(None);
         }
 
-        // Decide whether to surface the verified handle. Report paths
-        // run the strict assertionMethod check only (no receipt /
-        // historical handling — use `fetch_with_policy` for those).
+        // Decide whether to surface the verified handle. The probes above
+        // are diagnostic — their whole value is continuing past failure —
+        // but the handle is a trust assertion (`VerifiedContext`'s
+        // invariant: "the accessors below can be trusted without
+        // re-deriving anything"), so it is only ever issued once the real
+        // authorization phases (receipt, revocation, signature/historical,
+        // unknown-status) have actually run and passed through
+        // `verify_retrieved` — never on the probes alone.
         let all_top_level_pass =
             report.schema_ok && report.body_hash_ok && report.signature_ok && report.ctx_id_ok;
         let verified = if all_top_level_pass {
-            Some(Self {
-                inner: ctx,
-                key_status: KeyAuthorization::CurrentlyAuthorized,
-                verified_receipt: None,
-                verified_head_receipt: None,
-                head_receipt_stale: None,
-            })
+            // The call MUST be hoisted out of the `match` scrutinee: in a
+            // match, scrutinee temporaries live to the end of the match,
+            // so the awaited future would still be holding `&ctx` inside
+            // the arms and `Self { inner: ctx, .. }` below would fail
+            // borrowck (E0505).
+            let outcome = Self::verify_retrieved(
+                client,
+                resolver,
+                &ctx,
+                ctx_id,
+                &policy.derived_for_report(),
+            )
+            .await; // borrow of `ctx` ends here
+            match outcome {
+                Ok((key_status, verified_receipt)) => {
+                    report.key_status = Some(key_status);
+                    Some(Self {
+                        inner: ctx,
+                        key_status,
+                        verified_receipt,
+                        verified_head_receipt: None,
+                        head_receipt_stale: None,
+                    })
+                }
+                Err(e) => {
+                    // Reports; never short-circuits — `fetch_report_diagnose`
+                    // still returns `Ok` in every case it does today.
+                    report.policy_phase_error = Some(e);
+                    None
+                }
+            }
         } else {
             None
         };
@@ -763,9 +913,10 @@ impl VerifiedContext {
 
         // Identifier binding — RFC-ACDP-0006 §4.1 step 7 (NORMATIVE, "Bind
         // the resolved identity"). Same check as `verify_retrieved`,
-        // applied here because this path (backing both `fetch_report` and
-        // `fetch_report_with_fetcher`) never calls that function. See its
-        // doc comment for the full rationale.
+        // applied here (in addition to `verify_retrieved`'s own re-check
+        // below) so this fails before schema validation too — the early
+        // copy preserves fail-before-schema ordering that
+        // `tests/receipts.rs` depends on.
         if ctx.body.ctx_id != *ctx_id {
             return Err(AcdpError::ContextIdMismatch {
                 requested: ctx_id.as_str().to_string(),
@@ -780,6 +931,8 @@ impl VerifiedContext {
             data_ref_embedded: Vec::with_capacity(ctx.body.data_refs.len()),
             data_ref_external: Vec::with_capacity(ctx.body.data_refs.len()),
             ctx_id_ok: true,
+            key_status: None,
+            policy_phase_error: None,
         };
 
         // Structural-only schema validation — embedded-hash checks are
@@ -803,24 +956,19 @@ impl VerifiedContext {
             }
         }
 
-        // `verify_body_signed` recomputes content_hash + verifies the
-        // signature WITHOUT re-running the schema validator (we already
-        // ran the structural part above, and embedded-hash failures are
-        // recorded per-DataRef rather than aborting). It still enforces
-        // `did:web` for the producer key (RFC-ACDP-0001 §5.4).
-        Verifier::new(resolver)
-            .verify_body_signed(&ctx.body)
-            .await?;
+        // Delegate the remaining phases — content_hash recomputation,
+        // RFC-ACDP-0010 receipt, RFC-ACDP-0014 revocation, signature (with
+        // the historical-key fallback), and the unknown-status check — to
+        // `verify_retrieved`, the sole reader of those policy fields. The
+        // derived policy forces `validate_body_schema` off (P1 was already
+        // handled, structurally-only, above) and passes everything else
+        // through verbatim — see `VerificationPolicy::derived_for_report`.
+        let (key_status, verified_receipt) =
+            Self::verify_retrieved(client, resolver, &ctx, ctx_id, &policy.derived_for_report())
+                .await?;
         report.body_hash_ok = true;
         report.signature_ok = true;
-
-        if !policy.allow_unknown_status {
-            if let Some(other) = ctx.registry_state.status.as_other() {
-                return Err(AcdpError::SchemaViolation(format!(
-                    "policy.allow_unknown_status=false; registry returned '{other}'"
-                )));
-            }
-        }
+        report.key_status = Some(key_status);
 
         // External fetches — record per-ref outcomes when a fetcher is
         // supplied; otherwise leave each slot as `None` so callers can
@@ -836,8 +984,8 @@ impl VerifiedContext {
         Ok((
             Self {
                 inner: ctx,
-                key_status: KeyAuthorization::CurrentlyAuthorized,
-                verified_receipt: None,
+                key_status,
+                verified_receipt,
                 verified_head_receipt: None,
                 head_receipt_stale: None,
             },
@@ -862,15 +1010,22 @@ impl VerifiedContext {
 
     /// Whether the body verified against a currently authorized key, a
     /// receipt-attested historical one, or a receipt-attested
-    /// pre-compromise one (ACDP 0.2 WS-B / RFC-ACDP-0014 §7).
+    /// pre-compromise one (ACDP 0.2 WS-B / RFC-ACDP-0014 §7). This is
+    /// the real verdict regardless of which `fetch*`/`fetch_report*`
+    /// entry point produced this `VerifiedContext` — every construction
+    /// path runs the same `verify_retrieved` phase to derive it.
     pub fn key_status(&self) -> KeyAuthorization {
         self.key_status
     }
 
     /// The verified registry receipt (RFC-ACDP-0010), when one was
     /// present and the policy verified it. `None` under
-    /// [`ReceiptPolicy::Ignore`] or when the registry minted none. For
-    /// the raw on-wire value see [`Self::receipt`].
+    /// [`ReceiptPolicy::Ignore`] or when the registry minted none — this
+    /// is exhaustive; there is no additional "or you used a report path"
+    /// carve-out, since `fetch_report`/`fetch_report_with_fetcher`/
+    /// `fetch_report_diagnose` verify the receipt exactly like
+    /// `fetch_with_policy` does. For the raw on-wire value see
+    /// [`Self::receipt`].
     pub fn verified_receipt(&self) -> Option<&acdp_types::receipt::RegistryReceipt> {
         self.verified_receipt.as_ref()
     }
@@ -1020,6 +1175,22 @@ pub struct VerificationReport {
     /// construction fails loudly rather than silently binding the wrong
     /// field.
     pub ctx_id_ok: bool,
+    /// The real P3-P6 verdict from `verify_retrieved`'s authorization
+    /// phases (receipt, revocation, signature/historical, unknown-status),
+    /// when they ran and all passed. `None` means either "not reached"
+    /// (a top-level probe — schema, body hash, signature, ctx_id — failed
+    /// first, so `verify_retrieved` was never invoked) or "the phase ran
+    /// and failed" (see [`Self::policy_phase_error`] for which one).
+    pub key_status: Option<KeyAuthorization>,
+    /// Which of `verify_retrieved`'s policy-governed phases (receipt,
+    /// revocation, signature/historical-key, unknown-status) failed, when
+    /// one did. `None` when every phase passed, or when `verify_retrieved`
+    /// was never invoked because a top-level probe failed first.
+    /// `AcdpError` is not `Clone`, so — like `data_ref_embedded` above —
+    /// this field is populated by moving the error in, and asserting on it
+    /// requires `matches!` rather than `==`/`assert_eq!` (`AcdpError`
+    /// derives only `Debug, Error`).
+    pub policy_phase_error: Option<AcdpError>,
 }
 
 /// Sentinel `DataRefFetcher` used as the type parameter for
@@ -1062,6 +1233,122 @@ mod tests {
             strict,
             VerificationPolicy::default(),
             "the 0.2 default is receipt-aware; the v0.1.0 profile is not"
+        );
+    }
+
+    /// Phase 2 acceptance criterion 6 — the spine lock.
+    ///
+    /// `verify_retrieved` must be the SOLE reader of the four
+    /// authorization-policy fields (`receipts`, `revocations`,
+    /// `historical_keys`, `allow_unknown_status`) anywhere in this file.
+    /// Every public entry point (the four `fetch*` forms plus the three
+    /// report forms) reaches every authorization phase through that one
+    /// function, so a future RFC phase added anywhere else — instead of
+    /// inside `verify_retrieved` — trips this test instead of silently
+    /// reintroducing the exact divergence this phase fixed.
+    ///
+    /// Implemented as a plain `str` scan (no `regex` — it is not a
+    /// dependency of `acdp-client`) over this file's own source, read via
+    /// `include_str!`. `verify_retrieved`'s body span is located by
+    /// brace-counting from its own opening brace (its signature has no
+    /// braces of its own — only angle brackets in the return type — so
+    /// the first `{` after the `fn` keyword IS the body's opening brace),
+    /// not by hard-coded line numbers, so the check survives any diff.
+    /// Lines whose trimmed start is `//` (covers `///` too), and matches
+    /// that fall inside a string literal (detected by an odd count of
+    /// unescaped `"` before the match on its line — this file's one
+    /// in-string occurrence, the `allow_unknown_status=false` error
+    /// message, already lives inside `verify_retrieved` regardless), are
+    /// excluded.
+    ///
+    /// The four search patterns are built by runtime concatenation
+    /// (`policy.` + each field name) rather than written as contiguous
+    /// `"policy.receipts"`-style literals, so this test's own source —
+    /// included verbatim via `include_str!` — does not self-match its
+    /// own patterns.
+    #[test]
+    fn verify_retrieved_is_sole_reader_of_authorization_policy_fields() {
+        const SRC: &str = include_str!("verified.rs");
+
+        let policy_prefix = "policy.";
+        let fields = [
+            "receipts",
+            "revocations",
+            "historical_keys",
+            "allow_unknown_status",
+        ];
+        let patterns: Vec<String> = fields
+            .iter()
+            .map(|f| format!("{policy_prefix}{f}"))
+            .collect();
+
+        // Locate `verify_retrieved`'s body span.
+        let fn_start = SRC
+            .find("async fn verify_retrieved(")
+            .expect("verify_retrieved must exist in verified.rs");
+        let body_open = fn_start
+            + SRC[fn_start..]
+                .find('{')
+                .expect("verify_retrieved must have a body");
+        let mut depth = 0i32;
+        let mut body_close = None;
+        for (i, ch) in SRC[body_open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        body_close = Some(body_open + i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let body_close =
+            body_close.expect("verify_retrieved's matching closing brace must be found");
+        assert!(
+            body_close > body_open,
+            "sanity: verify_retrieved's body must be non-empty"
+        );
+
+        // Scan the whole file, tracking byte offsets so each match's
+        // position can be tested against the body span.
+        let mut offset = 0usize;
+        let mut checked_any = false;
+        for line in SRC.split_inclusive('\n') {
+            let trimmed = line.trim_start();
+            let is_comment_line = trimmed.starts_with("//");
+            if !is_comment_line {
+                for pattern in &patterns {
+                    let mut search_from = 0usize;
+                    while let Some(rel) = line[search_from..].find(pattern.as_str()) {
+                        let match_col = search_from + rel;
+                        let match_start = offset + match_col;
+                        let before = &line[..match_col];
+                        let in_string_literal = before.matches('"').count() % 2 == 1;
+                        if !in_string_literal {
+                            checked_any = true;
+                            assert!(
+                                match_start >= body_open && match_start < body_close,
+                                "found `{pattern}` outside verify_retrieved's body \
+                                 (byte offset {match_start}, line: {line:?}) — every \
+                                 authorization-policy-field read must live inside \
+                                 verify_retrieved, the sole reader"
+                            );
+                        }
+                        search_from = match_col + pattern.len();
+                    }
+                }
+            }
+            offset += line.len();
+        }
+        assert!(
+            checked_any,
+            "sanity: the scan must find at least one non-comment, non-string-literal \
+             match for at least one pattern (verify_retrieved itself reads these \
+             fields) — zero hits would mean the patterns are miscomputed, not that \
+             the invariant holds"
         );
     }
 }

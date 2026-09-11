@@ -13,10 +13,10 @@ categories  = ["data-structures", "encoding"]
 rust-version = "1.86"
 
 [dependencies]
-acdp-primitives = { path = "../acdp-primitives", version = "=0.12.0" }
-acdp-types      = { path = "../acdp-types", version = "=0.12.0" }
-acdp-crypto     = { path = "../acdp-crypto", version = "=0.12.0" }
-acdp-did        = { path = "../acdp-did", version = "=0.12.0" }
+acdp-primitives = { path = "../acdp-primitives", version = "=0.13.0" }
+acdp-types      = { path = "../acdp-types", version = "=0.13.0" }
+acdp-crypto     = { path = "../acdp-crypto", version = "=0.13.0" }
+acdp-did        = { path = "../acdp-did", version = "=0.13.0" }
 serde      = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 chrono     = { version = "0.4", features = ["serde"] }

@@ -98,6 +98,18 @@
   and the unpinned release path was re-resolving on the order of ~217 packages fresh on
   every release build with no lockfile diff to review. This entry is left verbatim above as
   a record of the original decision and its reasoning at the time.
+- **Update (2026-09-10, plans/issues-240-242-seamb-wave.md Phase 1, superseded):** the npm
+  half of the 2026-09-06 update above ("no committed `package-lock.json`") is now also
+  reversed. `bindings/acdp-node/package-lock.json` is committed, `.gitignore`'s acdp-node
+  section no longer ignores it, and `@napi-rs/cli` is pinned to an exact `3.8.6` in both
+  `package.json` and the lockfile (was `^3.8.6`, floating up to an untested 3.9.1). Unlike
+  the Cargo halves, `npm ci` was evaluated and rejected as not viable here (`package.json`'s
+  self-referential `optionalDependencies` on its own four platform packages resolve to a
+  manifest version with no matching publish yet — see `ASSUMPTIONS.md`'s #240 entry below
+  for the full measurement) — so `npm install` is kept, and `bindings.yml` gained a one-line
+  `node -e` assertion after the install step that fails loudly if the resolved
+  `@napi-rs/cli` version ever drifts off `3.8.6`. This closes the gap the 2026-09-06 update
+  left open for the npm binding specifically.
 
 ## pyo3 version: bumped to 0.29 instead of the planned 0.24 line
 - **Plan:** plans/rs-wave1-conformance-hardening.md
@@ -442,6 +454,21 @@
   reasoning for deferring still stands as written; what has changed is the cost of NOT doing it,
   which is now two guards not running rather than a tidiness concern. Tracked in #240 with the
   concrete options; this entry stays UNCONFIRMED only because the fix itself has not been made.
+- **Update (2026-09-10, plans/issues-240-242-seamb-wave.md Phase 1):** item 1 (napi-rs) is
+  now RESOLVED, item 2 (maturin) remains open/UNCONFIRMED. `bindings/acdp-node/package-lock.json`
+  is committed, `@napi-rs/cli` is pinned to exact `3.8.6` in both `package.json` and the
+  lockfile, and `bindings.yml` asserts the resolved version after `npm install`. Be precise
+  about what did **not** change: `npm install` was deliberately KEPT, not switched to
+  `npm ci` — `package.json`'s self-referential `optionalDependencies` on its own four
+  platform packages (pinned to the manifest's `0.10.0`) have no matching publish yet (the
+  highest published is `0.8.5`), so `npm ci` dies with `EUSAGE / Missing: ... from lock
+  file` and `--omit=optional` does not help. That `npm ci` switch is filed as its own
+  follow-up (Phase 4 of the same plan), not shipped here. The interop-job unblocking this
+  entry described (the staleness guard + #229 wasm-parity suite both being skipped via
+  `needs: [... acdp-node ...]`) is restored as a side effect: the guard now runs against a
+  real, reviewable pin instead of a floating caret with no committed lock. The maturin
+  half (`pip install 'maturin>=1.5,<2.0'`, an open range with no pin) was untouched by this
+  phase and stays UNCONFIRMED/open, tracked separately.
 
 ## `Swatinem/rust-cache` runs before the `--locked` gate in three workflows
 - **Plan:** plans/issues-196-199-215-216-followups.md (Phase 2, #196a)

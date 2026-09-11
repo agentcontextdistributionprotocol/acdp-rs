@@ -20,6 +20,14 @@ bindings/**/target/
 # fourth lockfile is expected here. Each binding's lock resolves
 # independently of the root Cargo.lock by design (separate workspaces);
 # see ASSUMPTIONS.md for the accepted divergence this produces.
+# bindings/acdp-node/package-lock.json is tracked for the same reason:
+# napi build's generated loader (index.js/index.d.ts, see below) is
+# produced by @napi-rs/cli, so the resolved npm dependency graph is part
+# of what a consumer of this application artifact trusts. `npm install`
+# (not `npm ci` — see ASSUMPTIONS.md for why that is not viable here) is
+# what every binding target runs against it, and it honors a committed
+# lock: it will not upgrade an entry that still satisfies its range, so
+# the tracked lock is what keeps the pinned @napi-rs/cli version real.
 bindings/acdp-py/.venv/
 bindings/acdp-py/*.so
 bindings/acdp-py/dist/
@@ -29,7 +37,6 @@ bindings/acdp-node/node_modules/
 # run `napi build`, so the root `acdp` package needs them present at publish
 # time. Regenerate with `npm run build` after any change to the exported API.
 bindings/acdp-node/acdp.*.node
-bindings/acdp-node/package-lock.json
 # acdp-wasm: the wasm-pack / wasm-bindgen output dir (.js/.wasm/.d.ts) is
 # generated on demand by `wasm-pack build`, never committed.
 bindings/acdp-wasm/pkg/

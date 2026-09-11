@@ -14,7 +14,8 @@ help:
 	@echo "Targets:"
 	@echo "  test          - cargo test --all-features on the root crate"
 	@echo "  sdk-py        - maturin develop + pytest in $(PY_DIR)"
-	@echo "  sdk-node      - npm install + napi build:debug + node --test in $(NODE_DIR)"
+	@echo "  sdk-node      - npm install (honors the committed package-lock.json) +"
+	@echo "                  napi build:debug + node --test in $(NODE_DIR)"
 	@echo "  sdk-wasm      - wasm-pack build --target web --out-dir pkg in $(WASM_DIR)"
 	@echo "                  (optional: enables the wasm parity checks in \`make interop\`;"
 	@echo "                  not required for interop/CI otherwise)"
@@ -36,6 +37,9 @@ sdk-py:
 
 # ── Node.js SDK ─────────────────────────────────────────────────────────
 # `npm install` brings in @napi-rs/cli; `build:debug` is the fast path.
+# package-lock.json is committed, so this `npm install` resolves the
+# pinned dependency graph (including an exact @napi-rs/cli version)
+# rather than re-resolving fresh.
 # Use the explicit `tests/*.mjs` glob: Node 22+ treats a bare directory
 # argument to `--test` as a module path and fails with MODULE_NOT_FOUND,
 # instead of recursing into the directory for test files.

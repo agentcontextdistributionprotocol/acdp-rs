@@ -214,6 +214,53 @@ unless `.enable_time()` / `.enable_all()` is called). Calling any
 from a runtime without the time driver **panics**, it does not return
 `Err`.
 
+**Bounding request count and bytes (issue #258).** `total_timeout` bounds
+wall clock only — a hostile-but-fast registry can still drive a large
+number of requests and a large volume of parsed bytes well inside the
+timeout. `RevocationDiscovery::max_requests` (an `Option<NonZeroUsize>`)
+and `RevocationDiscovery::max_bytes` (an `Option<u64>`) close that gap:
+
+```rust,no_run
+# #[cfg(feature = "client")]
+# fn build_budgeted_discovery() -> acdp::client::RevocationDiscovery {
+use acdp::client::RevocationDiscovery;
+use std::num::NonZeroUsize;
+
+let mut discovery = RevocationDiscovery::producer_signed_only();
+discovery.max_requests = Some(NonZeroUsize::new(200).unwrap());
+discovery.max_bytes = Some(10 * 1024 * 1024); // 10 MB
+# discovery
+# }
+```
+
+Both default to `None` (unbounded) from both named constructors, so
+adding either knob is opt-in and changes nothing for an existing caller.
+When set, the two knobs bound the **combined** total across both trust-
+class searches — enabling `include_registry_attested` does not double
+the ceiling — and are checked **before** each request is issued, so a
+request that would exceed the budget is never sent. Exhaustion raises
+`AcdpError::RevocationDiscoveryBudgetExceeded`, wrapped the same way a
+`SearchTruncated` failure is (`AcdpError::RevocationDiscoveryFailed`,
+dispatched through `on_failure` exactly like the case above) and is
+**never** transient.
+
+Two honesty caveats:
+
+- **Registry traffic only.** The budget counts requests issued through
+  `RegistryClient` (`capabilities`, `retrieve`, `lineage`, `search`).
+  DID-document fetches issued via `WebResolver` during discovery are
+  not counted — they are LRU-cached (1000 entries) but unbounded in
+  count.
+- **Successfully-parsed bodies only.** The byte budget counts bytes
+  read from a *successful* response. A non-success response's small
+  error-envelope read (capped at 64 KB) is never charged, and the size
+  of an in-flight request cannot be reserved in advance — a single
+  request can push the running total past `max_bytes` before the
+  *next* check observes the overrun.
+
+There is still no cache in this version: every call re-discovers from
+scratch, budgeted or not.
+
 **Where discovery is, and is not, reachable.** All five
 policy-taking entry points — `fetch_with_policy`,
 `fetch_current_with_policy`, `fetch_report`, `fetch_report_diagnose`,

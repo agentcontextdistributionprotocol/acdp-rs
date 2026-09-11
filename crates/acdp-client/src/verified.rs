@@ -1,7 +1,7 @@
 //! VerifiedContext: retrieve + verify in one call.
 
 use super::data_ref::{fetch_and_verify_data_ref, DataRefFetcher};
-use super::registry::RegistryClient;
+use super::registry::{DiscoveryBudget, RegistryClient};
 use acdp_did::WebResolver;
 use acdp_primitives::error::AcdpError;
 use acdp_types::{body::FullContext, primitives::CtxId};
@@ -273,14 +273,29 @@ impl RevocationPolicy {
 /// can still serve gigabytes of legitimate-looking traffic inside the
 /// window — the 1 MB cap applies per request, not in aggregate, and
 /// verified revocations accumulate in a `Vec` for the call's duration.
-/// There is no request-count or byte budget in this version, and no
-/// cache: every call re-discovers from scratch. A caller verifying
-/// many contexts against the same producer should discover once
-/// itself and pass the results via [`RevocationPolicy::known`] instead
-/// of setting `discover` on every call — the same hoisting guidance
-/// `crate::revocation`'s `find_registry_attested_revocations` doc
-/// already gives callers of that function directly (see its "Cost
-/// note for callers verifying many contexts").
+/// [`Self::max_requests`] and [`Self::max_bytes`] (issue #258) close
+/// that gap: set either (or both) to bound the two lookups **combined**
+/// — enabling [`Self::include_registry_attested`] does not double the
+/// ceiling — checked **before** each request is issued, so a would-be
+/// request that would exceed the budget is never sent. Exhaustion
+/// raises `AcdpError::RevocationDiscoveryBudgetExceeded` through the
+/// same [`Self::on_failure`] path as `AcdpError::SearchTruncated` — it
+/// is permanent for the same request shape and is never transient.
+/// Both knobs bound **registry** traffic only: DID-document fetches
+/// issued via `WebResolver` are not counted. Both also count only
+/// **successfully-parsed response bodies** — an error-envelope read on
+/// a non-success response is not charged. Leaving both `None` (as both
+/// [`Self::producer_signed_only`] and [`Self::all_trust_classes`] do)
+/// preserves pre-#258 behavior exactly: unbounded requests and bytes,
+/// bounded only by [`Self::total_timeout`]. There is still no cache in
+/// this version: every call re-discovers from scratch, budgeted or not.
+/// A caller verifying many contexts against the same producer should
+/// discover once itself and pass the results via
+/// [`RevocationPolicy::known`] instead of setting `discover` on every
+/// call — the same hoisting guidance `crate::revocation`'s
+/// `find_registry_attested_revocations` doc already gives callers of
+/// that function directly (see its "Cost note for callers verifying
+/// many contexts").
 ///
 /// # Reentrancy
 ///
@@ -361,6 +376,33 @@ pub struct RevocationDiscovery {
     /// but here it sits on the core verify path whenever discovery is
     /// configured, not just on an explicit cross-registry walk.
     pub total_timeout: Duration,
+    /// Issue #258: cap on the total number of registry requests the
+    /// discovery step may issue, **combined across both lookups** (the
+    /// producer-signed search always, plus the registry-attested search
+    /// when [`Self::include_registry_attested`] is set) — not a ceiling
+    /// per lookup, so turning on the second trust class does not double
+    /// the allowance. `None` (the default from both named constructors)
+    /// is unbounded, matching every version before #258. Checked
+    /// **before** each request is issued (`RegistryClient::capabilities`,
+    /// `::retrieve`, `::lineage`, `::search`); exceeding it raises
+    /// `AcdpError::RevocationDiscoveryBudgetExceeded` through
+    /// [`Self::on_failure`], the same path `AcdpError::SearchTruncated`
+    /// already takes. Counts registry requests only — DID-document
+    /// fetches via `WebResolver` are not counted.
+    pub max_requests: Option<std::num::NonZeroUsize>,
+    /// Issue #258: cap on the cumulative bytes of *successfully-parsed*
+    /// response bodies the discovery step may read, **combined across
+    /// both lookups**, same combination rule as [`Self::max_requests`].
+    /// `None` (the default from both named constructors) is unbounded,
+    /// matching every version before #258. Checked **before** each
+    /// request is issued, using the running total from requests that
+    /// already completed — the size of an in-flight request cannot be
+    /// known (and therefore reserved) in advance, so a single request
+    /// can push the total past `max_bytes` before the next check
+    /// observes the overrun. Counts a non-success response's
+    /// error-envelope read *not at all* — only bytes read on the
+    /// success path are charged.
+    pub max_bytes: Option<u64>,
 }
 
 impl RevocationDiscovery {
@@ -376,6 +418,8 @@ impl RevocationDiscovery {
             include_registry_attested: false,
             on_failure: DiscoveryFailurePolicy::FailClosed,
             total_timeout: Duration::from_secs(30),
+            max_requests: None,
+            max_bytes: None,
         }
     }
 
@@ -390,6 +434,8 @@ impl RevocationDiscovery {
             include_registry_attested: true,
             on_failure: DiscoveryFailurePolicy::FailClosed,
             total_timeout: Duration::from_secs(30),
+            max_requests: None,
+            max_bytes: None,
         }
     }
 }
@@ -977,13 +1023,25 @@ impl VerifiedContext {
             Some(discovery) => {
                 let agent_id = &ctx.body.agent_id;
                 let include_attested = discovery.include_registry_attested;
+                // Issue #258 (D-B): a combined request/byte budget is
+                // enforced inside `RegistryClient`'s request methods, on
+                // a client clone created HERE and handed to BOTH lookups
+                // below — never on `client` itself, so a caller sharing
+                // that original client across concurrent work never has
+                // unrelated traffic charged to this discovery's budget.
+                // One `DiscoveryBudget` per call means one combined
+                // ceiling: enabling `include_registry_attested` cannot
+                // silently double it, since both `try_join!` arms below
+                // draw down the same counters.
+                let budget = DiscoveryBudget::new(discovery.max_requests, discovery.max_bytes);
+                let client = client.with_discovery_budget(budget);
                 let discovery_fut = async {
                     tokio::try_join!(
-                        super::revocation::find_revocations(client, resolver, agent_id),
+                        super::revocation::find_revocations(&client, resolver, agent_id),
                         async {
                             if include_attested {
                                 super::revocation::find_registry_attested_revocations(
-                                    client, resolver, agent_id,
+                                    &client, resolver, agent_id,
                                 )
                                 .await
                             } else {

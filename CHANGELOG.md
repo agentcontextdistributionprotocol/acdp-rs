@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- *(client)* bound revocation auto-discovery by request count and cumulative bytes, not
+  just wall clock ([#258](https://github.com/agentcontextdistributionprotocol/acdp-rs/issues/258))
+
+  `RevocationDiscovery::total_timeout` only ever bounded wall clock — a hostile-but-fast
+  registry could still drive thousands of requests and megabytes of traffic well inside
+  the timeout (see the type's own worst-case numbers: ~6,160 requests / ~6.1 GB
+  producer-signed-only, ~12,321 / ~12.2 GB for both trust classes). `RevocationDiscovery`
+  gains two additive, `Copy` fields — `max_requests: Option<NonZeroUsize>` and
+  `max_bytes: Option<u64>` — both `None` (unbounded) from `producer_signed_only()` and
+  `all_trust_classes()`, so existing callers see byte-identical behavior. When set, the
+  two knobs bound the **combined** total across BOTH trust-class lookups: enabling
+  `include_registry_attested` does not double the ceiling. Enforcement lives inside
+  `RegistryClient`'s four request methods (`capabilities`, `retrieve`, `lineage`,
+  `search`), checked before each request is issued, on a client clone
+  `verify_retrieved` creates once per discovery and hands to both concurrent lookups —
+  the caller's original client is never charged. Exhaustion raises the new
+  `AcdpError::RevocationDiscoveryBudgetExceeded`, wrapped in
+  `AcdpError::RevocationDiscoveryFailed` and dispatched through `on_failure` exactly like
+  the existing `SearchTruncated` case; it is never transient. No wire code (RFC-ACDP-0014
+  §10 forbids one) — this is a client-side guard only. Bounds registry traffic only
+  (`WebResolver` DID-document fetches are not counted) and successfully-parsed response
+  bodies only (a non-success response's error-envelope read is never charged).
+  `crates/acdp-client/src/revocation.rs` is unchanged by this work.
+
 ## [0.13.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.12.0...acdp-v0.13.0) - 2026-09-11
 
 ### Added

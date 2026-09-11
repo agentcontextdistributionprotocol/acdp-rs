@@ -19,6 +19,7 @@
 
 mod common;
 
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -5167,4 +5168,438 @@ async fn phase4_ac7_total_timeout_bounds_wall_clock_and_names_the_timeout() {
     }
 
     rig.h.clear_delay("search");
+}
+
+// ── issue #258 — combined revocation-discovery request/byte budget ────────
+//
+// All tests below reuse `discovery_rig` with NO revocations seeded, so
+// every discovery run is a "zero-match" search: `find_revocations` issues
+// exactly 6 `/contexts/search` requests (2 type_forms x 3 statuses, no
+// candidates, no retrieves, no lineage walks) and
+// `find_registry_attested_revocations` issues exactly 1 `/.well-known/
+// acdp.json` fetch plus 6 more searches — verified empirically against
+// this harness before these numbers were hardcoded below. `hits("context")`
+// also ticks up by 1 per `fetch_with_policy` call, but that single hit is
+// `VerifiedContext::fetch_with_policy`'s OWN top-level retrieve of the
+// target context through the CALLER's client, never the budget-scoped
+// clone `verify_retrieved` builds for discovery — so it is deliberately
+// excluded from every budgeted-total assertion below (folding it in would
+// make the "combined ceiling" assertions off-by-one and, worse, wrongly
+// imply retrieval of the target itself is charged to the discovery
+// budget).
+
+/// AC1: `RevocationDiscovery` is still `Copy` after adding the two budget
+/// fields — both are `Copy` types, so this is a compile-time proof, not a
+/// runtime one. (`#[non_exhaustive]` and "no `Default` impl" are also
+/// unchanged, but those are load-bearing on the *absence* of code — the
+/// type still has no `Default` impl and the module still compiles with
+/// only the two named constructors building it — rather than something a
+/// runtime assertion can exercise.)
+#[test]
+fn budget_ac1_revocation_discovery_still_copy() {
+    fn assert_copy<T: Copy>() {}
+    assert_copy::<RevocationDiscovery>();
+    // Exercise the Copy path directly: using `discovery` again after
+    // passing the first copy by value would be a compile error if this
+    // type had silently become `Clone`-only.
+    let discovery = RevocationDiscovery::producer_signed_only();
+    let _copy1 = discovery;
+    let _copy2 = discovery;
+    assert_eq!(discovery.max_requests, None);
+    assert_eq!(discovery.max_bytes, None);
+}
+
+/// AC2: with both `max_requests` and `max_bytes` left `None` (what both
+/// named constructors set), request counts are byte-identical to the
+/// pre-#258 behavior — exact counts, not `> 0`.
+#[tokio::test]
+async fn budget_ac2_none_none_matches_pre_258_request_counts() {
+    let rig = discovery_rig(0xB2).await;
+    let before_search = rig.h.hits("search");
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default()
+            .with_discovery(RevocationDiscovery::producer_signed_only()),
+        ..Default::default()
+    };
+    let verified = VerifiedContext::fetch_with_policy(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &policy,
+    )
+    .await
+    .expect("unbudgeted zero-match discovery must succeed exactly as before #258");
+    assert_eq!(verified.key_status(), KeyAuthorization::CurrentlyAuthorized);
+    assert_eq!(
+        rig.h.hits("search") - before_search,
+        6,
+        "producer_signed_only() with no budget must issue exactly 6 searches \
+         (2 type_forms x 3 statuses), unchanged from v0.13.0"
+    );
+
+    let rig2 = discovery_rig(0xB3).await;
+    let before_search2 = rig2.h.hits("search");
+    let before_caps2 = rig2.h.hits("acdp_json");
+    let policy2 = VerificationPolicy {
+        revocations: RevocationPolicy::default()
+            .with_discovery(RevocationDiscovery::all_trust_classes()),
+        ..Default::default()
+    };
+    let verified2 = VerifiedContext::fetch_with_policy(
+        &rig2.client,
+        &rig2.h.resolver,
+        &rig2.target_ctx_id,
+        &policy2,
+    )
+    .await
+    .expect("unbudgeted zero-match dual discovery must succeed exactly as before #258");
+    assert_eq!(
+        verified2.key_status(),
+        KeyAuthorization::CurrentlyAuthorized
+    );
+    assert_eq!(
+        rig2.h.hits("search") - before_search2,
+        12,
+        "all_trust_classes() with no budget must issue exactly 12 searches \
+         (6 per lookup), unchanged from v0.13.0"
+    );
+    assert_eq!(
+        rig2.h.hits("acdp_json") - before_caps2,
+        1,
+        "the registry-attested lookup's single unconditional capabilities() \
+         fetch must be unaffected by the (unset) budget"
+    );
+}
+
+/// AC3 (load-bearing — the test that distinguishes a combined budget from
+/// two per-lookup budgets): the SAME `max_requests: Some(N)` must yield
+/// the same total ceiling whether `include_registry_attested` is `false`
+/// or `true`. Natural (unbudgeted) totals are 6 requests single-lookup and
+/// 13 (12 search + 1 caps) dual-lookup — both well above `N = 4` — so if
+/// discovery instead handed each lookup its OWN budget of 4, the dual run
+/// would observe up to 8 requests, not <= 4. See probe (b) in the
+/// falsifiability tests below for the mutation that turns this red.
+#[tokio::test]
+async fn budget_ac3_combined_ceiling_not_doubled_by_include_registry_attested() {
+    const N: usize = 4;
+
+    let rig = discovery_rig(0xB4).await;
+    let before_search = rig.h.hits("search");
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.max_requests = Some(NonZeroUsize::new(N).unwrap());
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+    let err = VerifiedContext::fetch_with_policy(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &policy,
+    )
+    .await
+    .expect_err("max_requests: Some(4) must exhaust before the natural 6 searches complete");
+    assert!(
+        matches!(err, AcdpError::RevocationDiscoveryFailed { .. }),
+        "got {err:?}"
+    );
+    let single_total = rig.h.hits("search") - before_search;
+    assert_eq!(
+        single_total, N,
+        "single-lookup total must be exactly N — check-before-issue is exact here"
+    );
+
+    let rig2 = discovery_rig(0xB5).await;
+    let before_search2 = rig2.h.hits("search");
+    let before_caps2 = rig2.h.hits("acdp_json");
+    let mut discovery2 = RevocationDiscovery::all_trust_classes();
+    discovery2.max_requests = Some(NonZeroUsize::new(N).unwrap());
+    let policy2 = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery2),
+        ..Default::default()
+    };
+    let err2 = VerifiedContext::fetch_with_policy(
+        &rig2.client,
+        &rig2.h.resolver,
+        &rig2.target_ctx_id,
+        &policy2,
+    )
+    .await
+    .expect_err("max_requests: Some(4) must exhaust before the natural 13 requests complete");
+    assert!(matches!(err2, AcdpError::RevocationDiscoveryFailed { .. }));
+    let dual_total =
+        (rig2.h.hits("search") - before_search2) + (rig2.h.hits("acdp_json") - before_caps2);
+    assert!(
+        dual_total <= N,
+        "dual-lookup total ({dual_total}) must be <= N ({N}) — a combined budget, \
+         not one ceiling per lookup (which would allow up to 2N = {})",
+        2 * N
+    );
+}
+
+/// AC7: check-before-issue is proven both ways. Single-lookup (serial,
+/// `include_registry_attested: false`): `hits()` total is exactly `K`.
+/// Both-classes (concurrent under `try_join!`): `hits()` total is `<= K`
+/// and never `K + 1` — the weaker bound is required because `try_join!`
+/// cancels the sibling future the instant one arm errors, so a request
+/// whose slot was already reserved can be dropped before the server
+/// records it. Uses a different K than AC3 to keep the two tests
+/// independent.
+#[tokio::test]
+async fn budget_ac7_check_before_issue_exact_single_bounded_dual() {
+    const K: usize = 3;
+
+    let rig = discovery_rig(0xB6).await;
+    let before_search = rig.h.hits("search");
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.max_requests = Some(NonZeroUsize::new(K).unwrap());
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+    VerifiedContext::fetch_with_policy(&rig.client, &rig.h.resolver, &rig.target_ctx_id, &policy)
+        .await
+        .expect_err("K=3 must exhaust before the natural 6 searches complete");
+    assert_eq!(
+        rig.h.hits("search") - before_search,
+        K,
+        "single-lookup, serial requests: hits() must be exactly K"
+    );
+
+    let rig2 = discovery_rig(0xB7).await;
+    let before_search2 = rig2.h.hits("search");
+    let before_caps2 = rig2.h.hits("acdp_json");
+    let mut discovery2 = RevocationDiscovery::all_trust_classes();
+    discovery2.max_requests = Some(NonZeroUsize::new(K).unwrap());
+    let policy2 = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery2),
+        ..Default::default()
+    };
+    VerifiedContext::fetch_with_policy(
+        &rig2.client,
+        &rig2.h.resolver,
+        &rig2.target_ctx_id,
+        &policy2,
+    )
+    .await
+    .expect_err("K=3 must exhaust before the natural 13 requests complete");
+    let dual_total =
+        (rig2.h.hits("search") - before_search2) + (rig2.h.hits("acdp_json") - before_caps2);
+    assert!(
+        dual_total <= K,
+        "both-classes, concurrent requests: hits() ({dual_total}) must be <= K ({K})"
+    );
+    assert_ne!(
+        dual_total,
+        K + 1,
+        "hits() must never overshoot the reservation by one"
+    );
+}
+
+/// A dedicated `max_bytes`-only exhaustion test (no `max_requests` set):
+/// with `max_bytes: Some(1)`, the FIRST search response's bytes already
+/// exceed the budget, so the SECOND check-before-issue call must refuse
+/// before a second request is ever sent.
+#[tokio::test]
+async fn budget_max_bytes_alone_exhausts_before_second_request() {
+    let rig = discovery_rig(0xB8).await;
+    let before_search = rig.h.hits("search");
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.max_bytes = Some(1);
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+    let err = VerifiedContext::fetch_with_policy(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &policy,
+    )
+    .await
+    .expect_err("max_bytes: Some(1) must exhaust after the first response is read");
+    match &err {
+        AcdpError::RevocationDiscoveryFailed { source } => {
+            assert!(
+                matches!(**source, AcdpError::RevocationDiscoveryBudgetExceeded(_)),
+                "got {source:?}"
+            );
+            assert!(source.to_string().contains("max_bytes"), "got {source}");
+        }
+        other => panic!("expected RevocationDiscoveryFailed, got {other:?}"),
+    }
+    assert_eq!(
+        rig.h.hits("search") - before_search,
+        1,
+        "exactly one search must be issued before the byte budget is observed as exhausted"
+    );
+}
+
+/// AC4 + AC6: exhaustion under `FailClosed` returns
+/// `Err(RevocationDiscoveryFailed { source })` where `source` is
+/// `AcdpError::RevocationDiscoveryBudgetExceeded`, from all four
+/// `Err`-propagating entry points, `VerificationReport::policy_phase_error`
+/// from `fetch_report_diagnose`, and the error (both the wrapper and the
+/// inner `source`) is NEVER transient — unlike the 503 case covered by
+/// `phase4_ac4_fail_closed_503_propagates_as_revocation_discovery_failed`.
+#[tokio::test]
+async fn budget_ac4_ac6_fail_closed_propagates_and_is_not_transient() {
+    let rig = discovery_rig(0xB9).await;
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.max_requests = Some(NonZeroUsize::new(2).unwrap());
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+
+    fn assert_budget_failure(err: &AcdpError) {
+        match err {
+            AcdpError::RevocationDiscoveryFailed { source } => {
+                assert!(
+                    matches!(**source, AcdpError::RevocationDiscoveryBudgetExceeded(_)),
+                    "got {source:?}"
+                );
+            }
+            other => panic!("expected RevocationDiscoveryFailed, got {other:?}"),
+        }
+        assert!(
+            !err.is_transient(),
+            "budget exhaustion must never be transient; got {err:?}"
+        );
+    }
+
+    let err = VerifiedContext::fetch_with_policy(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &policy,
+    )
+    .await
+    .expect_err("fetch_with_policy must propagate budget exhaustion");
+    assert_budget_failure(&err);
+
+    let err = VerifiedContext::fetch_current_with_policy(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_lineage_id,
+        &policy,
+    )
+    .await
+    .expect_err("fetch_current_with_policy must also propagate");
+    assert_budget_failure(&err);
+
+    let err =
+        VerifiedContext::fetch_report(&rig.client, &rig.h.resolver, &rig.target_ctx_id, &policy)
+            .await
+            .expect_err("fetch_report must also propagate");
+    assert_budget_failure(&err);
+
+    let fetcher = HttpsDataRefFetcher::new();
+    let err = VerifiedContext::fetch_report_with_fetcher(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &policy,
+        &fetcher,
+    )
+    .await
+    .expect_err("fetch_report_with_fetcher must also propagate");
+    assert_budget_failure(&err);
+
+    let (verified, report) = VerifiedContext::fetch_report_diagnose(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &policy,
+    )
+    .await
+    .expect("fetch_report_diagnose never returns Err");
+    assert!(verified.is_none());
+    match &report.policy_phase_error {
+        Some(e @ AcdpError::RevocationDiscoveryFailed { .. }) => assert_budget_failure(e),
+        other => panic!("expected Some(RevocationDiscoveryFailed), got {other:?}"),
+    }
+}
+
+/// AC5: under `ProceedWithKnown`, budget exhaustion yields `Ok`,
+/// verification proceeds on `known` alone, and the failure is retrievable
+/// from BOTH `VerifiedContext::revocation_discovery_failure()` and
+/// `VerificationReport::revocation_discovery` — never silent.
+#[tokio::test]
+async fn budget_ac5_proceed_with_known_surfaces_failure_without_erroring() {
+    let rig = discovery_rig(0xBA).await;
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.max_requests = Some(NonZeroUsize::new(2).unwrap());
+    discovery.on_failure = DiscoveryFailurePolicy::ProceedWithKnown;
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+
+    let verified = VerifiedContext::fetch_with_policy(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &policy,
+    )
+    .await
+    .expect("ProceedWithKnown must let verification succeed on `known` alone");
+    assert_eq!(verified.key_status(), KeyAuthorization::CurrentlyAuthorized);
+    let failure = verified
+        .revocation_discovery_failure()
+        .expect("the swallowed budget failure must still be observable");
+    match failure {
+        AcdpError::RevocationDiscoveryFailed { source } => {
+            assert!(matches!(
+                **source,
+                AcdpError::RevocationDiscoveryBudgetExceeded(_)
+            ));
+        }
+        other => panic!("expected RevocationDiscoveryFailed, got {other:?}"),
+    }
+
+    let (verified2, report) =
+        VerifiedContext::fetch_report(&rig.client, &rig.h.resolver, &rig.target_ctx_id, &policy)
+            .await
+            .expect("ProceedWithKnown must let fetch_report succeed too");
+    assert!(verified2.revocation_discovery_failure().is_some());
+    match &report.revocation_discovery {
+        Some(Err(e)) => match e {
+            AcdpError::RevocationDiscoveryFailed { source } => {
+                assert!(matches!(
+                    **source,
+                    AcdpError::RevocationDiscoveryBudgetExceeded(_)
+                ));
+            }
+            other => panic!("expected RevocationDiscoveryFailed, got {other:?}"),
+        },
+        other => panic!("expected Some(Err(RevocationDiscoveryFailed)), got {other:?}"),
+    }
+}
+
+/// AC8: the caller's ORIGINAL `RegistryClient` carries no budget. A
+/// budget is attached only to the discovery-scoped clone `verify_retrieved`
+/// builds internally, so a plain `retrieve` issued directly on `rig.client`
+/// AFTER an exhausted discovery must succeed — no cross-contamination.
+#[tokio::test]
+async fn budget_ac8_original_client_carries_no_budget() {
+    let rig = discovery_rig(0xBB).await;
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.max_requests = Some(NonZeroUsize::new(1).unwrap());
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+    VerifiedContext::fetch_with_policy(&rig.client, &rig.h.resolver, &rig.target_ctx_id, &policy)
+        .await
+        .expect_err("max_requests: Some(1) must exhaust against a 6-search natural total");
+
+    // The ORIGINAL client — never handed to `with_discovery_budget` —
+    // must still work normally after the exhausted discovery above.
+    let ctx = rig
+        .client
+        .retrieve(&rig.target_ctx_id)
+        .await
+        .expect("the caller's original client must carry no budget at all");
+    assert_eq!(ctx.body.ctx_id, rig.target_ctx_id);
 }

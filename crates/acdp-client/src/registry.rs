@@ -1,5 +1,8 @@
 //! HTTP client for ACDP registries (feature = "client").
 
+use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use acdp_primitives::error::AcdpError;
@@ -22,11 +25,123 @@ use reqwest::{redirect, Client};
 /// `reqwest::Client` clones cheaply (it's an `Arc` internally), so this
 /// struct is `Clone` to enable per-authority caching in
 /// [`crate::CrossRegistryResolver`] without re-wiring HTTP+TLS
-/// state on every hop.
+/// state on every hop. The same is true of `budget` (issue #258): it is
+/// an `Option<DiscoveryBudget>`, and `DiscoveryBudget` is itself an
+/// `Arc` handle, so cloning a client that carries a budget shares the
+/// counters rather than resetting them — the shape
+/// [`RevocationDiscovery`](crate::verified::RevocationDiscovery)
+/// depends on: `verify_retrieved` attaches one `DiscoveryBudget` to a
+/// single client clone and hands that SAME clone to both trust-class
+/// lookups.
 #[derive(Clone)]
 pub struct RegistryClient {
     base: String,
     http: Client,
+    budget: Option<DiscoveryBudget>,
+}
+
+/// Combined request-count and cumulative-byte budget for RFC-ACDP-0014
+/// §8 revocation auto-discovery (issue #258, decision D-B).
+///
+/// Attached to a [`RegistryClient`] clone created once per discovery
+/// call (`acdp_client::verified::verify_retrieved`) via
+/// [`RegistryClient::with_discovery_budget`], and shared — via this
+/// type's own internal `Arc` — by both trust-class lookups running
+/// concurrently under `tokio::try_join!`, so the two lookups draw down
+/// ONE combined ceiling rather than a ceiling each.
+///
+/// `pub(crate)`: `verify_retrieved` is the only intended caller. There
+/// is deliberately no public `find_revocations_with_budget` or similar
+/// — a public budget type would be a permanent commitment to a shape
+/// nothing outside this crate needs (see the wave plan's D-B).
+///
+/// Bounds **registry** traffic only: DID-document fetches issued via
+/// `WebResolver` (inside `verify_revocation_body`) do not pass through
+/// `RegistryClient` and are not counted. Bounds **successfully-parsed
+/// response bodies** only: `parse_success`'s non-success branch reads
+/// up to 64 KB of an error envelope, and that read is never charged to
+/// the byte budget.
+#[derive(Clone)]
+pub(crate) struct DiscoveryBudget {
+    inner: Arc<DiscoveryBudgetInner>,
+}
+
+struct DiscoveryBudgetInner {
+    max_requests: Option<NonZeroUsize>,
+    max_bytes: Option<u64>,
+    requests_used: AtomicUsize,
+    bytes_used: AtomicU64,
+}
+
+impl DiscoveryBudget {
+    /// Build a budget from `RevocationDiscovery`'s two knobs. `None`
+    /// for either means that dimension is unbounded — passing `None`
+    /// for both makes every check a no-op, preserving pre-#258
+    /// behavior exactly.
+    pub(crate) fn new(max_requests: Option<NonZeroUsize>, max_bytes: Option<u64>) -> Self {
+        Self {
+            inner: Arc::new(DiscoveryBudgetInner {
+                max_requests,
+                max_bytes,
+                requests_used: AtomicUsize::new(0),
+                bytes_used: AtomicU64::new(0),
+            }),
+        }
+    }
+
+    /// Check-and-reserve, called at the top of each of
+    /// `RegistryClient`'s four discovery-reachable request methods
+    /// (`capabilities`/`capabilities_with_ttl`, `retrieve`, `lineage`,
+    /// `search`) — BEFORE the request is issued. This is what makes
+    /// check-before-issue structural rather than a discipline: a
+    /// budget error returned here can never be issued as a wasted
+    /// request the way `MAX_LINEAGE_WALKS`'s after-the-fact check can.
+    ///
+    /// The byte check runs first and is a plain load with no side
+    /// effect, so a budget that is already byte-exhausted never
+    /// consumes a request-count reservation it will not use.
+    ///
+    /// The request-count check is an atomic `fetch_update`
+    /// compare-exchange loop, not load-then-store: two lookups racing
+    /// under `try_join!` against the same remaining count can never
+    /// both observe room for the last slot.
+    fn check_before_request(&self) -> Result<(), AcdpError> {
+        if let Some(max_bytes) = self.inner.max_bytes {
+            if self.inner.bytes_used.load(Ordering::SeqCst) >= max_bytes {
+                return Err(AcdpError::RevocationDiscoveryBudgetExceeded(format!(
+                    "revocation discovery exceeded max_bytes={max_bytes}"
+                )));
+            }
+        }
+        if let Some(max_requests) = self.inner.max_requests {
+            let max_requests = max_requests.get();
+            let reserved =
+                self.inner
+                    .requests_used
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
+                        if used < max_requests {
+                            Some(used + 1)
+                        } else {
+                            None
+                        }
+                    });
+            if reserved.is_err() {
+                return Err(AcdpError::RevocationDiscoveryBudgetExceeded(format!(
+                    "revocation discovery exceeded max_requests={max_requests}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Add the bytes of a just-completed successful response to the
+    /// running total. Not a check — overrun is only observed by the
+    /// NEXT [`Self::check_before_request`] call, since the size of an
+    /// in-flight request cannot be known (and therefore reserved) in
+    /// advance.
+    fn record_bytes(&self, n: usize) {
+        self.inner.bytes_used.fetch_add(n as u64, Ordering::SeqCst);
+    }
 }
 
 /// Cache and integrity headers returned alongside a retrieved body.
@@ -56,6 +171,39 @@ impl RegistryClient {
                 None => host,
             })
         })
+    }
+
+    /// Return a clone of this client with `budget` attached, replacing
+    /// any budget the original carried. Issue #258: `verify_retrieved`
+    /// calls this exactly once per discovery, on a client clone it then
+    /// hands to BOTH trust-class lookups, so the two lookups share one
+    /// combined counter rather than getting one each. The original
+    /// client (and any other clone of it) is unaffected — traffic
+    /// issued through it is never charged to this budget.
+    pub(crate) fn with_discovery_budget(&self, budget: DiscoveryBudget) -> Self {
+        Self {
+            base: self.base.clone(),
+            http: self.http.clone(),
+            budget: Some(budget),
+        }
+    }
+
+    /// Check-and-reserve against this client's attached budget, if any.
+    /// A no-op `Ok(())` when no budget is attached (the common case —
+    /// budgets exist only on discovery-scoped clones).
+    fn check_discovery_budget(&self) -> Result<(), AcdpError> {
+        match &self.budget {
+            Some(budget) => budget.check_before_request(),
+            None => Ok(()),
+        }
+    }
+
+    /// Record a successful response's byte count against this client's
+    /// attached budget, if any.
+    fn record_discovery_bytes(&self, n: usize) {
+        if let Some(budget) = &self.budget {
+            budget.record_bytes(n);
+        }
     }
 
     /// Connect to a registry at `base_url` (e.g. `https://registry.example.com`).
@@ -225,10 +373,13 @@ impl RegistryClient {
     pub async fn capabilities_with_ttl(
         &self,
     ) -> Result<(CapabilitiesDocument, std::time::Duration), AcdpError> {
+        self.check_discovery_budget()?;
         let url = format!("{}/.well-known/acdp.json", self.base);
         let resp = self.http.get(&url).send().await?;
         let ttl = cache_ttl_from_response(&resp);
-        let caps: CapabilitiesDocument = self.parse_success(resp, MAX_METADATA_BYTES).await?;
+        let (caps, nbytes): (CapabilitiesDocument, usize) =
+            self.parse_success(resp, MAX_METADATA_BYTES).await?;
+        self.record_discovery_bytes(nbytes);
         acdp_validation::validate_capabilities(&caps)?;
         Ok((caps, ttl))
     }
@@ -246,7 +397,9 @@ impl RegistryClient {
             .json(req)
             .send()
             .await?;
-        self.parse_success(resp, MAX_METADATA_BYTES).await
+        self.parse_success(resp, MAX_METADATA_BYTES)
+            .await
+            .map(|(v, _)| v)
     }
 
     /// Publish with an idempotency key for safe retries.
@@ -264,7 +417,9 @@ impl RegistryClient {
             .json(req)
             .send()
             .await?;
-        self.parse_success(resp, MAX_METADATA_BYTES).await
+        self.parse_success(resp, MAX_METADATA_BYTES)
+            .await
+            .map(|(v, _)| v)
     }
 
     /// Publish with bounded retry for transient failures.
@@ -309,10 +464,13 @@ impl RegistryClient {
     /// Body capped at 1 MB per RFC-ACDP-0006 §7.3.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(ctx_id = %ctx_id)))]
     pub async fn retrieve(&self, ctx_id: &CtxId) -> Result<FullContext, AcdpError> {
+        self.check_discovery_budget()?;
         let encoded = urlencoding::encode(ctx_id.as_str());
         let url = format!("{}/contexts/{}", self.base, encoded);
         let resp = self.http.get(&url).send().await?;
-        self.parse_success(resp, MAX_CONTEXT_BYTES).await
+        let (body, nbytes) = self.parse_success(resp, MAX_CONTEXT_BYTES).await?;
+        self.record_discovery_bytes(nbytes);
+        Ok(body)
     }
 
     /// Retrieve a full context plus cache / integrity headers.
@@ -324,7 +482,7 @@ impl RegistryClient {
         let url = format!("{}/contexts/{}", self.base, encoded);
         let resp = self.http.get(&url).send().await?;
         let metadata = parse_retrieval_metadata(&resp);
-        let body = self.parse_success(resp, MAX_CONTEXT_BYTES).await?;
+        let (body, _) = self.parse_success(resp, MAX_CONTEXT_BYTES).await?;
         Ok((body, metadata))
     }
 
@@ -349,7 +507,7 @@ impl RegistryClient {
             return Ok(None);
         }
         let metadata = parse_retrieval_metadata(&resp);
-        let body = self.parse_success(resp, MAX_CONTEXT_BYTES).await?;
+        let (body, _) = self.parse_success(resp, MAX_CONTEXT_BYTES).await?;
         Ok(Some((body, metadata)))
     }
 
@@ -358,21 +516,24 @@ impl RegistryClient {
         let encoded = urlencoding::encode(ctx_id.as_str());
         let url = format!("{}/contexts/{}/body", self.base, encoded);
         let resp = self.http.get(&url).send().await?;
-        self.parse_success(resp, MAX_CONTEXT_BYTES).await
+        self.parse_success(resp, MAX_CONTEXT_BYTES)
+            .await
+            .map(|(v, _)| v)
     }
 
     // ── Lineage ──────────────────────────────────────────────────────────────
 
     /// Retrieve all contexts in a lineage (oldest to newest).
     pub async fn lineage(&self, lineage_id: &LineageId) -> Result<Vec<FullContext>, AcdpError> {
+        self.check_discovery_budget()?;
         let encoded = urlencoding::encode(lineage_id.as_str());
         let url = format!("{}/lineages/{}", self.base, encoded);
         let resp = self.http.get(&url).send().await?;
-        self.parse_success::<serde_json::Value>(resp, MAX_CONTEXT_BYTES)
-            .await
-            .and_then(|v| {
-                serde_json::from_value(v).map_err(|e| AcdpError::Serialization(e.to_string()))
-            })
+        let (value, nbytes) = self
+            .parse_success::<serde_json::Value>(resp, MAX_CONTEXT_BYTES)
+            .await?;
+        self.record_discovery_bytes(nbytes);
+        serde_json::from_value(value).map_err(|e| AcdpError::Serialization(e.to_string()))
     }
 
     /// Retrieve the current (latest) context in a lineage.
@@ -380,7 +541,9 @@ impl RegistryClient {
         let encoded = urlencoding::encode(lineage_id.as_str());
         let url = format!("{}/lineages/{}/current", self.base, encoded);
         let resp = self.http.get(&url).send().await?;
-        self.parse_success(resp, MAX_CONTEXT_BYTES).await
+        self.parse_success(resp, MAX_CONTEXT_BYTES)
+            .await
+            .map(|(v, _)| v)
     }
 
     // ── Discovery ────────────────────────────────────────────────────────────
@@ -390,9 +553,12 @@ impl RegistryClient {
     /// Body capped at 64 KB (search responses are projection-summaries —
     /// IMP-03: not the 1 MB context cap).
     pub async fn search(&self, params: &SearchParams) -> Result<SearchResponse, AcdpError> {
+        self.check_discovery_budget()?;
         let url = format!("{}/contexts/search", self.base);
         let resp = self.http.get(&url).query(params).send().await?;
-        self.parse_success(resp, MAX_METADATA_BYTES).await
+        let (result, nbytes) = self.parse_success(resp, MAX_METADATA_BYTES).await?;
+        self.record_discovery_bytes(nbytes);
+        Ok(result)
     }
 
     /// Begin a fluent search via [`RegistrySearch`]. Chains parameters
@@ -555,7 +721,11 @@ impl RegistryClientBuilder {
         let http = builder
             .build()
             .map_err(|e| AcdpError::Http(e.to_string()))?;
-        Ok(RegistryClient { base, http })
+        Ok(RegistryClient {
+            base,
+            http,
+            budget: None,
+        })
     }
 
     /// Synchronous build for the default DNS-hook posture (no pinning).
@@ -594,7 +764,11 @@ impl RegistryClientBuilder {
         let http = builder
             .build()
             .map_err(|e| AcdpError::Http(e.to_string()))?;
-        Ok(RegistryClient { base, http })
+        Ok(RegistryClient {
+            base,
+            http,
+            budget: None,
+        })
     }
 
     fn apply_root_cert(
@@ -690,14 +864,23 @@ impl<'a> RegistrySearch<'a> {
 // ── Internal helpers on RegistryClient ───────────────────────────────────────
 
 impl RegistryClient {
+    /// Returns the parsed value alongside the exact byte count read
+    /// from a *successful* response body (issue #258: this is what
+    /// lets `RegistryClient`'s discovery-reachable methods charge the
+    /// caller-configured byte budget the exact count `read_body_capped`
+    /// already computes, instead of discarding it). The non-success
+    /// branch's error-envelope read is never counted — see
+    /// `DiscoveryBudget`'s doc.
     async fn parse_success<T: serde::de::DeserializeOwned>(
         &self,
         resp: reqwest::Response,
         max_bytes: usize,
-    ) -> Result<T, AcdpError> {
+    ) -> Result<(T, usize), AcdpError> {
         if resp.status().is_success() {
             let bytes = read_body_capped(resp, max_bytes).await?;
-            serde_json::from_slice(&bytes).map_err(|e| AcdpError::Serialization(e.to_string()))
+            let value = serde_json::from_slice(&bytes)
+                .map_err(|e| AcdpError::Serialization(e.to_string()))?;
+            Ok((value, bytes.len()))
         } else {
             // Error envelopes are tiny — apply the metadata cap so a
             // hostile registry can't exhaust memory via the error path.

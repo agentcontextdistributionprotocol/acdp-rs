@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(client)* [**breaking**] discover revocations in the verify pipeline ([#256](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/256))
 
+## [0.12.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-primitives-v0.10.1...acdp-primitives-v0.12.0) - 2026-09-11
+
+### Other
+
+- release v0.12.0
+
 ## [0.10.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-primitives-v0.10.0...acdp-primitives-v0.10.1) - 2026-09-10
 
 ### Added

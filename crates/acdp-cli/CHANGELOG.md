@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - release v0.13.0
 
+## [0.12.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-cli-v0.11.0...acdp-cli-v0.12.0) - 2026-09-11
+
+### Other
+
+- release v0.12.0
+
 ## [0.11.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-cli-v0.10.1...acdp-cli-v0.11.0) - 2026-09-11
 
 ### Other

@@ -1173,6 +1173,244 @@ async fn rev_002_fetch_pipeline_boundary_matrix() {
     assert_eq!(verified.key_status(), KeyAuthorization::CurrentlyAuthorized);
 }
 
+/// Phase 2 T1 — `fetch_report` must reach every authorization phase
+/// (receipt, revocation, signature/historical-key) exactly like
+/// `fetch_with_policy`, since both now delegate to `verify_retrieved`.
+/// Runs each of the `rev_002` matrix cases through BOTH entry points and
+/// asserts identical Ok/Err verdicts and, when both `Ok`, identical
+/// `key_status`.
+///
+/// Falsifiability: restoring the `key_status: KeyAuthorization::
+/// CurrentlyAuthorized` hardcode in `fetch_report_inner` reddens case A
+/// (the pre-compromise verdict silently downgrades to `CurrentlyAuthorized`
+/// while `fetch_with_policy` correctly reports
+/// `HistoricallyAuthorizedPreCompromise`); deleting the `verify_retrieved`
+/// delegation (so the report path never runs the revocation phase at all)
+/// reddens cases B and C (an `Ok` from `fetch_report` where
+/// `fetch_with_policy` returns `Err(KeyNotAuthorized)`).
+#[tokio::test]
+async fn report_parity_matrix() {
+    let producer_key = SigningKey::from_bytes(&[7u8; 32]);
+    let producer_pub = producer_key.verifying_key_bytes();
+    let producer_fp = fingerprint_ed25519(&producer_pub);
+    let registry_key_pub = SigningKey::from_bytes(&[0x11u8; 32]).verifying_key_bytes();
+
+    let h = start_harness(&registry_key_pub, &producer_pub).await;
+    let (ctx_id, ctx_json) = publish_with_receipt(&h, producer_key).await;
+    *h.context_json.write().unwrap() = Some(ctx_json.clone());
+    let client = h.client();
+
+    let policy_with = |revs: Vec<KeyRevocation>, receipts: ReceiptPolicy| VerificationPolicy {
+        receipts,
+        revocations: RevocationPolicy { known: revs },
+        ..Default::default()
+    };
+
+    /// Run both `fetch_with_policy` and `fetch_report` against the same
+    /// context under the same policy; assert they agree on Ok/Err and,
+    /// when both `Ok`, on `key_status`.
+    async fn assert_parity(
+        client: &RegistryClient,
+        resolver: &WebResolver,
+        ctx_id: &CtxId,
+        policy: &VerificationPolicy,
+        case: &str,
+    ) {
+        let via_policy = VerifiedContext::fetch_with_policy(client, resolver, ctx_id, policy).await;
+        let via_report = VerifiedContext::fetch_report(client, resolver, ctx_id, policy).await;
+        match (via_policy, via_report) {
+            (Ok(a), Ok((b, _report))) => {
+                assert_eq!(
+                    a.key_status(),
+                    b.key_status(),
+                    "{case}: fetch_with_policy and fetch_report must agree on key_status"
+                );
+            }
+            (Err(ea), Err(eb)) => {
+                // `AcdpError` has no `PartialEq`; comparing discriminants
+                // is sufficient to prove "the same kind of failure".
+                assert_eq!(
+                    std::mem::discriminant(&ea),
+                    std::mem::discriminant(&eb),
+                    "{case}: fetch_with_policy err {ea:?} vs fetch_report err {eb:?}"
+                );
+            }
+            (a, b) => panic!(
+                "{case}: fetch_with_policy and fetch_report disagree on Ok/Err: \
+                 {a:?} / is_ok={}",
+                b.is_ok()
+            ),
+        }
+    }
+
+    // Baseline: no revocation supplied.
+    assert_parity(
+        &client,
+        &h.resolver,
+        &ctx_id,
+        &VerificationPolicy::default(),
+        "baseline",
+    )
+    .await;
+
+    let baseline = VerifiedContext::fetch(&client, &h.resolver, &ctx_id)
+        .await
+        .expect("baseline fetch for receipt_time");
+    let receipt_time = baseline.verified_receipt().expect("receipt").created_at;
+
+    // A: pre-compromise (boundary strictly after the receipt-attested
+    // publish time) — both must verify as
+    // HistoricallyAuthorizedPreCompromise.
+    let pre = policy_with(
+        vec![local_revocation(
+            &producer_fp,
+            receipt_time + chrono::Duration::days(1),
+        )],
+        ReceiptPolicy::VerifyIfPresent,
+    );
+    assert_parity(&client, &h.resolver, &ctx_id, &pre, "A (pre-compromise)").await;
+
+    // B: boundary at/before the receipt-attested publish time — both
+    // must fail closed.
+    for (i, boundary) in [receipt_time, receipt_time - chrono::Duration::days(1)]
+        .into_iter()
+        .enumerate()
+    {
+        let post = policy_with(
+            vec![local_revocation(&producer_fp, boundary)],
+            ReceiptPolicy::VerifyIfPresent,
+        );
+        assert_parity(
+            &client,
+            &h.resolver,
+            &ctx_id,
+            &post,
+            &format!("B[{i}] (boundary)"),
+        )
+        .await;
+    }
+
+    // C: no verified publish time — receipt absent — both fail closed.
+    let mut stripped = ctx_json.clone();
+    stripped.as_object_mut().unwrap().remove("registry_receipt");
+    *h.context_json.write().unwrap() = Some(stripped);
+    let future_boundary = policy_with(
+        vec![local_revocation(
+            &producer_fp,
+            receipt_time + chrono::Duration::days(1),
+        )],
+        ReceiptPolicy::VerifyIfPresent,
+    );
+    assert_parity(
+        &client,
+        &h.resolver,
+        &ctx_id,
+        &future_boundary,
+        "C (receipt absent)",
+    )
+    .await;
+
+    // C': present but unverified because policy ignores receipts — both
+    // fail closed.
+    *h.context_json.write().unwrap() = Some(ctx_json.clone());
+    let ignoring = policy_with(
+        vec![local_revocation(
+            &producer_fp,
+            receipt_time + chrono::Duration::days(1),
+        )],
+        ReceiptPolicy::Ignore,
+    );
+    assert_parity(
+        &client,
+        &h.resolver,
+        &ctx_id,
+        &ignoring,
+        "C' (receipts ignored)",
+    )
+    .await;
+
+    // Unrelated-key revocation is inert on both paths.
+    let unrelated = policy_with(
+        vec![local_revocation(
+            K1_FP,
+            receipt_time - chrono::Duration::days(30),
+        )],
+        ReceiptPolicy::VerifyIfPresent,
+    );
+    assert_parity(&client, &h.resolver, &ctx_id, &unrelated, "unrelated key").await;
+}
+
+/// Phase 2 T4 — `fetch_report_diagnose` must REPORT a revocation-phase
+/// failure rather than silently ignoring it (the pre-fix hardcoded
+/// pipeline never ran the revocation phase at all) — but must never
+/// convert it into a hard `Err`; that is this method's whole diagnostic
+/// contract ("never short-circuits on a top-level failure").
+///
+/// Two falsifiability probes, both required:
+/// (i) the pre-fix code (hardcoded `key_status: CurrentlyAuthorized`,
+/// `verified_receipt: None`, no `verify_retrieved` call at all) reddens
+/// this test: the revocation phase never runs, so
+/// `report.policy_phase_error` stays `None` instead of
+/// `Some(KeyNotAuthorized)`.
+/// (ii) the over-fix guard: replacing `match outcome { .. }` in
+/// `fetch_report_diagnose` with `outcome?` reddens this test too, because
+/// the method would then return `Err` instead of `Ok` — exactly the
+/// regression this test exists to catch, since a diagnostic that
+/// hard-fails on a policy-phase error is no longer diagnostic.
+#[tokio::test]
+async fn report_diagnose_reports_revocation_without_erroring() {
+    let producer_key = SigningKey::from_bytes(&[7u8; 32]);
+    let producer_pub = producer_key.verifying_key_bytes();
+    let producer_fp = fingerprint_ed25519(&producer_pub);
+    let registry_key_pub = SigningKey::from_bytes(&[0x11u8; 32]).verifying_key_bytes();
+
+    let h = start_harness(&registry_key_pub, &producer_pub).await;
+    let (ctx_id, ctx_json) = publish_with_receipt(&h, producer_key).await;
+    *h.context_json.write().unwrap() = Some(ctx_json.clone());
+    let client = h.client();
+
+    let baseline = VerifiedContext::fetch(&client, &h.resolver, &ctx_id)
+        .await
+        .expect("baseline fetch for receipt_time");
+    let receipt_time = baseline.verified_receipt().expect("receipt").created_at;
+
+    // Post-boundary: the revocation boundary is at the receipt-attested
+    // publish time itself — inside the compromise window, must fail
+    // closed (rev-002 case B).
+    let post = VerificationPolicy {
+        revocations: RevocationPolicy {
+            known: vec![local_revocation(&producer_fp, receipt_time)],
+        },
+        ..Default::default()
+    };
+
+    let (verified, report) =
+        VerifiedContext::fetch_report_diagnose(&client, &h.resolver, &ctx_id, &post)
+            .await
+            .expect("fetch_report_diagnose must return Ok even when the revocation phase fails");
+
+    assert!(
+        verified.is_none(),
+        "the handle must be withheld once the revocation phase fails"
+    );
+    assert!(
+        report.signature_ok,
+        "the probes must still have run: the body's own signature is genuinely valid"
+    );
+    assert_eq!(
+        report.key_status, None,
+        "the phase failed, so no real key_status verdict was produced"
+    );
+    assert!(
+        matches!(
+            report.policy_phase_error,
+            Some(AcdpError::KeyNotAuthorized(_))
+        ),
+        "got {:?}",
+        report.policy_phase_error
+    );
+}
+
 // ── §8 discovery: find_revocations over a searchable harness ────────────────
 
 /// `find_revocations` returns the producer's verified revocations and

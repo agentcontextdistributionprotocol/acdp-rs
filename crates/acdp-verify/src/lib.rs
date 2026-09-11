@@ -63,10 +63,10 @@ impl<'a> Verifier<'a> {
     /// Verify only the hash recomputation + DID resolution + signature
     /// envelope, assuming structural validation has already been done by
     /// the caller. Use when you want to separate structural failures
-    /// from cryptographic ones — e.g.
-    /// `acdp::client::VerifiedContext::fetch_report` runs the
-    /// structural part itself and records per-`DataRef` outcomes
-    /// individually.
+    /// from cryptographic ones — e.g. [`Self::verify_body`] itself runs
+    /// `acdp_validation::validate_body` first and then delegates the
+    /// hash + signature phases to this method, so the two concerns stay
+    /// independently testable.
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(

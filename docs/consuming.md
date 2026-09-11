@@ -158,8 +158,15 @@ let policy = VerificationPolicy::strict_v0_1_0();   // == VerificationPolicy::de
 ### Diagnostics: fetch_report
 
 When you need to know *which* stage failed rather than just that it did, use
-`fetch_report`. It runs the same pipeline but returns a structured
-`VerificationReport` alongside the context:
+`fetch_report`. It runs the same authorization pipeline as
+`fetch_with_policy` — receipt (RFC-ACDP-0010), revocation (RFC-ACDP-0014
+§7), signature with the historical-key fallback, and the unknown-status
+check all honor the caller's `VerificationPolicy` identically — and
+additionally returns a structured `VerificationReport` alongside the
+context. The one deliberate difference is schema/embedded-hash handling:
+`fetch_report` runs structural validation only and records each
+`DataRef`'s embedded-hash outcome in the report instead of treating a
+mismatch as fatal (see `data_ref_embedded` below).
 
 ```rust,no_run
 # #[cfg(feature = "client")]
@@ -178,12 +185,14 @@ assert!(report.schema_ok && report.body_hash_ok && report.signature_ok);
 
 | Field | Meaning |
 |---|---|
-| `schema_ok` | `validate_body` passed (or was disabled by policy). |
+| `schema_ok` | `validate_body_structural` passed (or was disabled by policy) — the structural half only; embedded-`DataRef` hashes are recorded separately, below. |
 | `body_hash_ok` | recomputed `content_hash` matched the declared one. |
 | `signature_ok` | producer signature verified against the resolved DID key. |
 | `data_ref_embedded` | per-`DataRef` embedded-hash outcome, in `body.data_refs` order. |
 | `data_ref_external` | per-`DataRef` external-fetch outcome; `None` = not attempted. |
 | `ctx_id_ok` | the served body's `ctx_id` matched the one requested (RFC-ACDP-0006 §4.1 step 7, NORMATIVE). |
+| `key_status` | the real `KeyAuthorization` verdict once the receipt/revocation/signature phases ran and passed; `None` if a top-level probe failed first (so those phases never ran) or one of them failed. |
+| `policy_phase_error` | which of the receipt/revocation/signature/unknown-status phases failed, if one did; `None` when every phase passed or none ran. |
 
 `fetch_report_with_fetcher` additionally fetches and verifies external
 `data_ref` locations (see below).
@@ -192,6 +201,12 @@ assert!(report.schema_ok && report.body_hash_ok && report.signature_ok);
 `AcdpError::ContextIdMismatch` on a mismatch, while `fetch_report_diagnose`
 — which reports rather than short-circuits — returns `Ok((None, report))`
 with `ctx_id_ok == false`, i.e. it withholds the `VerifiedContext` handle.
+`ctx_id_ok == false` is not the only cause of a withheld handle, though:
+once the top-level probes (schema, body hash, signature, ctx_id) all pass,
+`fetch_report_diagnose` also runs the receipt/revocation/signature/
+unknown-status phases, and withholds the handle — recording the cause in
+`policy_phase_error` — if any of those fails too, all while still
+returning `Ok`.
 
 ## Fetching data references
 

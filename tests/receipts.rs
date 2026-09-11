@@ -710,13 +710,14 @@ async fn cross_registry_resolver_refuses_context_substitution() {
 
 // ── Phase 2 — substitution refused on the report paths ──────────────────────
 //
-// `fetch_report` / `fetch_report_with_fetcher` / `fetch_report_diagnose` never
-// call `verify_retrieved` — they have their own pipeline
-// (`fetch_report_inner` / `fetch_report_diagnose`'s own body) — so the
-// binding above does not reach them. This section reproduces
-// `context_substitution_is_refused`'s exact scenario (same harness pattern,
-// same receipt-stripping, same `VerifyIfPresent` + `None` gap) against each
-// of the three report-path entry points.
+// `fetch_report` / `fetch_report_with_fetcher` delegate their receipt,
+// revocation, and signature/historical-key phases to `verify_retrieved`
+// (via `fetch_report_inner`), but the ctx_id binding is still checked
+// eagerly, inline, before that delegation — so the substitution below is
+// still caught early, ahead of schema/hash/signature work. This section
+// reproduces `context_substitution_is_refused`'s exact scenario (same
+// harness pattern, same receipt-stripping, same `VerifyIfPresent` + `None`
+// gap) against each of the three report-path entry points.
 
 /// Shared setup for the Phase 2 report-path substitution tests: two
 /// contexts (A, B) published by the same producer key, receipts stripped
@@ -873,4 +874,273 @@ async fn fetch_report_diagnose_positive_control() {
     assert!(report.signature_ok);
     assert!(report.body_hash_ok);
     assert!(report.schema_ok);
+}
+
+// ── Phase 2 — the report family honors the caller's VerificationPolicy ─────
+//
+// `fetch_report` / `fetch_report_with_fetcher` / `fetch_report_diagnose` now
+// delegate their receipt, revocation, and signature/historical-key phases
+// to `verify_retrieved` (via `fetch_report_inner` /
+// `fetch_report_diagnose`'s own gated call), instead of hardcoding
+// `key_status: CurrentlyAuthorized` and `verified_receipt: None`. These
+// tests cover T2/T3/T5/T6/T7 of the Phase 2 plan's test matrix (T1 and T4
+// live in `tests/key_revocation.rs`, which has the richer revocation
+// harness).
+
+/// Phase 2 T2 — `fetch_report` (and, folded in per `receipts.rs:786`-ish,
+/// `fetch_report_with_fetcher`) must honor `ReceiptPolicy::Require`: fail
+/// closed with `Err(InvalidReceipt)` when the receipt is stripped, and
+/// succeed with `verified_receipt()` populated when a valid receipt is
+/// present.
+///
+/// Falsifiability: pinning `receipts: ReceiptPolicy::Ignore` inside
+/// `VerificationPolicy::derived_for_report` reddens BOTH halves — the
+/// stripped-receipt case wrongly returns `Ok` (no longer failing closed),
+/// and the present-receipt case's `verified_receipt().is_some()` assertion
+/// fails (receipts are inert under `Ignore`, so nothing gets verified).
+#[tokio::test]
+async fn report_requires_receipt() {
+    let producer_key = SigningKey::from_bytes(&[7u8; 32]);
+    let producer_pub = producer_key.verifying_key_bytes();
+    let registry_key_pub = SigningKey::from_bytes(&[0x11u8; 32]).verifying_key_bytes();
+
+    let h = start_harness(&registry_key_pub, &producer_pub).await;
+    let (ctx_id, ctx_json, _) = publish_with_receipts(&h, producer_key).await;
+    let client = h.client();
+
+    let require = VerificationPolicy {
+        receipts: ReceiptPolicy::Require,
+        ..Default::default()
+    };
+
+    // Receipt stripped: fail closed.
+    let mut stripped = ctx_json.clone();
+    stripped.as_object_mut().unwrap().remove("registry_receipt");
+    h.serve_context(stripped);
+    let err = VerifiedContext::fetch_report(&client, &h.resolver, &ctx_id, &require)
+        .await
+        .expect_err("Require must fail closed without a receipt");
+    assert!(matches!(err, AcdpError::InvalidReceipt(_)), "got {err:?}");
+
+    // Receipt present: succeeds, and the receipt is genuinely verified
+    // (not just echoed).
+    h.serve_context(ctx_json);
+    let (verified, _report) =
+        VerifiedContext::fetch_report(&client, &h.resolver, &ctx_id, &require)
+            .await
+            .expect("Require passes with a verified receipt");
+    assert!(
+        verified.verified_receipt().is_some(),
+        "fetch_report must actually verify the receipt under Require"
+    );
+
+    // `fetch_report_with_fetcher` is a separate public entry point from
+    // `fetch_report` (both back onto `fetch_report_inner`) — cover it too.
+    let fetcher = HttpsDataRefFetcher::new();
+    let (verified, _report) = VerifiedContext::fetch_report_with_fetcher(
+        &client,
+        &h.resolver,
+        &ctx_id,
+        &require,
+        &fetcher,
+    )
+    .await
+    .expect("fetch_report_with_fetcher must also honor Require");
+    assert!(verified.verified_receipt().is_some());
+}
+
+/// Phase 2 T3 — clone of `rotated_key_verifies_historically_via_receipt`
+/// via `fetch_report`: locks row 5 of the semver table, the deliberate
+/// LOOSENING under the default policy (a rotated-out key with a verified
+/// receipt now verifies via `fetch_report`, where it used to hard-fail
+/// because the old pipeline ran only the strict assertionMethod check).
+///
+/// Falsifiability: restoring the old `Verifier::new(resolver)
+/// .verify_body_signed(&ctx.body).await?` call in `fetch_report_inner` (in
+/// place of the `verify_retrieved` delegation) reddens this test — that
+/// call enforces `assertionMethod` membership only, with no
+/// historical-key fallback, so a rotated-out key fails even under the
+/// default (`AcceptWithReceipt`) policy.
+#[tokio::test]
+async fn report_accepts_rotated_key_via_receipt() {
+    let producer_key = SigningKey::from_bytes(&[7u8; 32]);
+    let producer_pub = producer_key.verifying_key_bytes();
+    let registry_key_pub = SigningKey::from_bytes(&[0x11u8; 32]).verifying_key_bytes();
+
+    let h = start_harness(&registry_key_pub, &producer_pub).await;
+    let (ctx_id, ctx_json, _) = publish_with_receipts(&h, producer_key).await;
+    h.serve_context(ctx_json.clone());
+
+    h.rotate_producer_key_out(&producer_pub);
+
+    let client = h.client();
+
+    // Default policy: receipt attests the fingerprint → historically
+    // authorized, and the report's new `key_status` field mirrors it.
+    let (verified, report) = VerifiedContext::fetch_report(
+        &client,
+        &h.resolver,
+        &ctx_id,
+        &VerificationPolicy::default(),
+    )
+    .await
+    .expect("receipt-attested historical key must verify via fetch_report");
+    assert_eq!(
+        verified.key_status(),
+        KeyAuthorization::HistoricallyAuthorized
+    );
+    assert!(verified.verified_receipt().is_some());
+    assert_eq!(
+        report.key_status,
+        Some(KeyAuthorization::HistoricallyAuthorized)
+    );
+
+    // Reject policy: rotated-out keys refused outright.
+    let strict = VerificationPolicy {
+        historical_keys: HistoricalKeyPolicy::Reject,
+        ..Default::default()
+    };
+    let err = VerifiedContext::fetch_report(&client, &h.resolver, &ctx_id, &strict)
+        .await
+        .expect_err("Reject policy must refuse rotated-out keys via fetch_report");
+    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+
+    // No receipt → historical path never activates (fail closed).
+    let mut stripped = ctx_json;
+    stripped.as_object_mut().unwrap().remove("registry_receipt");
+    h.serve_context(stripped);
+    let err = VerifiedContext::fetch_report(
+        &client,
+        &h.resolver,
+        &ctx_id,
+        &VerificationPolicy::default(),
+    )
+    .await
+    .expect_err("historical acceptance without a receipt must fail closed via fetch_report");
+    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+}
+
+/// Phase 2 T5 — `fetch_report_diagnose` must honor
+/// `allow_unknown_status: false`: withhold the verified handle and record
+/// `policy_phase_error` as `SchemaViolation` when the registry serves an
+/// unrecognized status string. Before this phase `fetch_report_diagnose`
+/// had no P6 phase at all (the third missing phase, absent even from
+/// `fetch_report_inner`'s pre-fix pipeline) and handed back
+/// `Some(VerifiedContext)` regardless of `allow_unknown_status`.
+#[tokio::test]
+async fn report_diagnose_honors_allow_unknown_status() {
+    let producer_key = SigningKey::from_bytes(&[7u8; 32]);
+    let producer_pub = producer_key.verifying_key_bytes();
+    let registry_key_pub = SigningKey::from_bytes(&[0x11u8; 32]).verifying_key_bytes();
+
+    let h = start_harness(&registry_key_pub, &producer_pub).await;
+    let (ctx_id, mut ctx_json, _) = publish_with_receipts(&h, producer_key).await;
+    ctx_json["registry_state"]["status"] = serde_json::json!("quarantined");
+    h.serve_context(ctx_json);
+
+    let client = h.client();
+    let strict_status = VerificationPolicy {
+        allow_unknown_status: false,
+        ..Default::default()
+    };
+
+    let (verified, report) =
+        VerifiedContext::fetch_report_diagnose(&client, &h.resolver, &ctx_id, &strict_status)
+            .await
+            .expect("fetch_report_diagnose must not error — it reports, not short-circuits");
+    assert!(
+        verified.is_none(),
+        "handle must be withheld when the unknown-status policy phase fails"
+    );
+    assert!(
+        matches!(
+            report.policy_phase_error,
+            Some(AcdpError::SchemaViolation(_))
+        ),
+        "got {:?}",
+        report.policy_phase_error
+    );
+
+    // Positive control: `fetch_report` (the hard-fail entry point) rejects
+    // outright under the same policy.
+    let err = VerifiedContext::fetch_report(&client, &h.resolver, &ctx_id, &strict_status)
+        .await
+        .expect_err(
+            "fetch_report must hard-fail on an unknown status under allow_unknown_status=false",
+        );
+    assert!(matches!(err, AcdpError::SchemaViolation(_)), "got {err:?}");
+}
+
+/// Phase 2 T6 — proves row 7 of the semver table: `strict_v0_1_0()`
+/// callers of `fetch_report` see byte-identical behavior before and after
+/// this phase. Receipts stay inert (`Ignore`) even against a
+/// receipts-minting registry.
+///
+/// Falsifiability: forcing `VerifyIfPresent` inside
+/// `VerificationPolicy::derived_for_report` (instead of passing
+/// `receipts` through verbatim) reddens the `verified_receipt().is_none()`
+/// assertion — the receipt would get verified and populated even under
+/// the v0.1.0-pinned profile.
+#[tokio::test]
+async fn report_strict_v0_1_0_unchanged() {
+    let producer_key = SigningKey::from_bytes(&[7u8; 32]);
+    let producer_pub = producer_key.verifying_key_bytes();
+    let registry_key_pub = SigningKey::from_bytes(&[0x11u8; 32]).verifying_key_bytes();
+
+    let h = start_harness(&registry_key_pub, &producer_pub).await;
+    let (ctx_id, ctx_json, _) = publish_with_receipts(&h, producer_key).await;
+    h.serve_context(ctx_json);
+
+    let client = h.client();
+    let (verified, _report) = VerifiedContext::fetch_report(
+        &client,
+        &h.resolver,
+        &ctx_id,
+        &VerificationPolicy::strict_v0_1_0(),
+    )
+    .await
+    .expect("strict_v0_1_0 must still succeed via fetch_report");
+    assert_eq!(verified.key_status(), KeyAuthorization::CurrentlyAuthorized);
+    assert!(
+        verified.verified_receipt().is_none(),
+        "strict_v0_1_0 ignores receipts even when the registry mints one"
+    );
+}
+
+/// Phase 2 T7 — covers row 1 of the semver table, the most important row:
+/// under `VerificationPolicy::default()` (`VerifyIfPresent`, no caller
+/// opt-in at all — the entire 0.2+ line against a receipts-profile
+/// registry), a TAMPERED receipt must be rejected by `fetch_report`, not
+/// silently accepted the way the pre-fix hardcoded pipeline did. Clones
+/// `tampered_receipt_rejected`'s tampering technique.
+///
+/// Falsifiability: pinning `receipts: ReceiptPolicy::Ignore` inside
+/// `VerificationPolicy::derived_for_report` reddens this test — the call
+/// returns `Ok` (receipts inert), so the `Err(InvalidReceipt)` assertion
+/// fails.
+#[tokio::test]
+async fn report_rejects_invalid_receipt_under_default_policy() {
+    let producer_key = SigningKey::from_bytes(&[7u8; 32]);
+    let producer_pub = producer_key.verifying_key_bytes();
+    let registry_key_pub = SigningKey::from_bytes(&[0x11u8; 32]).verifying_key_bytes();
+
+    let h = start_harness(&registry_key_pub, &producer_pub).await;
+    let (ctx_id, mut ctx_json, _) = publish_with_receipts(&h, producer_key).await;
+
+    // Backdate created_at inside the served receipt — the signature no
+    // longer covers the mutated bytes (same technique as
+    // tampered_receipt_rejected above).
+    ctx_json["registry_receipt"]["created_at"] = serde_json::json!("2020-01-01T00:00:00.000Z");
+    h.serve_context(ctx_json);
+
+    let client = h.client();
+    let err = VerifiedContext::fetch_report(
+        &client,
+        &h.resolver,
+        &ctx_id,
+        &VerificationPolicy::default(),
+    )
+    .await
+    .expect_err("fetch_report must reject a tampered receipt under the default policy");
+    assert!(matches!(err, AcdpError::InvalidReceipt(_)), "got {err:?}");
 }

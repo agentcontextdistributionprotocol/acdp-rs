@@ -79,6 +79,86 @@
       "receipt_key_for_algorithm"
     ]
   },
+  "arity": {
+    "_comment": "Required and total parameter arity for every `classes` entry, as [required, total] (property getters are recorded as the literal string \"property\", never [0, 0] — there is no arity concept for a getter). Sources, one per binding, never Function.length: Python via inspect.signature (excluding self/cls and any *args/**kwargs — none occur here); Node via bindings/acdp-node/index.d.ts, expanding a parameter whose declared type names an `export interface` in that same file into the interface's own fields (required keys off the trailing `?` on a field, NEVER off a `| null` union — a non-trailing Option<T> carries no `?`); wasm via bindings/acdp-wasm/pkg/acdp_wasm.d.ts, anchored on `^export function` (never the InitOutput block, which re-declares every export at its raw wasm-ABI arity), covering only the methods wasm.class_map actually maps to a real export. These are reviewed literals verified against the live signatures, not a dump of extractor output — see test_parity.py's A1-A5.",
+    "AcdpProducer": {
+      "agent_did": "property",
+      "build_publish_request": [2, 19],
+      "build_supersede_request": [1, 15],
+      "from_seed": [3, 3],
+      "from_seed_did_key": [1, 1],
+      "generate": [2, 2],
+      "generate_did_key": [0, 0],
+      "key_id": "property",
+      "public_key_b64": "property",
+      "seed_bytes": [0, 0],
+      "sign_challenge": [1, 1]
+    },
+    "AcdpP256Producer": {
+      "agent_did": "property",
+      "build_publish_request": [2, 19],
+      "build_supersede_request": [1, 15],
+      "did_verification_method": [2, 2],
+      "from_seed": [3, 3],
+      "from_seed_did_key": [1, 1],
+      "generate": [2, 2],
+      "generate_did_key": [0, 0],
+      "key_id": "property",
+      "public_key_jwk": "property",
+      "public_key_sec1_b64": "property",
+      "seed_bytes": [0, 0],
+      "sign_challenge": [1, 1]
+    },
+    "AcdpVerifier": {
+      "build_log_leaf": [1, 1],
+      "build_witness_cosignature": [4, 4],
+      "canonical_preimage": [1, 1],
+      "classify_under_revocation": [2, 3],
+      "evaluate_witness_quorum": [5, 6],
+      "explain_hash_mismatch": [2, 2],
+      "fingerprint_ed25519_b64": [1, 1],
+      "parse_key_revocation": [1, 2],
+      "verify_body_offline": [1, 1],
+      "verify_content_hash": [2, 2],
+      "verify_ctx_id_binding": [2, 2],
+      "verify_lifecycle_event": [3, 3],
+      "verify_lineage_head_receipt": [3, 6],
+      "verify_log_checkpoint": [2, 5],
+      "verify_log_consistency": [3, 3],
+      "verify_log_inclusion": [3, 3],
+      "verify_publish_request_offline": [1, 1],
+      "verify_receipt": [6, 6],
+      "verify_signature": [3, 3],
+      "verify_signature_p256": [3, 3],
+      "verify_witness_cosignature": [3, 5]
+    },
+    "AcdpCanonicalizer": {
+      "canonicalize": [1, 1],
+      "content_hash": [1, 1]
+    },
+    "AcdpMerkle": {
+      "leaf_hash": [1, 1],
+      "node_hash": [2, 2],
+      "root_hash": [1, 1]
+    },
+    "AcdpSsrfPolicy": {
+      "allow_test_loopback": [0, 0],
+      "check_ip": [1, 1],
+      "check_redirect_authority": [2, 2],
+      "check_url": [1, 1],
+      "production": [0, 0]
+    },
+    "AcdpDid": {
+      "strip_fragment": [1, 1],
+      "web_to_url": [1, 1]
+    },
+    "AcdpDidDocument": {
+      "id": "property",
+      "key_for_algorithm": [2, 2],
+      "parse": [2, 2],
+      "receipt_key_for_algorithm": [2, 2]
+    }
+  },
   "wasm": {
     "_comment": "Flat #[wasm_bindgen] surface of bindings/acdp-wasm (25 free functions, no classes). `functions` pins the full export list in snake_case. `class_map` classifies every `classes` entry against wasm: a class mapped to \"absent\" has no wasm counterpart at all; a present class's methods default to the identical snake_case name, with `aliases` naming the exceptions (value = wasm function name, or null = this one method has no wasm counterpart). `wasm_only` lists exports with no class counterpart. Renaming a shipped npm export is BREAKING — divergences live here as aliases forever (or until an acdp-wasm major).",
     "functions": [

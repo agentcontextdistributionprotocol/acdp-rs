@@ -88,22 +88,40 @@ never silently drift:
   tests `pytest.skip` with a message pointing at `make sdk-wasm` when it's
   absent — unless `ACDP_REQUIRE_WASM_PARITY=1` (set in CI), which turns
   the skip into a hard failure. `make interop` does NOT require wasm-pack.
-  Deliberately **not** covered here: per-parameter arity. Python's kwargs
-  (~20 real parameters on the widest methods) vs. Node's single
-  camelCase options object need per-binding normalization to compare at
-  all, and naive `Function.length` reflection isn't a shortcut on
-  either JS-hosted binding: measured against this repo's own build,
-  Node's native (napi-rs) methods report `Function.length === 0`
-  regardless of true arity (no JS-level signal at all), while
-  `acdp-wasm`'s generated wrappers currently report the full accurate
-  arity even for methods with optional trailing `Option<T>` params —
-  correct today only because this wasm-bindgen version doesn't lower
-  those to JS default values, which is an implementation detail, not a
-  guarantee. Name-only parity is what ships in this phase; a real arity
-  guard (required + total arity per binding, sourced from
-  `inspect.signature` / the `.d.ts` files rather than
-  `Function.length`) is tracked as a follow-up issue:
-  https://github.com/agentcontextdistributionprotocol/acdp-rs/issues/242
+* **Arity parity** (closes #242) — name-only parity above can't catch a
+  field silently added to one binding's options object and not the
+  other, so `expected_surface.json` also carries an `arity` block: for
+  every one of the 61 `classes` entries, `[required, total]` parameter
+  counts (a property getter is recorded as the literal string
+  `"property"`, never `[0, 0]`). Sources, one per binding — and never
+  `Function.length`, which reports `0` for every native (napi-rs)
+  method measured against this repo's own build, no JS-level signal at
+  all:
+  * **Python** — `inspect.signature`, excluding `self`/`cls` and any
+    `*args`/`**kwargs` (none occur in this SDK).
+  * **Node** — `bindings/acdp-node/index.d.ts`, parsed directly (no
+    subprocess needed).
+  * **wasm** — `bindings/acdp-wasm/pkg/acdp_wasm.d.ts`, parsed the same
+    way, anchored on `^export function` — never the bare export name,
+    which the file's `InitOutput` interface re-declares at its raw
+    wasm-ABI arity (13 params for a method whose real signature takes
+    6).
+
+  Both `.d.ts` parsers apply one normalization rule: expand a parameter
+  whose declared type names an `export interface` in the same file into
+  that interface's own fields. This is what lets the 4 "wide" methods
+  (`{AcdpProducer,AcdpP256Producer}.build_{publish,supersede}_request`,
+  a single camelCase options object on the Node side) compare against
+  Python's ~15-19 real keyword parameters. Required-ness keys off the
+  trailing `?` on a field/param, **never** off a `| null` union — a
+  non-trailing `Option<T>` is declared `name: T | null | undefined`
+  (no `?`) in both `.d.ts` files and is REQUIRED despite the null.
+  Five invariants (`test_parity.py`, functions named for their
+  A1-A5 role): Python-vs-manifest, Node-vs-manifest, wasm-vs-manifest
+  (class-mapped entries only), the manifest's own internal structural
+  hygiene (read with no binding built at all), and a cross-binding
+  check independent of the manifest. The wasm invariants use the same
+  skip-vs-fail gating as the wasm surface-parity checks above.
 * **Version parity** — `pyproject.toml`, both `Cargo.toml`s,
   `acdp-wasm/Cargo.toml`, and `package.json` must all carry the same
   version.

@@ -480,3 +480,67 @@ it was measuring. No margin fixes that. Split into two tests racing in opposite 
 can only help). Each half is mutation-proven to catch the failure the other cannot. The 50 ms/60 ms
 budget originated in this plan — in a wave whose own plan warns that #248 shipped a spuriously
 passing timing test.
+
+## Wrap-up wave: #268 / #252 / #259 / #265 / #249 / #264 (closed 2026-09-12)
+
+Settled by Opus under the standing delegation; **pending the owner's review**.
+
+**1. #268 — adopt `unsupported_media_type`, but SPEC-FIRST. (Fable.)**
+`acdp-registry-rs` minted a non-canonical wire code for HTTP 415 and asked us to converge. The
+name is right (follows `unsupported_algorithm`, mirrors 415's reason phrase) and was endorsed.
+The decisive fact the filing underweighted: `acdp-error.schema.json` pins `error.code` to a
+**closed 25-value enum** with `additionalProperties: false`, so they are currently
+schema-non-conformant, not merely un-typed. We therefore did **not** add the `AcdpError` variant:
+the canon's enum is the authority the round-trip test cites, and removing a variant later is
+breaking even on a `#[non_exhaustive]` enum. Spec issue filed (spec#67); variant lands after
+adoption. Also corrected their premise that "there is no code→status mapping in the canon" — the
+§5 table has an HTTP column, which makes `schema_violation` (pinned to 400) worse for a 415, not
+better. Flagged a defect in their emitter: the message names `application/json` where
+RFC-ACDP-0001 §3 makes `application/acdp+json` canonical.
+
+**2. #259 — CLOSED won't-fix, and the recorded reason was wrong.**
+#248's D7 (and the issue itself) said the §8 narrow trigger is "unimplementable at the chosen
+insertion point." **That premise is false** — `signature.key_id` is in the body pre-verification
+and `assertionMethod` membership comes from DID resolution, which does not depend on the
+signature check. It is expressible. The real reason is stronger: §8's minimum trigger fires only
+for a key **outside** `assertionMethod`, while §9 makes removal of a revoked key a **SHOULD** and
+declares the membership **"irrelevant to §7."** Gating discovery on it would condition a §7 input
+on a fact the spec says is irrelevant to §7 — skipping discovery exactly when a revoked key is
+still listed. That is a fail-open of the class #248 existed to close. The cost motive also
+evaporated once #257/#260 shipped caching, which is the safe way to get the same saving.
+
+**3. #252 — a single pytest pin had to be 8.4.2, downgrading two legs.**
+The matrix silently resolved **two pytest majors**: 9.1.1 on 3.11/3.13, 8.4.2 on 3.9 (pytest 9
+needs ≥3.10; `pyproject.toml` declares `requires-python = ">=3.9"`). Chose the uniform pin over
+per-version environment markers because testing on two majors is a real confound, and confirmed
+empirically — all three legs plus interop passed on 8.4.2 before merge. Dropping the 3.9 leg was
+rejected as a support change, not a CI tweak.
+
+**4. #249 — removing the self-referential `optionalDependencies` is safe for publishing.**
+Verified against installed `@napi-rs/cli@3.8.6`: `resolveRootOptionalDependencies` starts from
+`{ ...asRecord(existing) }` (and `asRecord(undefined)` is `undefined`, so an absent block spreads
+to `{}`), then **assigns** an entry per `napi.triples` target at the stamped version — it writes,
+it does not merely update. Corroborated by published `acdp@0.8.5`, whose deps are all `0.8.5`
+even though the release workflow's only manifest mutation is `jq '.version=$v'`. The publish job
+deliberately stays on `npm install`: it stamps before installing, and it is the one job gating a
+real release. The PR self-validated — its own CI ran the new `npm ci`.
+
+**5. #264 — the extraction needed five parameters, and one is unguarded.**
+Two more differences than first thought: the `tracing::warn!` payloads differ structurally, and
+the `MAX_LINEAGE_WALKS` message differs by identity *label*. Five mutation probes; four reddened.
+The fifth — swapping the drop-site discriminator — left all 96 tests green, so the `bool` became a
+`DropSite` enum. Stated precisely in the commit: that makes a swap **visible in review, not
+detectable by tests**. Two findings worth keeping: hoisting `truncated` **does not compile** (the
+message interpolates `{type_form}`/`{status}`), an accidental type-level guard; and the 6-pair
+property **is** permanently guarded by `budget_ac2_none_none_matches_pre_258_request_counts` —
+the #258 wave's test now serving as this refactor's regression guard. I had wrongly told the
+verifier it was unguarded.
+
+**6. Stale release PR #267 closed.** release-plz opened two release PRs for 0.13.1 six minutes
+apart; #266 shipped. #267 would have re-added a duplicate `## [0.13.1]` changelog section,
+including reintroducing the malformed duplicate `### Added` fixed on #266's branch.
+
+**7. Orchestration error, recorded so it is not repeated.** Two agents were dispatched against
+the same working clone with no isolation; one switched the branch out from under the other
+mid-task. No work was lost (the affected agent had already pushed), but that was luck. Later
+agents used `isolation: "worktree"`. **Concurrent agents must not share a working tree.**

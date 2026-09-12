@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.13.0...acdp-v0.13.1) - 2026-09-12
+
 ### Added
+
+- *(client)* revocation discovery budget, cache, and resolver injection (#257, #258, #260) ([#263](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/263))
 
 - *(client)* cache RFC-ACDP-0014 §8 revocation-discovery results
   ([#257](https://github.com/agentcontextdistributionprotocol/acdp-rs/issues/257))
@@ -111,6 +115,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   discovered at the authority that actually served it. No new resolver-level request/byte
   budget — issue #258's `RevocationDiscovery::max_requests`/`max_bytes` already bound
   per-node discovery cost.
+
+### Other
+
+- *(decisions)* record the issue #248 revocation auto-discovery decisions
 
 ## [0.13.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.12.0...acdp-v0.13.0) - 2026-09-11
 

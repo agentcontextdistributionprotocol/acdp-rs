@@ -379,6 +379,232 @@ pub async fn find_revocations_in_lineage(
         .collect())
 }
 
+/// The data-only differences between [`find_revocations`] and
+/// [`find_registry_attested_revocations`] that [`discover_revocations`]
+/// needs but cannot compute itself (issue #264: "five parameters, not
+/// three" — this struct is three of the five; `keep` and `on_drop` below
+/// are the other two).
+struct DiscoveryParams<'a> {
+    /// Value passed to `SearchParamsBuilder::agent_id` for every search
+    /// pass — the producer's own DID for [`find_revocations`], the
+    /// registry's own DID (`capabilities.registry_did`) for the attested
+    /// form (registry-attested revocations are published under the
+    /// *registry's* `agent_id`, never the producer's).
+    search_agent_id: &'a str,
+    /// Diagnostic prefix shared by both `AcdpError::SearchTruncated`
+    /// messages this engine can raise — `"find_revocations"` or
+    /// `"find_registry_attested_revocations"`.
+    fn_name: &'a str,
+    /// Identity label used in the `MAX_LINEAGE_WALKS` message —
+    /// `"agent_id"` or `"controller"`. Genuinely different from a mere
+    /// value substitution: the label itself differs, not only what fills
+    /// it (issue #264 point 5).
+    identity_label: &'a str,
+    /// Identity value formatted after `identity_label` in the same
+    /// message — `agent_id.as_str()` or `controller.as_str()`.
+    identity_value: &'a str,
+}
+
+/// The discovery engine shared by [`find_revocations`] and
+/// [`find_registry_attested_revocations`]: the type-form × status ×
+/// page search loop, the `MAX_LINEAGE_WALKS` bound, and the lineage-walk
+/// loop that follows it (issue #264). Everything upstream of the search
+/// loop — DID parsing, the revocation-cache marker check/record, and
+/// (for the attested form) the one-time `client.capabilities()` fetch —
+/// stays in the two public callers: the marker check must run before
+/// `capabilities()` in the attested form, and `record_success` must fire
+/// only once this engine returns `Ok`, so neither belongs inside a
+/// shared loop body.
+///
+/// `params.search_agent_id` scopes every `SearchParamsBuilder` pass.
+/// `keep` re-checks the verified body against the caller's own scope
+/// invariants (publisher + trust class for the producer-signed form;
+/// controller + registry-binding for the attested form) — a candidate
+/// `keep` rejects is dropped, never surfaced as an error, exactly as
+/// before. `on_drop` is called for every candidate `keep` rejects, with
+/// a [`DropSite`] naming which loop dropped it (the two forms differ
+/// in `tracing::warn!` payload shape — `trust_class`/computed `filter`
+/// vs `publisher`/`controller` — which a single `&dyn Fn(..) -> bool`
+/// predicate cannot carry).
+///
+/// Every other behavior — the transient-propagate/permanent-drop split
+/// (issue #248 Phase 1), `MAX_SEARCH_PAGES` being fresh per
+/// `(type_form, status)` pair, the `MAX_LINEAGE_WALKS` check running
+/// after the retrieves for that pass have already gone out, and the
+/// `SearchTruncated` fail-closed contract — is unchanged from the two
+/// functions' original bodies; see their docs for the full rationale.
+/// Which loop inside [`discover_revocations`] dropped a candidate.
+///
+/// Deliberately an enum rather than a `bool`: the value is chosen ~70
+/// lines away from the `tracing::warn!` it selects, and swapping it
+/// silently mislabels a search-loop drop as a lineage-walk drop (and
+/// vice versa) while every test still passes — verified by mutation
+/// during review of issue #264. A named variant makes the call site
+/// self-describing so the mistake is visible in the diff rather than
+/// only in production log wording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DropSite {
+    /// The `(type_form, status)` search/retrieve loop.
+    Search,
+    /// The `MAX_LINEAGE_WALKS`-bounded lineage-walk loop.
+    LineageWalk,
+}
+
+async fn discover_revocations(
+    client: &RegistryClient,
+    resolver: &WebResolver,
+    params: DiscoveryParams<'_>,
+    keep: &dyn Fn(&KeyRevocation) -> bool,
+    on_drop: &dyn Fn(&KeyRevocation, &CtxId, DropSite),
+) -> Result<Vec<KeyRevocation>, AcdpError> {
+    let DiscoveryParams {
+        search_agent_id,
+        fn_name,
+        identity_label,
+        identity_value,
+    } = params;
+
+    let mut revocations = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    // Discovery-order list of distinct lineage ids (walked below) plus
+    // a plain `HashSet<String>` for the dedupe check — `LineageId`
+    // derives `Hash` but not `Ord`, so a `BTreeSet` is not an option
+    // without a wider change than GAP-B needs. Iterating a `Vec` here
+    // (rather than a `HashSet<LineageId>`) keeps output order — and
+    // which lineage's walk failure surfaces first — deterministic
+    // across runs, matching the pre-existing search-order determinism.
+    let mut lineage_order: Vec<LineageId> = Vec::new();
+    let mut lineage_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // First search match naming each lineage_id — threaded into the
+    // walk below as the expected member (GAP-A). First match wins: once
+    // a lineage_id has been seen, later matches naming the same lineage
+    // do not overwrite the recorded ctx_id.
+    let mut lineage_expect: std::collections::HashMap<String, CtxId> =
+        std::collections::HashMap::new();
+
+    for type_form in ["key-revocation", "acdp:key-revocation"] {
+        // Revocations are permanent but supersedable; the registry
+        // defaults search to status=active, so ask for the other
+        // statuses explicitly too. `retracted` closes the seed hole
+        // Phase 3's lineage walk cannot reach on its own: if every
+        // member of a lineage is retracted, no `active`/`superseded`
+        // pass returns anything to walk from in the first place
+        // (RFC-ACDP-0013 §8.2, issue #226 Phase 4).
+        for status in ["active", "superseded", "retracted"] {
+            let mut search_params = SearchParamsBuilder::new()
+                .context_type(type_form)
+                .agent_id(search_agent_id)
+                .status(status)
+                .limit(100)
+                .build();
+            // Set only when the loop exhausts `MAX_SEARCH_PAGES` while a
+            // cursor still remains — i.e. genuine truncation, not
+            // completion. See the boundary note on `AcdpError::SearchTruncated`.
+            let mut truncated = false;
+            for _page in 0..MAX_SEARCH_PAGES {
+                let resp = client.search(&search_params).await?;
+                for m in &resp.matches {
+                    // Free — no extra round trip: every match names its
+                    // own lineage, walked below regardless of whether
+                    // this particular ctx_id turns out to be new.
+                    let lid_key = m.lineage_id.as_str().to_string();
+                    if lineage_seen.insert(lid_key.clone()) {
+                        lineage_order.push(m.lineage_id.clone());
+                        lineage_expect.insert(lid_key, m.ctx_id.clone());
+                    }
+                    if !seen.insert(m.ctx_id.as_str().to_string()) {
+                        continue;
+                    }
+                    let ctx = client.retrieve(&m.ctx_id).await?;
+                    match verify_revocation_body(&ctx.body, resolver).await {
+                        Ok(rev) => {
+                            if keep(&rev) {
+                                revocations.push(rev);
+                            } else {
+                                on_drop(&rev, &m.ctx_id, DropSite::Search);
+                            }
+                        }
+                        // D5 (issue #248 Phase 1): transient means "could
+                        // not look," not "clean" — propagate rather than
+                        // let the candidate vanish into an empty Vec that
+                        // `classify_under_revocation` reads as "proceed."
+                        Err(e) if e.is_transient() => return Err(e),
+                        Err(_e) => {
+                            #[cfg(feature = "tracing")]
+                            tracing::warn!(
+                                ctx_id = %m.ctx_id,
+                                error = %_e,
+                                "{fn_name}: dropped candidate failing §5 verification"
+                            );
+                        }
+                    }
+                }
+                match resp.next_cursor {
+                    Some(cursor) => {
+                        search_params.cursor = Some(cursor);
+                        truncated = true;
+                    }
+                    None => {
+                        truncated = false;
+                        break;
+                    }
+                }
+            }
+            if truncated {
+                return Err(AcdpError::SearchTruncated(format!(
+                    "{fn_name}: exhausted MAX_SEARCH_PAGES={MAX_SEARCH_PAGES} pages \
+                     for (type_form={type_form}, status={status}) with results still \
+                     remaining on the registry (next_cursor was still Some) — refusing to \
+                     return a silently partial revocation set"
+                )));
+            }
+        }
+    }
+
+    // Bound the lineage walk the same way the search pages are bounded:
+    // a hostile registry must not be able to name more distinct
+    // lineage ids than this client is willing to fetch one-by-one via
+    // `GET /lineages/{id}` (issue #226 Phase 4).
+    if lineage_order.len() > MAX_LINEAGE_WALKS {
+        return Err(AcdpError::SearchTruncated(format!(
+            "{fn_name}: {} candidate lineage ids for {identity_label}={identity_value} exceed \
+             MAX_LINEAGE_WALKS={MAX_LINEAGE_WALKS} — refusing to fetch a partial set",
+            lineage_order.len(),
+        )));
+    }
+
+    // The lineage walk: recovers members a search pass cannot or does
+    // not enumerate. Each candidate lineage is fetched at most once
+    // (deduped above), in discovery order (GAP-B). A walk failure for
+    // one lineage — empty response, or a served member set missing the
+    // search-named `ctx_id` (GAP-A) — aborts this whole call via `?`:
+    // a partial `Vec` here is indistinguishable from a complete one to
+    // the caller, and feeds `effective_boundary`'s `.min()` over
+    // `compromised_since` (RFC-ACDP-0014 §4), so silently dropping a
+    // lineage could only ever move the effective compromise boundary
+    // later (or, if the whole set is dropped, make enforcement inert) —
+    // never safer to omit than to fail closed on. A member failing §5
+    // verification transiently (issue #248 Phase 1, "D5") also aborts
+    // the walk this way, rather than being skipped like a permanent
+    // failure.
+    for lineage_id in &lineage_order {
+        let expect = lineage_expect.get(lineage_id.as_str());
+        let walked = walk_revocation_lineage(client, resolver, lineage_id, expect).await?;
+        for (ctx_id, rev) in walked {
+            if !seen.insert(ctx_id.as_str().to_string()) {
+                continue;
+            }
+            if keep(&rev) {
+                revocations.push(rev);
+            } else {
+                on_drop(&rev, &ctx_id, DropSite::LineageWalk);
+            }
+        }
+    }
+
+    Ok(revocations)
+}
+
 /// Discover a producer's key revocations on a registry
 /// (RFC-ACDP-0014 §8): search `type=key-revocation` (and the §10
 /// interim `acdp:key-revocation`) with `agent_id=<producer>`, retrieve
@@ -611,173 +837,54 @@ pub async fn find_revocations(
         }
     }
 
-    let mut revocations = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    // Discovery-order list of distinct lineage ids (walked below) plus
-    // a plain `HashSet<String>` for the dedupe check — `LineageId`
-    // derives `Hash` but not `Ord`, so a `BTreeSet` is not an option
-    // without a wider change than GAP-B needs. Iterating a `Vec` here
-    // (rather than a `HashSet<LineageId>`) keeps output order — and
-    // which lineage's walk failure surfaces first — deterministic
-    // across runs, matching the pre-existing search-order determinism.
-    let mut lineage_order: Vec<LineageId> = Vec::new();
-    let mut lineage_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    // First search match naming each lineage_id — threaded into the
-    // walk below as the expected member (GAP-A). First match wins: once
-    // a lineage_id has been seen, later matches naming the same lineage
-    // do not overwrite the recorded ctx_id.
-    let mut lineage_expect: std::collections::HashMap<String, CtxId> =
-        std::collections::HashMap::new();
-
-    for type_form in ["key-revocation", "acdp:key-revocation"] {
-        // Revocations are permanent but supersedable; the registry
-        // defaults search to status=active, so ask for the other
-        // statuses explicitly too. `retracted` closes the seed hole
-        // Phase 3's lineage walk cannot reach on its own: if every
-        // member of a lineage is retracted, no `active`/`superseded`
-        // pass returns anything to walk from in the first place
-        // (RFC-ACDP-0013 §8.2, issue #226 Phase 4).
-        for status in ["active", "superseded", "retracted"] {
-            let mut params = SearchParamsBuilder::new()
-                .context_type(type_form)
-                .agent_id(agent_id.as_str())
-                .status(status)
-                .limit(100)
-                .build();
-            // Set only when the loop exhausts `MAX_SEARCH_PAGES` while a
-            // cursor still remains — i.e. genuine truncation, not
-            // completion. See the boundary note on `AcdpError::SearchTruncated`.
-            let mut truncated = false;
-            for _page in 0..MAX_SEARCH_PAGES {
-                let resp = client.search(&params).await?;
-                for m in &resp.matches {
-                    // Free — no extra round trip: every match names its
-                    // own lineage, walked below regardless of whether
-                    // this particular ctx_id turns out to be new.
-                    let lid_key = m.lineage_id.as_str().to_string();
-                    if lineage_seen.insert(lid_key.clone()) {
-                        lineage_order.push(m.lineage_id.clone());
-                        lineage_expect.insert(lid_key, m.ctx_id.clone());
-                    }
-                    if !seen.insert(m.ctx_id.as_str().to_string()) {
-                        continue;
-                    }
-                    let ctx = client.retrieve(&m.ctx_id).await?;
-                    match verify_revocation_body(&ctx.body, resolver).await {
-                        Ok(rev) => {
-                            // Re-check query scope and trust class on the
-                            // verified body — do not trust `resp.matches`,
-                            // and do not accept a producer claiming to be
-                            // a registry (RFC-ACDP-0014 §4, §13).
-                            if rev.publisher == agent_id
-                                && rev.trust_class == RevocationTrustClass::ProducerSigned
-                            {
-                                revocations.push(rev);
-                            } else {
-                                #[cfg(feature = "tracing")]
-                                tracing::warn!(
-                                    publisher = %rev.publisher,
-                                    trust_class = ?rev.trust_class,
-                                    ctx_id = %m.ctx_id,
-                                    filter = if rev.publisher != agent_id {
-                                        "publisher_scope"
-                                    } else {
-                                        "trust_class"
-                                    },
-                                    "find_revocations: dropped candidate outside query scope/trust class"
-                                );
-                            }
-                        }
-                        // D5 (issue #248 Phase 1): transient means "could
-                        // not look," not "clean" — propagate rather than
-                        // let the candidate vanish into an empty Vec that
-                        // `classify_under_revocation` reads as "proceed."
-                        Err(e) if e.is_transient() => return Err(e),
-                        Err(_e) => {
-                            #[cfg(feature = "tracing")]
-                            tracing::warn!(
-                                ctx_id = %m.ctx_id,
-                                error = %_e,
-                                "find_revocations: dropped candidate failing §5 verification"
-                            );
-                        }
-                    }
-                }
-                match resp.next_cursor {
-                    Some(cursor) => {
-                        params.cursor = Some(cursor);
-                        truncated = true;
-                    }
-                    None => {
-                        truncated = false;
-                        break;
-                    }
-                }
-            }
-            if truncated {
-                return Err(AcdpError::SearchTruncated(format!(
-                    "find_revocations: exhausted MAX_SEARCH_PAGES={MAX_SEARCH_PAGES} pages \
-                     for (type_form={type_form}, status={status}) with results still \
-                     remaining on the registry (next_cursor was still Some) — refusing to \
-                     return a silently partial revocation set"
-                )));
-            }
+    let keep = |rev: &KeyRevocation| {
+        // Re-check query scope and trust class on the verified body — do
+        // not trust `resp.matches`, and do not accept a producer claiming
+        // to be a registry (RFC-ACDP-0014 §4, §13).
+        rev.publisher == agent_id && rev.trust_class == RevocationTrustClass::ProducerSigned
+    };
+    let on_drop = |_rev: &KeyRevocation, _ctx_id: &CtxId, _site: DropSite| {
+        #[cfg(feature = "tracing")]
+        if _site == DropSite::LineageWalk {
+            tracing::warn!(
+                publisher = %_rev.publisher,
+                trust_class = ?_rev.trust_class,
+                ctx_id = %_ctx_id,
+                filter = if _rev.publisher != agent_id {
+                    "publisher_scope"
+                } else {
+                    "trust_class"
+                },
+                "find_revocations: dropped lineage-walk candidate outside query scope/trust class"
+            );
+        } else {
+            tracing::warn!(
+                publisher = %_rev.publisher,
+                trust_class = ?_rev.trust_class,
+                ctx_id = %_ctx_id,
+                filter = if _rev.publisher != agent_id {
+                    "publisher_scope"
+                } else {
+                    "trust_class"
+                },
+                "find_revocations: dropped candidate outside query scope/trust class"
+            );
         }
-    }
+    };
 
-    // Bound the lineage walk the same way the search pages are bounded:
-    // a hostile registry must not be able to name more distinct
-    // lineage ids than this client is willing to fetch one-by-one via
-    // `GET /lineages/{id}` (issue #226 Phase 4).
-    if lineage_order.len() > MAX_LINEAGE_WALKS {
-        return Err(AcdpError::SearchTruncated(format!(
-            "find_revocations: {} candidate lineage ids for agent_id={} exceed \
-             MAX_LINEAGE_WALKS={MAX_LINEAGE_WALKS} — refusing to fetch a partial set",
-            lineage_order.len(),
-            agent_id.as_str(),
-        )));
-    }
-
-    // The lineage walk: recovers members a search pass cannot or does
-    // not enumerate. Each candidate lineage is fetched at most once
-    // (deduped above), in discovery order (GAP-B). A walk failure for
-    // one lineage — empty response, or a served member set missing the
-    // search-named `ctx_id` (GAP-A) — aborts this whole call via `?`:
-    // a partial `Vec` here is indistinguishable from a complete one to
-    // the caller, and feeds `effective_boundary`'s `.min()` over
-    // `compromised_since` (RFC-ACDP-0014 §4), so silently dropping a
-    // lineage could only ever move the effective compromise boundary
-    // later (or, if the whole set is dropped, make enforcement inert) —
-    // never safer to omit than to fail closed on. A member failing §5
-    // verification transiently (issue #248 Phase 1, "D5") also aborts
-    // the walk this way, rather than being skipped like a permanent
-    // failure.
-    for lineage_id in &lineage_order {
-        let expect = lineage_expect.get(lineage_id.as_str());
-        let walked = walk_revocation_lineage(client, resolver, lineage_id, expect).await?;
-        for (ctx_id, rev) in walked {
-            if !seen.insert(ctx_id.as_str().to_string()) {
-                continue;
-            }
-            if rev.publisher == agent_id && rev.trust_class == RevocationTrustClass::ProducerSigned
-            {
-                revocations.push(rev);
-            } else {
-                #[cfg(feature = "tracing")]
-                tracing::warn!(
-                    publisher = %rev.publisher,
-                    trust_class = ?rev.trust_class,
-                    ctx_id = %ctx_id.as_str(),
-                    filter = if rev.publisher != agent_id {
-                        "publisher_scope"
-                    } else {
-                        "trust_class"
-                    },
-                    "find_revocations: dropped lineage-walk candidate outside query scope/trust class"
-                );
-            }
-        }
-    }
+    let revocations = discover_revocations(
+        client,
+        resolver,
+        DiscoveryParams {
+            search_agent_id: agent_id.as_str(),
+            fn_name: "find_revocations",
+            identity_label: "agent_id",
+            identity_value: agent_id.as_str(),
+        },
+        &keep,
+        &on_drop,
+    )
+    .await?;
 
     // Issue #257: this point is reached only on a fully successful,
     // untruncated discovery (every early-return above is an `Err`), so
@@ -979,159 +1086,47 @@ pub async fn find_registry_attested_revocations(
         .authority()
         .ok_or_else(|| AcdpError::SchemaViolation("registry client base URL has no host".into()))?;
 
-    let mut revocations = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    // See `find_revocations` for why this is a `Vec` (discovery-order,
-    // GAP-B) plus a `HashSet<String>` dedupe guard rather than a
-    // `HashSet<LineageId>` or `BTreeSet`.
-    let mut lineage_order: Vec<LineageId> = Vec::new();
-    let mut lineage_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    // First search match naming each lineage_id, threaded into the walk
-    // as the expected member (GAP-A) — first match wins.
-    let mut lineage_expect: std::collections::HashMap<String, CtxId> =
-        std::collections::HashMap::new();
-
-    for type_form in ["key-revocation", "acdp:key-revocation"] {
-        // Revocations are permanent but supersedable; the registry
-        // defaults search to status=active, so ask for the other
-        // statuses explicitly too. `retracted` closes the seed hole
-        // Phase 3's lineage walk cannot reach on its own: if every
-        // member of a lineage is retracted, no `active`/`superseded`
-        // pass returns anything to walk from in the first place
-        // (RFC-ACDP-0013 §8.2, issue #226 Phase 4).
-        for status in ["active", "superseded", "retracted"] {
-            let mut params = SearchParamsBuilder::new()
-                .context_type(type_form)
-                .agent_id(registry_agent_id.as_str())
-                .status(status)
-                .limit(100)
-                .build();
-            // Set only when the loop exhausts `MAX_SEARCH_PAGES` while a
-            // cursor still remains — i.e. genuine truncation, not
-            // completion. See the boundary note on `AcdpError::SearchTruncated`.
-            let mut truncated = false;
-            for _page in 0..MAX_SEARCH_PAGES {
-                let resp = client.search(&params).await?;
-                for m in &resp.matches {
-                    // Free — no extra round trip: every match names its
-                    // own lineage, walked below regardless of whether
-                    // this particular ctx_id turns out to be new.
-                    let lid_key = m.lineage_id.as_str().to_string();
-                    if lineage_seen.insert(lid_key.clone()) {
-                        lineage_order.push(m.lineage_id.clone());
-                        lineage_expect.insert(lid_key, m.ctx_id.clone());
-                    }
-                    if !seen.insert(m.ctx_id.as_str().to_string()) {
-                        continue;
-                    }
-                    let ctx = client.retrieve(&m.ctx_id).await?;
-                    match verify_revocation_body(&ctx.body, resolver).await {
-                        Ok(rev) => {
-                            if rev.revoked_key_controller == controller
-                                && rev
-                                    .cross_check_registry_binding(
-                                        &serving_authority,
-                                        &caps.registry_did,
-                                    )
-                                    .is_ok()
-                            {
-                                revocations.push(rev);
-                            } else {
-                                #[cfg(feature = "tracing")]
-                                tracing::warn!(
-                                    publisher = %rev.publisher,
-                                    controller = %rev.revoked_key_controller,
-                                    ctx_id = %m.ctx_id,
-                                    "find_registry_attested_revocations: dropped candidate \
-                                     outside controller scope or failing registry-binding check"
-                                );
-                            }
-                        }
-                        // D5 (issue #248 Phase 1): transient means "could
-                        // not look," not "clean" — propagate rather than
-                        // let the candidate vanish into an empty Vec that
-                        // `classify_under_revocation` reads as "proceed."
-                        Err(e) if e.is_transient() => return Err(e),
-                        Err(_e) => {
-                            #[cfg(feature = "tracing")]
-                            tracing::warn!(
-                                ctx_id = %m.ctx_id,
-                                error = %_e,
-                                "find_registry_attested_revocations: dropped candidate \
-                                 failing §5 verification"
-                            );
-                        }
-                    }
-                }
-                match resp.next_cursor {
-                    Some(cursor) => {
-                        params.cursor = Some(cursor);
-                        truncated = true;
-                    }
-                    None => {
-                        truncated = false;
-                        break;
-                    }
-                }
-            }
-            if truncated {
-                return Err(AcdpError::SearchTruncated(format!(
-                    "find_registry_attested_revocations: exhausted MAX_SEARCH_PAGES=\
-                     {MAX_SEARCH_PAGES} pages for (type_form={type_form}, status={status}) \
-                     with results still remaining on the registry (next_cursor was still \
-                     Some) — refusing to return a silently partial revocation set"
-                )));
-            }
+    let keep = |rev: &KeyRevocation| {
+        rev.revoked_key_controller == controller
+            && rev
+                .cross_check_registry_binding(&serving_authority, &caps.registry_did)
+                .is_ok()
+    };
+    let on_drop = |_rev: &KeyRevocation, _ctx_id: &CtxId, _site: DropSite| {
+        #[cfg(feature = "tracing")]
+        if _site == DropSite::LineageWalk {
+            tracing::warn!(
+                publisher = %_rev.publisher,
+                controller = %_rev.revoked_key_controller,
+                ctx_id = %_ctx_id,
+                "find_registry_attested_revocations: dropped lineage-walk \
+                 candidate outside controller scope or failing \
+                 registry-binding check"
+            );
+        } else {
+            tracing::warn!(
+                publisher = %_rev.publisher,
+                controller = %_rev.revoked_key_controller,
+                ctx_id = %_ctx_id,
+                "find_registry_attested_revocations: dropped candidate \
+                 outside controller scope or failing registry-binding check"
+            );
         }
-    }
+    };
 
-    // Bound the lineage walk the same way the search pages are bounded:
-    // a hostile registry must not be able to name more distinct
-    // lineage ids than this client is willing to fetch one-by-one via
-    // `GET /lineages/{id}` (issue #226 Phase 4).
-    if lineage_order.len() > MAX_LINEAGE_WALKS {
-        return Err(AcdpError::SearchTruncated(format!(
-            "find_registry_attested_revocations: {} candidate lineage ids for \
-             controller={} exceed MAX_LINEAGE_WALKS={MAX_LINEAGE_WALKS} — refusing to \
-             fetch a partial set",
-            lineage_order.len(),
-            controller.as_str(),
-        )));
-    }
-
-    // The lineage walk: recovers members a search pass cannot or does
-    // not enumerate — see `find_revocations_in_lineage`'s doc for the
-    // full rationale. Each candidate lineage is fetched at most once
-    // (deduped above), in discovery order (GAP-B). A walk failure for
-    // one lineage aborts this whole call via `?` — see `find_revocations`
-    // for why a partial result here is unsafe rather than merely
-    // incomplete.
-    for lineage_id in &lineage_order {
-        let expect = lineage_expect.get(lineage_id.as_str());
-        let walked = walk_revocation_lineage(client, resolver, lineage_id, expect).await?;
-        for (ctx_id, rev) in walked {
-            if !seen.insert(ctx_id.as_str().to_string()) {
-                continue;
-            }
-            if rev.revoked_key_controller == controller
-                && rev
-                    .cross_check_registry_binding(&serving_authority, &caps.registry_did)
-                    .is_ok()
-            {
-                revocations.push(rev);
-            } else {
-                #[cfg(feature = "tracing")]
-                tracing::warn!(
-                    publisher = %rev.publisher,
-                    controller = %rev.revoked_key_controller,
-                    ctx_id = %ctx_id.as_str(),
-                    "find_registry_attested_revocations: dropped lineage-walk \
-                     candidate outside controller scope or failing \
-                     registry-binding check"
-                );
-            }
-        }
-    }
+    let revocations = discover_revocations(
+        client,
+        resolver,
+        DiscoveryParams {
+            search_agent_id: registry_agent_id.as_str(),
+            fn_name: "find_registry_attested_revocations",
+            identity_label: "controller",
+            identity_value: controller.as_str(),
+        },
+        &keep,
+        &on_drop,
+    )
+    .await?;
 
     // Issue #257: reached only on full, untruncated success — see
     // `find_revocations`'s identical note above. Keyed by `controller`,

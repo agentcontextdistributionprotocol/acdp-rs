@@ -282,9 +282,12 @@ impl RevocationPolicy {
 /// same [`Self::on_failure`] path as `AcdpError::SearchTruncated` — it
 /// is permanent for the same request shape and is never transient.
 /// Both knobs bound **registry** traffic only: DID-document fetches
-/// issued via `WebResolver` are not counted. Both also count only
-/// **successfully-parsed response bodies** — an error-envelope read on
-/// a non-success response is not charged. Leaving both `None` (as both
+/// issued via `WebResolver` are not counted. [`Self::max_bytes`] counts
+/// only **successfully-parsed response bodies** — an error-envelope
+/// read on a non-success response is not charged. [`Self::max_requests`]
+/// has no such exemption: the request slot is reserved *before* the
+/// request is issued, so a 503, a parse failure, or a `PayloadTooLarge`
+/// still consumes it. Leaving both `None` (as both
 /// [`Self::producer_signed_only`] and [`Self::all_trust_classes`] do)
 /// preserves pre-#258 behavior exactly: unbounded requests and bytes,
 /// bounded only by [`Self::total_timeout`]. There is still no cache in
@@ -351,11 +354,18 @@ pub struct RevocationDiscovery {
     /// **attacker-inducible security downgrade**, since a hostile
     /// producer or registry can pad the result set specifically to
     /// exhaust the page cap and hide a real revocation from discovery.
-    /// A 503 is an ordinary availability blip. Under
-    /// [`DiscoveryFailurePolicy::ProceedWithKnown`] both are treated the
-    /// same way (proceed on [`RevocationPolicy::known`] alone, record
-    /// the failure) — choose `ProceedWithKnown` knowing it also waives
-    /// truncation, not just transient unavailability.
+    /// A 503 is an ordinary availability blip. **A third case is
+    /// attacker-inducible the same way `SearchTruncated` is (issue
+    /// #258):** `AcdpError::RevocationDiscoveryBudgetExceeded`, raised
+    /// when [`Self::max_requests`] or [`Self::max_bytes`] is exhausted —
+    /// a hostile registry that learns a caller's budget can pad
+    /// harmless-looking traffic specifically to exhaust it before a
+    /// real revocation is found, just as padding the result set exhausts
+    /// `MAX_SEARCH_PAGES`. Under [`DiscoveryFailurePolicy::ProceedWithKnown`]
+    /// all three are treated the same way (proceed on
+    /// [`RevocationPolicy::known`] alone, record the failure) — choose
+    /// `ProceedWithKnown` knowing it also waives truncation and budget
+    /// exhaustion, not just transient unavailability.
     pub on_failure: DiscoveryFailurePolicy,
     /// Wall-clock budget for the whole discovery step (both searches,
     /// if [`Self::include_registry_attested`] is set). An **availability**
@@ -397,11 +407,26 @@ pub struct RevocationDiscovery {
     /// matching every version before #258. Checked **before** each
     /// request is issued, using the running total from requests that
     /// already completed — the size of an in-flight request cannot be
-    /// known (and therefore reserved) in advance, so a single request
-    /// can push the total past `max_bytes` before the next check
-    /// observes the overrun. Counts a non-success response's
+    /// known (and therefore reserved) in advance, so **up to two**
+    /// requests can push the total past `max_bytes` before the next
+    /// check observes the overrun: the two trust-class lookups run
+    /// concurrently under `tokio::try_join!`, and both can pass a
+    /// not-yet-updated check before either's response is recorded — see
+    /// [`Self::max_requests`]'s doc for the same race on the request
+    /// count, where it is closed by an atomic reservation; there is no
+    /// equivalent reservation for bytes, since a response's size is not
+    /// known until after it is read. Counts a non-success response's
     /// error-envelope read *not at all* — only bytes read on the
     /// success path are charged.
+    ///
+    /// `Some(0)` is representable (unlike [`Self::max_requests`], which
+    /// is guarded by `NonZeroUsize`) and is not special-cased: it trips
+    /// the `>=` check on the very first request of either lookup,
+    /// before that request is ever issued, so discovery fails
+    /// immediately with zero registry traffic. This is a deliberate
+    /// consequence of keeping this field a plain `u64` (matching the
+    /// wave plan's chosen types) rather than a reason to reach for
+    /// `NonZeroU64`.
     pub max_bytes: Option<u64>,
 }
 
@@ -1015,9 +1040,14 @@ impl VerifiedContext {
         // through" — an attacker-inducible security downgrade, since a
         // hostile producer/registry can pad the result set specifically
         // to exhaust `MAX_SEARCH_PAGES` — whereas a 503 is an ordinary
-        // availability blip. `ProceedWithKnown` treats both the same
-        // way (proceed on `known` alone, record the failure); naming
-        // the asymmetry here is so that choice is made with open eyes.
+        // availability blip. `RevocationDiscoveryBudgetExceeded` (issue
+        // #258, `max_requests`/`max_bytes`) is a THIRD case in the same
+        // attacker-inducible bucket as truncation: a hostile registry
+        // that learns a caller's budget can pad harmless-looking traffic
+        // to exhaust it before a real revocation is found.
+        // `ProceedWithKnown` treats all three the same way (proceed on
+        // `known` alone, record the failure); naming the asymmetry here
+        // is so that choice is made with open eyes.
         let (discovered, revocation_discovery) = match &policy.revocations.discover {
             None => (Vec::new(), None),
             Some(discovery) => {

@@ -190,19 +190,26 @@ cost/availability default, not a claim that registry-attested
 revocations matter less.
 
 **`on_failure`: `FailClosed` vs `ProceedWithKnown`.** When discovery
-itself fails — a transport error, or the search-safety-cap error
-`AcdpError::SearchTruncated` — `DiscoveryFailurePolicy::FailClosed`
-(the default) fails verification. `ProceedWithKnown` instead proceeds
-using `known` alone and records the failure, retrievable via both
+itself fails — a transport error, the search-safety-cap error
+`AcdpError::SearchTruncated`, or (issue #258) the budget error
+`AcdpError::RevocationDiscoveryBudgetExceeded` covered below —
+`DiscoveryFailurePolicy::FailClosed` (the default) fails verification.
+`ProceedWithKnown` instead proceeds using `known` alone and records the
+failure, retrievable via both
 `VerifiedContext::revocation_discovery_failure()` and
 `VerificationReport::revocation_discovery`. Choose `ProceedWithKnown`
-with open eyes: `SearchTruncated` and an ordinary transport error (e.g.
-a 503) both take this same path, but they are **not** equivalent.
-`SearchTruncated` means "this producer has more revocations than we
-will page through" — a hostile producer or registry can pad the search
-result set specifically to exhaust the page cap, hiding a real
-revocation from discovery — an attacker-inducible security downgrade,
-not merely a transient blip like a 503.
+with open eyes: a transport error (e.g. a 503) is an ordinary
+availability blip, but `SearchTruncated` and
+`RevocationDiscoveryBudgetExceeded` are **not** equivalent to it, even
+though all three take this same path. `SearchTruncated` means "this
+producer has more revocations than we will page through" — a hostile
+producer or registry can pad the search result set specifically to
+exhaust the page cap, hiding a real revocation from discovery — an
+attacker-inducible security downgrade. `RevocationDiscoveryBudgetExceeded`
+is attacker-inducible the same way: a hostile registry that learns a
+caller's `max_requests`/`max_bytes` budget can pad harmless-looking
+traffic specifically to exhaust it before a real revocation is found.
+`ProceedWithKnown` waives all three, not just transient unavailability.
 
 **`total_timeout` requires a Tokio time driver.** Discovery wraps both
 searches in a single `tokio::time::timeout(discover.total_timeout, ..)`,
@@ -251,12 +258,15 @@ Two honesty caveats:
   DID-document fetches issued via `WebResolver` during discovery are
   not counted — they are LRU-cached (1000 entries) but unbounded in
   count.
-- **Successfully-parsed bodies only.** The byte budget counts bytes
-  read from a *successful* response. A non-success response's small
-  error-envelope read (capped at 64 KB) is never charged, and the size
-  of an in-flight request cannot be reserved in advance — a single
-  request can push the running total past `max_bytes` before the
-  *next* check observes the overrun.
+- **Successfully-parsed bodies only — for `max_bytes`.** The byte
+  budget counts bytes read from a *successful* response. A non-success
+  response's small error-envelope read (capped at 64 KB) is never
+  charged, and the size of an in-flight request cannot be reserved in
+  advance — since the two trust-class lookups run concurrently, **up
+  to two** requests can push the running total past `max_bytes` before
+  the *next* check observes the overrun. `max_requests` has no such
+  exemption: its slot is reserved *before* the request is issued, so a
+  503, a parse failure, or a `PayloadTooLarge` still consumes it.
 
 There is still no cache in this version: every call re-discovers from
 scratch, budgeted or not.

@@ -5389,11 +5389,6 @@ async fn budget_ac7_check_before_issue_exact_single_bounded_dual() {
         dual_total <= K,
         "both-classes, concurrent requests: hits() ({dual_total}) must be <= K ({K})"
     );
-    assert_ne!(
-        dual_total,
-        K + 1,
-        "hits() must never overshoot the reservation by one"
-    );
 }
 
 /// A dedicated `max_bytes`-only exhaustion test (no `max_requests` set):
@@ -5602,4 +5597,248 @@ async fn budget_ac8_original_client_carries_no_budget() {
         .await
         .expect("the caller's original client must carry no budget at all");
     assert_eq!(ctx.body.ctx_id, rig.target_ctx_id);
+}
+
+/// M1 (verification-gap closure): every budget test above reuses
+/// `discovery_rig` with NO revocations seeded, so discovery only ever
+/// issues `search` (`hits("context")` and `hits("lineage")` never move)
+/// — deleting `check_discovery_budget()?` from `RegistryClient::retrieve`
+/// or `RegistryClient::lineage` leaves the whole suite green. This test
+/// seeds exactly one revocation so `find_revocations` actually retrieves
+/// the matching candidate (`client.retrieve`, the "context" route) AND
+/// walks its lineage (`client.lineage`, the "lineage" route), and picks
+/// `max_requests` to land exactly on the boundary between "the retrieve
+/// got through" and "the lineage walk was refused before it was sent".
+///
+/// Natural request order for one producer-signed match under
+/// `producer_signed_only()`: the double loop tries all 2 type_forms x 3
+/// statuses unconditionally (no early exit), and `(type_form=
+/// "key-revocation", status="active")` — the very first pair — is where
+/// a freshly seeded, non-superseded, non-retracted revocation matches.
+/// So the call order is: search #1 (match) -> retrieve #2 (inline, the
+/// instant a new candidate is seen) -> search #3..#7 (the remaining 5
+/// pairs, no match) -> exactly one `client.lineage` walk of the newly
+/// discovered lineage (call #8, since the candidate was already `seen`
+/// via the retrieve above, the walk only re-confirms membership). Seven
+/// calls precede the lineage walk (6 search + 1 retrieve), so
+/// `max_requests: Some(7)` lets all seven through — both budget-checked,
+/// both counted — and refuses only the eighth, the lineage call, before
+/// it is ever sent to the server.
+///
+/// `hits("context")`'s expected delta is 2, not 1: `fetch_with_policy`
+/// always does its OWN top-level retrieve of the target through the
+/// CALLER's (unbudgeted) client before discovery ever runs — see the
+/// block comment above `budget_ac1_revocation_discovery_still_copy` —
+/// plus the ONE discovery-scoped retrieve of the seeded candidate.
+#[tokio::test]
+async fn budget_m1_seeded_revocation_bounds_retrieve_and_lineage() {
+    const N: usize = 7;
+
+    let rig = discovery_rig(0xC8).await;
+    rig.h
+        .seed_revocations(&rig.producer, &rig.producer_fp, &[rig.receipt_time])
+        .await;
+    let before_search = rig.h.hits("search");
+    let before_context = rig.h.hits("context");
+    let before_lineage = rig.h.hits("lineage");
+
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.max_requests = Some(NonZeroUsize::new(N).unwrap());
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+    let err = VerifiedContext::fetch_with_policy(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &policy,
+    )
+    .await
+    .expect_err(
+        "max_requests: Some(7) must exhaust exactly at the lineage walk, after \
+         the 6 searches and the one matching candidate's retrieve already went through",
+    );
+    match &err {
+        AcdpError::RevocationDiscoveryFailed { source } => {
+            assert!(
+                matches!(**source, AcdpError::RevocationDiscoveryBudgetExceeded(_)),
+                "got {source:?}"
+            );
+        }
+        other => panic!("expected RevocationDiscoveryFailed, got {other:?}"),
+    }
+
+    assert_eq!(
+        rig.h.hits("search") - before_search,
+        6,
+        "all 6 (type_form, status) searches must complete before the budget bites"
+    );
+    assert_eq!(
+        rig.h.hits("context") - before_context,
+        2,
+        "the top-level retrieve (1) plus the one matching candidate's \
+         discovery-scoped retrieve (1) must both be let through — retrieve's \
+         own `check_discovery_budget()?` reserved slot #7 rather than refusing it"
+    );
+    assert_eq!(
+        rig.h.hits("lineage") - before_lineage,
+        0,
+        "the lineage walk must be refused BEFORE any request reaches the server — \
+         this is the assertion that goes red if `check_discovery_budget()?` is \
+         deleted from `RegistryClient::lineage`"
+    );
+}
+
+/// N2 (load-bearing — the byte-budget analogue of AC3): the SAME
+/// `max_bytes` must yield the same total ceiling whether
+/// `include_registry_attested` is `false` or `true`, exactly as AC3
+/// proves for `max_requests`. Zero revocations are seeded (as in the
+/// `budget_ac2`/`ac3`/`ac7` family above), so every `/contexts/search`
+/// response is a fixed-size ~33-byte empty-match body (measured against
+/// this harness, not assumed) and `max_bytes: Some(100)` is calibrated
+/// below, in the SAME test, against a single-lookup run first — so this
+/// test does not hardcode a byte size that a harness change could
+/// silently invalidate.
+///
+/// Single-lookup calibration first: with `max_bytes: Some(100)` and
+/// `producer_signed_only()`, successive ~33-byte responses accumulate
+/// 33, 66, 99, 132 — the 4th request's own check-before-issue still
+/// sees 99 < 100 and is let through, and only the 5th observes the
+/// overrun. So `K1` (the single-lookup total) is expected to land
+/// strictly between 1 and the natural unbudgeted total of 6 — asserted,
+/// not assumed, so a harness response-size change fails loudly here
+/// rather than silently weakening the dual-lookup assertion below.
+///
+/// Dual-lookup with the SAME `max_bytes: Some(100)`: a genuinely
+/// COMBINED byte counter can only ever total `K1` requests-worth of
+/// bytes, split however the concurrent `try_join!` interleaves the two
+/// lookups — so the dual total must be `<= K1`. A (bugged) per-lookup
+/// separate budget would instead let EACH lookup independently
+/// accumulate up to `K1` requests before its own copy of the counter
+/// trips, for a dual total of up to `2 * K1` — comfortably more than
+/// `K1` and easily distinguished from the combined case. (`<=`, not
+/// `==`, for the same reason AC3/AC7 use `<=` for the dual case: a
+/// `try_join!` race can let both lookups' very first, unrecorded-yet
+/// requests through before either observes the other's bytes.)
+#[tokio::test]
+async fn budget_n2_max_bytes_combines_across_both_lookups() {
+    const MAX_BYTES: u64 = 100;
+
+    let rig1 = discovery_rig(0xC9).await;
+    let before_search1 = rig1.h.hits("search");
+    let mut discovery1 = RevocationDiscovery::producer_signed_only();
+    discovery1.max_bytes = Some(MAX_BYTES);
+    let policy1 = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery1),
+        ..Default::default()
+    };
+    VerifiedContext::fetch_with_policy(
+        &rig1.client,
+        &rig1.h.resolver,
+        &rig1.target_ctx_id,
+        &policy1,
+    )
+    .await
+    .expect_err("max_bytes: Some(100) must exhaust before the natural 6 searches complete");
+    let k1 = rig1.h.hits("search") - before_search1;
+    assert!(
+        k1 > 1 && k1 < 6,
+        "calibration invariant broken (k1={k1}) — this harness's search response \
+         size must have changed; re-tune MAX_BYTES rather than trusting the \
+         assertions below"
+    );
+
+    let rig2 = discovery_rig(0xCB).await;
+    let before_search2 = rig2.h.hits("search");
+    let before_caps2 = rig2.h.hits("acdp_json");
+    let mut discovery2 = RevocationDiscovery::all_trust_classes();
+    discovery2.max_bytes = Some(MAX_BYTES);
+    let policy2 = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery2),
+        ..Default::default()
+    };
+    let err2 = VerifiedContext::fetch_with_policy(
+        &rig2.client,
+        &rig2.h.resolver,
+        &rig2.target_ctx_id,
+        &policy2,
+    )
+    .await
+    .expect_err("max_bytes: Some(100) must exhaust before the natural 13 requests complete");
+    assert!(
+        matches!(
+            &err2,
+            AcdpError::RevocationDiscoveryFailed { source }
+                if matches!(**source, AcdpError::RevocationDiscoveryBudgetExceeded(_))
+        ),
+        "got {err2:?}"
+    );
+    let dual_total =
+        (rig2.h.hits("search") - before_search2) + (rig2.h.hits("acdp_json") - before_caps2);
+    assert!(
+        dual_total <= k1,
+        "dual-lookup total ({dual_total}) must be <= the single-lookup \
+         calibration (k1={k1}) — a combined byte budget, not one ceiling per \
+         lookup (which would allow up to 2*k1 = {})",
+        2 * k1
+    );
+}
+
+/// N2 (continued): both knobs set simultaneously, with `max_bytes`
+/// exhausted from the FIRST response and `max_requests` left generous
+/// enough to never bind on its own. This exercises
+/// `check_before_request`'s byte-exhausted-so-don't-consume-a-request-slot
+/// ordering (`registry.rs`'s `check_before_request`: the byte check runs
+/// first and is a side-effect-free load) in the presence of a
+/// `max_requests` value — a configuration no other test in this suite
+/// runs, since every other `max_bytes`-only test leaves `max_requests`
+/// unset.
+#[tokio::test]
+async fn budget_n2_both_knobs_set_byte_exhaustion_does_not_consume_request_slot() {
+    let rig = discovery_rig(0xCA).await;
+    let before_search = rig.h.hits("search");
+
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.max_bytes = Some(1);
+    // Generous enough that if the byte-exhausted check still consumed a
+    // request slot, the natural 6-search total would still complete
+    // "successfully" from `max_requests`'s point of view alone — so the
+    // ONLY thing that can produce a budget failure here is the byte
+    // check, and it must fire on the SECOND call, not later.
+    discovery.max_requests = Some(NonZeroUsize::new(6).unwrap());
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+    let err = VerifiedContext::fetch_with_policy(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &policy,
+    )
+    .await
+    .expect_err(
+        "with both knobs set, max_bytes: Some(1) must still exhaust after the \
+         first response, well before max_requests: Some(6) would ever bind",
+    );
+    match &err {
+        AcdpError::RevocationDiscoveryFailed { source } => {
+            assert!(
+                matches!(**source, AcdpError::RevocationDiscoveryBudgetExceeded(_)),
+                "got {source:?}"
+            );
+            assert!(
+                source.to_string().contains("max_bytes"),
+                "the byte check must be the one that fires, not max_requests; got {source}"
+            );
+        }
+        other => panic!("expected RevocationDiscoveryFailed, got {other:?}"),
+    }
+    assert_eq!(
+        rig.h.hits("search") - before_search,
+        1,
+        "byte-exhausted must refuse the SECOND request outright — it must not \
+         consume a request-count slot first and let the request through anyway"
+    );
 }

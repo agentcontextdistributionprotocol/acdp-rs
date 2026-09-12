@@ -4753,8 +4753,9 @@ async fn phase4_ac2_discovery_only_revocation_flips_success_to_key_not_authorize
 /// AC3: all FIVE policy-taking entry points honor `discover` —
 /// `fetch_with_policy`, `fetch_current_with_policy`, `fetch_report`,
 /// `fetch_report_diagnose`, `fetch_report_with_fetcher`. (`fetch` /
-/// `fetch_current` hardcode the default policy and `CrossRegistryResolver`
-/// has no policy-injection point — LIM-1/LIM-2, out of scope by design.)
+/// `fetch_current` hardcode the default policy — LIM-2, out of scope by
+/// design. LIM-1, `CrossRegistryResolver` having no policy-injection
+/// point, was closed by issue #260 — see the `resolver_ac*` tests below.)
 ///
 /// Split into five independent `#[tokio::test]` functions (one per entry
 /// point, each with its own `discovery_rig` seed) rather than one test
@@ -6997,17 +6998,27 @@ async fn cache_material3_seeds_producer_signed_fact_even_with_discover_none() {
 // `sec_01_cross_registry_pins_authority_dns` (`tests/tls_conformance.rs`)
 // already use.
 
-/// AC1: **the multiplier does not materialize, on default configuration.**
-/// A walk over `CHAIN_LEN - 1` ancestor nodes from the SAME producer, same
-/// registry, must issue producer-signed discovery searches exactly ONCE
-/// (`2 type_forms x 3 statuses = 6`, matching the pre-#258/#257 constant
-/// this wave's Phase 1 pinned), not once per node — via the resolver's
-/// DEFAULT walk-scoped cache (no `with_revocation_cache` call at all).
-/// "Default configuration" here means the resolver creates its own
-/// walk-scoped cache; the caller's OWN `RevocationDiscovery::freshness`
-/// still has to be nonzero for a marker to ever suppress a repeat lookup —
-/// that half of the model is unchanged from Phase 2 (see AC2, the honest
-/// counterpart, for what happens at `freshness: ZERO`).
+/// AC1: **the multiplier does not materialize, on genuine default
+/// configuration.** A walk over `CHAIN_LEN - 1` ancestor nodes from the
+/// SAME producer, same registry, must issue producer-signed discovery
+/// searches exactly ONCE (`2 type_forms x 3 statuses = 6`, matching the
+/// pre-#258/#257 constant this wave's Phase 1 pinned), not once per node
+/// (which would be `6 * (CHAIN_LEN - 1) = 24`) — via the resolver's
+/// DEFAULT walk-scoped cache (no `with_revocation_cache` call at all) and
+/// `RevocationDiscovery::producer_signed_only()` with `freshness` left
+/// completely untouched (i.e. `Duration::ZERO`, the type default).
+///
+/// This restores the plan's original AC1 wording ("on default
+/// configuration") to its literal reading (MATERIAL-3, fresh-Opus
+/// whole-wave review): the resolver's own walk-scoped cache derives its
+/// effective `RevocationDiscovery::freshness` from
+/// `ResolverOptions::total_timeout` internally
+/// (`CrossRegistryResolver::resolve_inner`'s `walk_scoped_freshness`
+/// parameter), so a caller who sets nothing beyond
+/// `producer_signed_only()` still gets suppression — no nonzero
+/// `freshness` knob required. AC2 (below) is the honest counterpart:
+/// a caller-supplied cache (`with_revocation_cache`) never gets this
+/// derived value, so `freshness: ZERO` there still suppresses nothing.
 ///
 /// This also exercises AC3 ("shared across every client the resolver
 /// builds") and AC4(a) ("a seeded client with no cache participates in the
@@ -7039,8 +7050,14 @@ async fn resolver_ac1_walk_scoped_cache_suppresses_repeat_discovery_by_default()
         .expect("found")
         .body;
 
-    let mut discovery = RevocationDiscovery::producer_signed_only();
-    discovery.freshness = std::time::Duration::from_secs(60);
+    // Genuine defaults (MATERIAL-3): `producer_signed_only()` with
+    // `freshness` completely untouched — no test manually raises it.
+    let discovery = RevocationDiscovery::producer_signed_only();
+    assert_eq!(
+        discovery.freshness,
+        std::time::Duration::ZERO,
+        "sanity: genuine defaults — producer_signed_only()'s freshness is untouched"
+    );
     let policy = RevocationPolicy::default().with_discovery(discovery);
 
     let resolver = CrossRegistryResolver::new()
@@ -7058,15 +7075,18 @@ async fn resolver_ac1_walk_scoped_cache_suppresses_repeat_discovery_by_default()
         .expect("a discovery-enabled walk over plain (non-revoked) contexts must succeed");
     assert_eq!(ancestors.len(), CHAIN_LEN - 1);
     let delta = h.hits("search") - before;
+    let counterfactual = 6 * (CHAIN_LEN - 1);
     assert_eq!(
         delta,
         6,
-        "issue #260 AC1: a walk over {} ancestor nodes from the SAME producer/authority \
-         must issue producer-signed discovery exactly ONCE (6 searches), not once per node \
-         (which would be {}) — the default, resolver-created walk-scoped cache is what \
-         collapses this",
+        "issue #260 AC1 (MATERIAL-3): a walk over {} ancestor nodes from the SAME \
+         producer/authority, on GENUINE default configuration (no with_revocation_cache, \
+         no manual freshness override), must issue producer-signed discovery exactly \
+         ONCE (6 searches), not once per node (which would be {counterfactual}) — the \
+         resolver's own walk-scoped cache derives its effective freshness from \
+         ResolverOptions::total_timeout, which is what collapses this without the caller \
+         needing to touch RevocationDiscovery::freshness at all",
         CHAIN_LEN - 1,
-        6 * (CHAIN_LEN - 1),
     );
 }
 
@@ -7280,10 +7300,11 @@ async fn resolver_ac5_vantage_binding_pins_discovery_to_the_serving_client() {
     // Vantage B: SAME ctx_id / producer / physical harness, re-seeded under
     // the SAME resolver-level authority KEY, but a DIFFERENT `RegistryClient`
     // (a different `.base` — same host `localhost` so the harness's
-    // `localhost`-only TLS certificate still validates, but a distinct
-    // bogus port — hence a different `.authority()`), pinned via
-    // `.resolve()` to the SAME physical socket regardless of the URL's own
-    // port.
+    // `localhost`-only TLS certificate still validates, but this base
+    // explicitly spells out the real port, `h.tls.addr.port()` — hence a
+    // different `.authority()` string than vantage A's portless `h.client()`
+    // base), pinned via `.resolve()` to the SAME physical socket regardless
+    // of the URL's own port.
     let alt_base = format!("https://localhost:{}", h.tls.addr.port());
     let vantage_b = RegistryClient::with_test_endpoint(&alt_base, h.tls.addr, &h.tls.root_cert_pem)
         .expect("vantage B client");
@@ -7302,17 +7323,42 @@ async fn resolver_ac5_vantage_binding_pins_discovery_to_the_serving_client() {
          suppress discovery when the SAME producer/context is later resolved via a DIFFERENT \
          vantage B, even though both share one RevocationCache"
     );
+
+    // N1 (fresh-Opus whole-wave review): a positive control. Without this,
+    // AC5 would pass under a probe where NOTHING is ever suppressed (e.g.
+    // `marker_fresh` always returning `false`) — `hits("search") >
+    // before_b` is equally true either way. Re-seed vantage A and resolve
+    // again: A's own marker (minted just above, `freshness: 60s`) MUST
+    // still suppress discovery, distinguishing "B correctly not
+    // suppressed" from "nothing is ever suppressed at all".
+    resolver.seed_client(REGISTRY_AUTHORITY, h.client());
+    let before_a_again = h.hits("search");
+    resolver
+        .resolve(&t)
+        .await
+        .expect("vantage A, resolved again, reuses its own fresh marker");
+    assert_eq!(
+        h.hits("search"),
+        before_a_again,
+        "issue #260 AC5 positive control: a SECOND resolve via vantage A must be suppressed \
+         by A's own still-fresh marker — proving discovery CAN be suppressed at all, which is \
+         what makes 'vantage B is not suppressed' above a meaningful contrast rather than a \
+         tautology"
+    );
 }
 
-/// AC6: the concrete payoff of the walk-scoped cache. A per-`search`-request
-/// delay makes ONE discovery round cost roughly `6 * 80ms = 480ms`; an
-/// (incorrect) per-node cache would cost `CHAIN_LEN - 1` rounds — about
-/// 1.9s for 4 ancestors — comfortably over the small `total_timeout` below.
-/// The walk-scoped default keeps the walk to ONE round regardless of chain
-/// length, so it finishes comfortably inside budget. Uses a scaled-down
-/// `total_timeout` (not the literal 30s default) so the test runs fast
-/// while still proving the same structural property the 30s default relies
-/// on in production.
+/// AC6: the concrete payoff of the walk-scoped cache, on GENUINE default
+/// configuration (MATERIAL-3: `producer_signed_only()` with `freshness`
+/// untouched — the resolver's own walk-scoped cache derives its effective
+/// freshness from this test's (scaled-down) `ResolverOptions::total_timeout`
+/// internally). A per-`search`-request delay makes ONE discovery round
+/// cost roughly `6 * 80ms = 480ms`; an (incorrect) per-node cache would
+/// cost `CHAIN_LEN - 1` rounds — about 1.9s for 4 ancestors — comfortably
+/// over the small `total_timeout` below. The walk-scoped default keeps the
+/// walk to ONE round regardless of chain length, so it finishes
+/// comfortably inside budget. Uses a scaled-down `total_timeout` (not the
+/// literal 30s default) so the test runs fast while still proving the
+/// same structural property the 30s default relies on in production.
 #[tokio::test]
 async fn resolver_ac6_walk_scoped_cache_lets_a_discovery_enabled_walk_complete() {
     use acdp::client::{CrossRegistryResolver, ResolverOptions};
@@ -7337,8 +7383,12 @@ async fn resolver_ac6_walk_scoped_cache_lets_a_discovery_enabled_walk_complete()
 
     h.set_delay("search", std::time::Duration::from_millis(80));
 
-    let mut discovery = RevocationDiscovery::producer_signed_only();
-    discovery.freshness = std::time::Duration::from_secs(60);
+    // Genuine defaults (MATERIAL-3): no manual freshness override. The
+    // resolver's own walk-scoped cache derives its effective freshness
+    // from `ResolverOptions::total_timeout` below (800ms) — comfortably
+    // above the ~480ms one discovery round takes, so the walk still
+    // completes in ONE round.
+    let discovery = RevocationDiscovery::producer_signed_only();
     let policy = RevocationPolicy::default().with_discovery(discovery);
 
     let resolver = CrossRegistryResolver::new()

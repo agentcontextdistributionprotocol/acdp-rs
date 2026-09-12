@@ -174,10 +174,13 @@ fn cross_registry_revocation_surface_reexported() {
     // facade with no new types (`RevocationPolicy`/`RevocationCache` are
     // both pre-existing, pinned by `revocation_surface_reexported` /
     // `revocation_cache_reexported` above). Binding the methods' exact
-    // signatures here is a compile-time proof against both an
-    // accidentally-widened surface (e.g. a `VerificationPolicy`-taking
-    // overload) and an accidentally-narrowed one (a renamed/removed
-    // method), matching this file's existing fn-pointer-binding idiom.
+    // signatures here proves these three signatures are stable and
+    // public through the facade (and would catch an accidental rename,
+    // removal, or signature change — e.g. a `VerificationPolicy`-taking
+    // overload of `with_revocation_policy`) — matching this file's
+    // existing fn-pointer-binding idiom. N2: binding only these three
+    // fn pointers cannot, by itself, detect a FOURTH method added to the
+    // public surface; that is not a claim this test makes.
     use acdp::client::{CrossRegistryResolver, RevocationCache, RevocationPolicy};
 
     let _with_policy: fn(CrossRegistryResolver, RevocationPolicy) -> CrossRegistryResolver =

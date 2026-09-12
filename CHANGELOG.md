@@ -92,12 +92,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   **The cache is walk-scoped by default.** Unless `with_revocation_cache` is called,
   `CrossRegistryResolver::walk_derived_from` creates a FRESH `RevocationCache` for that
-  call only and shares it across every node the walk visits, so discovery for a given
-  `(authority, trust class)` runs at most once per walk rather than once per node,
-  regardless of `max_nodes` — no cached absence outlives the call, so this is safe even
-  though it makes suppression reachable without a caller-managed, long-lived cache
-  (a caller who wants discovery to stay warm across separate walks opts in explicitly via
-  `with_revocation_cache`). `seed_client` is fill-if-absent, preserve-if-present: a client
+  call only and shares it across every node the walk visits. For this resolver-built
+  cache, the effective `RevocationDiscovery::freshness` is derived internally from
+  `ResolverOptions::total_timeout`, so discovery for a given `(authority, trust class)`
+  runs at most once per walk rather than once per node, regardless of `max_nodes` — on
+  genuine default configuration, with no caller action required — because no cached
+  absence outlives the call. A caller-supplied cache (`with_revocation_cache`) is
+  different: its own `freshness` governs unmodified, so `Duration::ZERO` (the type
+  default) still suppresses nothing there — a caller who wants discovery to stay warm
+  across separate walks opts in explicitly via `with_revocation_cache` and chooses that
+  cache's staleness exposure themselves.
+
+  `seed_client` is fill-if-absent, preserve-if-present: a client
   handed to (or built by) the resolver that carries no `RevocationCache` of its own is
   given the active one (walk-scoped or resolver-level); a client that already carries its
   own keeps it. Vantage binding (RFC-ACDP-0014 §6 scoping) falls out for free: discovery

@@ -422,13 +422,22 @@ CrossRegistryResolver::new().with_revocation_policy(
 FRESH `RevocationCache` for each `walk_derived_from` call and shares it
 across every node that walk visits — so discovery for a given
 `(authority, trust class)` runs at most once per walk, not once per
-node, regardless of `max_nodes`. No cached absence outlives the call, so
-suppression is safe without a long-lived cache to manage — a caller who
-wants discovery to stay warm ACROSS separate walks opts in explicitly
-via `with_revocation_cache`. A nonzero `RevocationDiscovery::freshness`
-is still required for a marker to ever suppress a repeat lookup — merely
-sharing a cache object does not, on its own, skip anything (the same
-rule as the direct, non-resolver path above).
+node, regardless of `max_nodes`, **on genuine default configuration**.
+For this resolver-built cache, the effective `RevocationDiscovery::freshness`
+is derived internally from `ResolverOptions::total_timeout` — a caller
+using `RevocationDiscovery::producer_signed_only()`/`all_trust_classes()`
+completely untouched still gets suppression, with no `freshness` knob to
+set. This is safe because no cached absence outlives the call, and the
+call's own duration is already bounded by `total_timeout`.
+
+A **caller-supplied** cache (`with_revocation_cache`) does not get this
+derived value: its own `freshness` governs unmodified, so
+`Duration::ZERO` (the type default) still suppresses nothing there —
+merely sharing a cache object is not, on its own, what skips a lookup
+for that path (the same rule as the direct, non-resolver path above). A
+caller who wants discovery to stay warm ACROSS separate walks opts in
+explicitly via `with_revocation_cache` and picks that cache's own
+`freshness` (and so its staleness exposure) themselves.
 
 Two caveats:
 
@@ -449,7 +458,16 @@ Two caveats:
 `CrossRegistryResolver` does not add its own request/byte budget on top
 of this — issue #258's `RevocationDiscovery::max_requests`/`max_bytes`
 already bound the per-node discovery cost; a duplicate resolver-level
-knob would be redundant.
+knob would be redundant *per node*. Composed across a walk, though, that
+per-node bound is not the whole story: `DiscoveryBudget` is enforced once
+per `verify_retrieved` call, i.e. once per node the walk visits. Under
+the default `DiscoveryFailurePolicy::FailClosed`, the first node to
+exhaust its budget aborts the whole walk, so the aggregate cost stays
+bounded by one node's budget. Under `ProceedWithKnown`, a budget
+exhaustion at one node no longer stops the walk — so the effective
+walk-wide ceiling becomes `max_requests` (or `max_bytes`) **times**
+`ResolverOptions::max_nodes`, since every node can independently spend up
+to its own budget before falling back to `known`.
 
 ### Diagnostics: fetch_report
 

@@ -422,8 +422,7 @@ struct DiscoveryParams<'a> {
 /// controller + registry-binding for the attested form) — a candidate
 /// `keep` rejects is dropped, never surfaced as an error, exactly as
 /// before. `on_drop` is called for every candidate `keep` rejects, with
-/// the third argument `true` when the candidate came from the
-/// lineage-walk loop rather than the search loop (the two forms differ
+/// a [`DropSite`] naming which loop dropped it (the two forms differ
 /// in `tracing::warn!` payload shape — `trust_class`/computed `filter`
 /// vs `publisher`/`controller` — which a single `&dyn Fn(..) -> bool`
 /// predicate cannot carry).
@@ -434,12 +433,29 @@ struct DiscoveryParams<'a> {
 /// after the retrieves for that pass have already gone out, and the
 /// `SearchTruncated` fail-closed contract — is unchanged from the two
 /// functions' original bodies; see their docs for the full rationale.
+/// Which loop inside [`discover_revocations`] dropped a candidate.
+///
+/// Deliberately an enum rather than a `bool`: the value is chosen ~70
+/// lines away from the `tracing::warn!` it selects, and swapping it
+/// silently mislabels a search-loop drop as a lineage-walk drop (and
+/// vice versa) while every test still passes — verified by mutation
+/// during review of issue #264. A named variant makes the call site
+/// self-describing so the mistake is visible in the diff rather than
+/// only in production log wording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DropSite {
+    /// The `(type_form, status)` search/retrieve loop.
+    Search,
+    /// The `MAX_LINEAGE_WALKS`-bounded lineage-walk loop.
+    LineageWalk,
+}
+
 async fn discover_revocations(
     client: &RegistryClient,
     resolver: &WebResolver,
     params: DiscoveryParams<'_>,
     keep: &dyn Fn(&KeyRevocation) -> bool,
-    on_drop: &dyn Fn(&KeyRevocation, &CtxId, bool),
+    on_drop: &dyn Fn(&KeyRevocation, &CtxId, DropSite),
 ) -> Result<Vec<KeyRevocation>, AcdpError> {
     let DiscoveryParams {
         search_agent_id,
@@ -505,7 +521,7 @@ async fn discover_revocations(
                             if keep(&rev) {
                                 revocations.push(rev);
                             } else {
-                                on_drop(&rev, &m.ctx_id, false);
+                                on_drop(&rev, &m.ctx_id, DropSite::Search);
                             }
                         }
                         // D5 (issue #248 Phase 1): transient means "could
@@ -581,7 +597,7 @@ async fn discover_revocations(
             if keep(&rev) {
                 revocations.push(rev);
             } else {
-                on_drop(&rev, &ctx_id, true);
+                on_drop(&rev, &ctx_id, DropSite::LineageWalk);
             }
         }
     }
@@ -827,9 +843,9 @@ pub async fn find_revocations(
         // to be a registry (RFC-ACDP-0014 §4, §13).
         rev.publisher == agent_id && rev.trust_class == RevocationTrustClass::ProducerSigned
     };
-    let on_drop = |_rev: &KeyRevocation, _ctx_id: &CtxId, _from_lineage_walk: bool| {
+    let on_drop = |_rev: &KeyRevocation, _ctx_id: &CtxId, _site: DropSite| {
         #[cfg(feature = "tracing")]
-        if _from_lineage_walk {
+        if _site == DropSite::LineageWalk {
             tracing::warn!(
                 publisher = %_rev.publisher,
                 trust_class = ?_rev.trust_class,
@@ -1076,9 +1092,9 @@ pub async fn find_registry_attested_revocations(
                 .cross_check_registry_binding(&serving_authority, &caps.registry_did)
                 .is_ok()
     };
-    let on_drop = |_rev: &KeyRevocation, _ctx_id: &CtxId, _from_lineage_walk: bool| {
+    let on_drop = |_rev: &KeyRevocation, _ctx_id: &CtxId, _site: DropSite| {
         #[cfg(feature = "tracing")]
-        if _from_lineage_walk {
+        if _site == DropSite::LineageWalk {
             tracing::warn!(
                 publisher = %_rev.publisher,
                 controller = %_rev.revoked_key_controller,

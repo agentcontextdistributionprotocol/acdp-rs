@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-primitives-v0.13.0...acdp-primitives-v0.13.1) - 2026-09-12
+
+### Added
+
+- *(client)* revocation discovery budget, cache, and resolver injection (#257, #258, #260) ([#263](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/263))
+
+### Other
+
+- *(changelog)* backfill the missing 0.12.0 sections in nine member crates
+
 ## [0.13.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-primitives-v0.12.0...acdp-primitives-v0.13.0) - 2026-09-11
 
 ### Added

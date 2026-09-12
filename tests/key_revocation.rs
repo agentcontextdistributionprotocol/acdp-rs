@@ -2986,6 +2986,16 @@ struct RouteState {
     error_status: std::sync::atomic::AtomicU16,
     /// 0 = no delay.
     delay_ms: std::sync::atomic::AtomicU64,
+    /// Issue #265: remaining number of responses for which the
+    /// `"search"` route should fabricate a non-null `next_cursor`
+    /// (with empty `matches`) instead of delegating to the real
+    /// server, decremented on each such response. 0 (the `Default`
+    /// value, same as the other three fields) means "fabricate
+    /// nothing" — every existing test, which never calls
+    /// [`LineageServerHarness::set_pages`], is unaffected by
+    /// construction. Meaningful only for the `"search"` route; other
+    /// routes' handlers never read it.
+    fabricated_pages: std::sync::atomic::AtomicUsize,
 }
 
 impl RouteState {
@@ -3207,6 +3217,29 @@ impl LineageServerHarnessBuilder {
                         async move {
                             if let Some(resp) = state.intercept().await {
                                 return resp;
+                            }
+                            // Issue #265: applied AFTER `intercept()`'s hit
+                            // count, so a fabricated page still counts as a
+                            // request. Guarded `fetch_update` decrement
+                            // (not load-then-store): this route is hit
+                            // concurrently by `tokio::try_join!`'d lookups
+                            // (`acdp-client::verified`'s discovery block).
+                            let fabricated = state.fabricated_pages.fetch_update(
+                                std::sync::atomic::Ordering::SeqCst,
+                                std::sync::atomic::Ordering::SeqCst,
+                                |n| if n > 0 { Some(n - 1) } else { None },
+                            );
+                            if fabricated.is_ok() {
+                                // Shaped like a genuine `SearchResponse`
+                                // minus the matches: `find_revocations`
+                                // only needs a valid body with a non-null
+                                // `next_cursor` to keep paging.
+                                let resp = acdp::types::SearchResponse {
+                                    matches: Vec::new(),
+                                    total_estimate: None,
+                                    next_cursor: Some("harness-fabricated-page".to_string()),
+                                };
+                                return Json(resp).into_response();
                             }
                             let params = acdp::types::SearchParams {
                                 q: raw.get("q").cloned(),
@@ -3436,6 +3469,27 @@ impl LineageServerHarness {
     fn clear_delay(&self, route: &str) {
         self.route_state(route)
             .delay_ms
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// From the next request onward, the `"search"` route fabricates a
+    /// non-null `next_cursor` (with empty `matches`) for the next `n`
+    /// responses — each still counted as a hit — before the
+    /// `(n+1)`-th request delegates to the real server exactly as
+    /// today. Issue #265: lets `MAX_SEARCH_PAGES` page-cap exhaustion
+    /// be reached through this harness's real, persisted
+    /// `RegistryServer<InMemoryStore>` instead of a hand-built mock
+    /// router.
+    fn set_pages(&self, route: &str, n: usize) {
+        self.route_state(route)
+            .fabricated_pages
+            .store(n, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Undo [`Self::set_pages`].
+    fn clear_pages(&self, route: &str) {
+        self.route_state(route)
+            .fabricated_pages
             .store(0, std::sync::atomic::Ordering::SeqCst);
     }
 
@@ -3823,6 +3877,91 @@ async fn find_revocations_exactly_at_page_cap_with_no_trailing_cursor_is_ok() {
         .await
         .expect("exactly-at-cap with no trailing cursor is complete, not truncated");
     assert!(revs.is_empty());
+}
+
+/// Issue #265 — `LineageServerHarness::set_pages("search", n)` makes
+/// exactly the next `n` `/contexts/search` responses fabricate a
+/// non-null `next_cursor` with empty `matches`, each still counted as
+/// a hit (AC1, AC2), and the `(n+1)`-th request delegates to the real,
+/// persisted `RegistryServer<InMemoryStore>` exactly as it did before
+/// this field existed (AC5: no seeded data here, so the real page is
+/// an empty, cursor-less result, matching what this route has always
+/// returned for an empty store).
+#[tokio::test]
+async fn harness_set_pages_fabricates_exact_page_count_and_counts_hits() {
+    let h = LineageServerHarness::start(caps(), false).await;
+    let client = h.client();
+    let params = acdp::types::SearchParams::default();
+
+    h.set_pages("search", 3);
+    for i in 0..3 {
+        let resp = client
+            .search(&params)
+            .await
+            .unwrap_or_else(|e| panic!("fabricated page #{i}: {e:?}"));
+        assert!(
+            resp.matches.is_empty(),
+            "fabricated page #{i} must carry no matches"
+        );
+        assert!(
+            resp.next_cursor.is_some(),
+            "fabricated page #{i} must carry a non-null next_cursor"
+        );
+    }
+
+    // The 4th request must NOT fabricate again — it delegates to the
+    // real (empty) store.
+    let resp = client.search(&params).await.expect("real page");
+    assert!(resp.matches.is_empty());
+    assert!(
+        resp.next_cursor.is_none(),
+        "the (n+1)-th request must delegate to the real server, not fabricate again"
+    );
+
+    assert_eq!(
+        h.hits("search"),
+        4,
+        "the 3 fabricated pages plus the 1 real delegated page must all count as hits (AC2)"
+    );
+
+    // `clear_pages` undoes a still-outstanding counter; harmless here
+    // (already at 0) but exercises the accessor pair symmetrically
+    // with `clear_error`/`clear_delay`.
+    h.clear_pages("search");
+    let resp = client.search(&params).await.expect("real page after clear");
+    assert!(resp.next_cursor.is_none());
+    assert_eq!(h.hits("search"), 5);
+}
+
+/// Issue #265 — `find_revocations`'s `MAX_SEARCH_PAGES` (10) page-cap
+/// exhaustion, reached through the REAL harness (a genuine, persisted
+/// `RegistryServer<InMemoryStore>`) rather than one of the hand-built
+/// mock routers above (`find_revocations_errors_on_page_cap_exhaustion_with_cursor_remaining`,
+/// `find_revocations_exactly_at_page_cap_with_no_trailing_cursor_is_ok`).
+/// `set_pages("search", 10)` fabricates a `next_cursor` for the first
+/// 10 requests the (type_form="key-revocation", status="active") pass
+/// makes — `find_revocations` tries 6 `(type_form, status)` pairs in a
+/// fixed order and this is the first, so all 10 fabricated pages are
+/// consumed by it alone, with a cursor still remaining on the 10th —
+/// genuine truncation, not completion.
+#[tokio::test]
+async fn find_revocations_page_cap_exhaustion_through_real_harness() {
+    use acdp::client::find_revocations;
+
+    let h = LineageServerHarness::start(caps(), false).await;
+    // MAX_SEARCH_PAGES = 10 (kept in lockstep with
+    // crates/acdp-client/src/revocation.rs; not itself exported for
+    // tests to reference).
+    h.set_pages("search", 10);
+    let client = h.client();
+
+    let err = find_revocations(&client, &h.resolver, &AgentDid::new(LOCAL_PRODUCER_DID))
+        .await
+        .expect_err("page-cap exhaustion through the real harness must be a hard error");
+    assert!(
+        matches!(err, AcdpError::SearchTruncated(_)),
+        "expected SearchTruncated, got {err:?}"
+    );
 }
 
 /// Issue #226 Phase 4 — the lineage walk is bounded exactly like the

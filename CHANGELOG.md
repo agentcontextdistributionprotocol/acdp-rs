@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- *(client)* cache RFC-ACDP-0014 §8 revocation-discovery results
+  ([#257](https://github.com/agentcontextdistributionprotocol/acdp-rs/issues/257))
+
+  A new `RevocationCache` (`RegistryClient::with_revocation_cache`) is two objects sharing
+  one lock, not one. **Facts** — verified `KeyRevocation`s discovery finds — are always
+  unioned into classification, indefinitely and unconditionally, per §7:114's "cache
+  verified revocations indefinitely": a revocation is monotone, so seeding from cached
+  facts can only tighten a verdict, never loosen one, making the fact store an
+  anti-rollback control rather than a performance feature — a registry that serves a
+  revocation once and later hides it (or goes offline) cannot make an already-warmed
+  client forget it. **Freshness markers** — "vantage V completed a full, untruncated
+  discovery for this producer/trust-class at time T" — are a cached *absence*, which
+  §7:114 does not license and §8 explicitly warns about; they are bounded by a new
+  `RevocationDiscovery::freshness: Duration` field (`Copy`-preserving, additive,
+  defaulting to `Duration::ZERO` — off — from both named constructors), per vantage, per
+  trust class, and minted only on a fully successful, untruncated discovery — never on a
+  transport error, a `SearchTruncated`, a budget exhaustion, or a `total_timeout` trip, so
+  a transient blip can never become a silent window-long downgrade. With the default
+  `freshness: ZERO`, attaching a cache saves zero requests and changes nothing observable
+  except anti-rollback. No new Cargo dependency: the bound is hand-rolled (a capacity-
+  triggered `Mutex<HashMap<..>>`, following `CrossRegistryResolver`'s existing
+  `client_cache`/`caps_cache` pattern), matching the plan's `bindings/*/Cargo.lock`
+  constraint. `crates/acdp-client/src/revocation.rs` gains only the marker check/record
+  calls at the top and tail of `find_revocations` / `find_registry_attested_revocations`;
+  the fact union itself lives downstream, at `verify_retrieved`'s `effective` merge, so a
+  cached fact survives every induced discovery failure on this call (the security-critical
+  placement issue #257's design calls B1).
+
 - *(client)* bound revocation auto-discovery by request count and cumulative bytes, not
   just wall clock ([#258](https://github.com/agentcontextdistributionprotocol/acdp-rs/issues/258))
 

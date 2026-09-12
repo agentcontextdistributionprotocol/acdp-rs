@@ -135,6 +135,23 @@ fn revocation_surface_reexported() {
 
 #[cfg(feature = "client")]
 #[test]
+fn revocation_cache_reexported() {
+    // Issue #257: `RevocationCache` resolves through the facade (the #248
+    // discovery-surface precedent, extended), and its `RegistryClient`
+    // builder knob compiles — both are the wave's permanent minimized
+    // public shape.
+    use acdp::client::{RegistryClient, RevocationCache};
+
+    let cache = RevocationCache::new();
+    let cache_for_clone = cache.clone();
+    let _f: fn(&RegistryClient, RevocationCache) -> RegistryClient =
+        RegistryClient::with_revocation_cache;
+    drop(cache);
+    drop(cache_for_clone);
+}
+
+#[cfg(feature = "client")]
+#[test]
 fn revocation_lineage_walk_reexported() {
     // `acdp::client::find_revocations_in_lineage` resolves through the
     // whole-crate umbrella re-export (`src/lib.rs:107-108`) with no

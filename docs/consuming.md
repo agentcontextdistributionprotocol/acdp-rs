@@ -268,8 +268,88 @@ Two honesty caveats:
   exemption: its slot is reserved *before* the request is issued, so a
   503, a parse failure, or a `PayloadTooLarge` still consumes it.
 
-There is still no cache in this version: every call re-discovers from
-scratch, budgeted or not.
+Without a `RevocationCache` attached, every call still re-discovers from
+scratch, budgeted or not — see the next section for the opt-in cache.
+
+### Caching discovered revocations (issue #257)
+
+`RegistryClient::with_revocation_cache` attaches a `RevocationCache` —
+`RevocationCache::new()`, cheap to `Clone` (an `Arc` handle) — to a client.
+Reuse the returned client across many `VerifiedContext::fetch*` calls
+against the same producer(s) to amortize discovery.
+
+**The cache is two objects, and the difference matters.** Read this before
+reaching for the `freshness` knob:
+
+- **Facts** — verified `KeyRevocation`s discovery finds. RFC-ACDP-0014
+  §7:114 licenses caching these *indefinitely* ("the statement is
+  permanent"), and they are **always** unioned into classification —
+  never used to replace or subset a discovery result, and **never gated
+  behind `freshness`**. A revocation is monotone (more revocations ⇒ an
+  earlier effective compromise boundary ⇒ strictly more fail-closed
+  verdicts), so seeding from cached facts can only *tighten* a verdict,
+  never loosen one. This is what makes the fact store an **anti-rollback
+  security control**, not a performance feature: a registry that serves a
+  revocation on one call and hides it on the next (or simply goes offline)
+  cannot make an already-warmed client forget it.
+- **Freshness markers** — "vantage V completed a full, untruncated
+  discovery for this producer/trust-class at time T." This is a cached
+  *absence*, which §7:114 does **not** license and which §8 warns about
+  directly ("a malicious registry can hide a revocation … absence of
+  search results is not evidence of absence"). A marker is bounded by
+  `RevocationDiscovery::freshness` (a `Duration`), per vantage
+  (`RegistryClient::authority()`), per trust class, and minted **only**
+  when discovery completes fully and successfully — a transport error, a
+  `SearchTruncated`, a budget exhaustion, or a `total_timeout` trip never
+  mints one, so a transient blip can never turn into a silent
+  window-long downgrade.
+
+**`freshness` defaults to `Duration::ZERO` (off) from both
+`producer_signed_only()` and `all_trust_classes()`.** Attaching a cache at
+the default changes nothing observable except anti-rollback — **the
+default cache saves zero requests.** Set `freshness` above zero (a
+recommended ceiling: 3600 s, matching `WebResolver`'s own DID-document
+cache TTL cap) to additionally let a fresh marker skip a repeat lookup
+entirely:
+
+```rust,no_run
+# #[cfg(feature = "client")]
+# fn build_cached_client(client: &acdp::client::RegistryClient) -> acdp::client::RegistryClient {
+use acdp::client::RevocationCache;
+
+let cache = RevocationCache::new();
+client.with_revocation_cache(cache)
+# }
+```
+
+```rust,no_run
+# #[cfg(feature = "client")]
+# fn build_discovery_with_freshness() -> acdp::client::RevocationDiscovery {
+use acdp::client::RevocationDiscovery;
+use std::time::Duration;
+
+let mut discovery = RevocationDiscovery::producer_signed_only();
+discovery.freshness = Duration::from_secs(300); // opt in to skipping repeat lookups
+# discovery
+# }
+```
+
+A caller sharing one cache across producers or across a whole
+`CrossRegistryResolver` walk shares that cache's exposure too: a
+**registry-attested** fact is tagged by its own `trust_class` and read
+back filtered to the classes the CURRENT call's discovery configuration
+opted into (`producer_signed_only()` never applies a cached
+registry-attested fact, even one warmed by an earlier `all_trust_classes()`
+call against the same producer) — but a **producer-signed** fact, once
+verified, is unconditionally self-contained (RFC-ACDP-0014 §5) and applies
+regardless of which registry served it.
+
+Facts are deduplicated on insert and capped per producer; once the cap is
+reached an entry stops accepting new facts and drops its markers,
+degrading to plain pass-through rather than false completeness. The cache
+itself is capacity-bounded (oldest-is-not-tracked; a plain
+capacity-triggered eviction, since losing an entry can only cost a future
+re-discovery, never safety).
 
 **Where discovery is, and is not, reachable.** All five
 policy-taking entry points — `fetch_with_policy`,

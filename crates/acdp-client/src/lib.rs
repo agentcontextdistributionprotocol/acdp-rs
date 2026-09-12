@@ -12,6 +12,7 @@ pub mod log;
 pub mod receipt;
 pub mod registry;
 pub mod revocation;
+pub mod revocation_cache;
 pub mod verified;
 pub mod witness;
 
@@ -26,6 +27,7 @@ pub use revocation::{
     classify_under_revocation, find_registry_attested_revocations, find_revocations,
     find_revocations_in_lineage, verify_revocation_body,
 };
+pub use revocation_cache::RevocationCache;
 pub use verified::{
     DiscoveryFailurePolicy, DiscoveryOutcome, HistoricalKeyPolicy, KeyAuthorization,
     LineageHeadPolicy, ReceiptPolicy, RevocationDiscovery, RevocationPolicy, VerificationPolicy,

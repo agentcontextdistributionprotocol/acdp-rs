@@ -20,6 +20,8 @@ use acdp_types::{
 use chrono::{DateTime, Utc};
 use reqwest::{redirect, Client};
 
+use crate::revocation_cache::RevocationCache;
+
 /// HTTP client for a single ACDP registry.
 ///
 /// `reqwest::Client` clones cheaply (it's an `Arc` internally), so this
@@ -33,11 +35,28 @@ use reqwest::{redirect, Client};
 /// depends on: `verify_retrieved` attaches one `DiscoveryBudget` to a
 /// single client clone and hands that SAME clone to both trust-class
 /// lookups.
+///
+/// `revocation_cache` (issue #257) is the same shape again: an
+/// `Option<RevocationCache>`, itself an `Arc` handle, so cloning a client
+/// that carries a cache shares the underlying store rather than resetting
+/// it. Unlike `budget`, it is caller-injectable via
+/// [`Self::with_revocation_cache`] on ANY client, not only the
+/// discovery-scoped clone `verify_retrieved` builds internally — a caller
+/// verifying many contexts against the same producer attaches one cache up
+/// front and every subsequent discovery benefits. `revocation_freshness`
+/// travels alongside it: `verify_retrieved` overrides it per call from
+/// `RevocationDiscovery::freshness` (crate-private
+/// `with_revocation_freshness`, crate-private), while a cache attached directly
+/// via `with_revocation_cache` defaults to `Duration::ZERO` — pure seeding,
+/// no marker ever suppresses a lookup, until the caller explicitly opts in
+/// through a discovery configuration's `freshness` field.
 #[derive(Clone)]
 pub struct RegistryClient {
     base: String,
     http: Client,
     budget: Option<DiscoveryBudget>,
+    revocation_cache: Option<RevocationCache>,
+    revocation_freshness: Duration,
 }
 
 /// Combined request-count and cumulative-byte budget for RFC-ACDP-0014
@@ -185,6 +204,8 @@ impl RegistryClient {
             base: self.base.clone(),
             http: self.http.clone(),
             budget: Some(budget),
+            revocation_cache: self.revocation_cache.clone(),
+            revocation_freshness: self.revocation_freshness,
         }
     }
 
@@ -204,6 +225,55 @@ impl RegistryClient {
         if let Some(budget) = &self.budget {
             budget.record_bytes(n);
         }
+    }
+
+    /// Return a clone of this client with `cache` attached (issue #257),
+    /// replacing any cache the original carried, and resetting
+    /// `revocation_freshness` to `Duration::ZERO` — pure seeding by
+    /// default, following [`crate::verified::RevocationDiscovery`]'s own
+    /// zero default. Attach a cache once and reuse the returned client
+    /// across many `VerifiedContext::fetch*` calls against the same
+    /// producer(s) to amortize RFC-ACDP-0014 §8 discovery: facts persist
+    /// (indefinitely, per §7:114) across calls regardless of `freshness`;
+    /// setting a discovery configuration's `freshness` above zero
+    /// additionally lets a fresh marker skip a repeat lookup entirely — see
+    /// `crate::revocation_cache` for the two-object model.
+    pub fn with_revocation_cache(&self, cache: RevocationCache) -> Self {
+        Self {
+            base: self.base.clone(),
+            http: self.http.clone(),
+            budget: self.budget.clone(),
+            revocation_cache: Some(cache),
+            revocation_freshness: Duration::ZERO,
+        }
+    }
+
+    /// Return a clone of this client with `freshness` overriding whatever
+    /// `revocation_freshness` it carried, leaving `revocation_cache`
+    /// (attached or not) unchanged. `verify_retrieved` calls this on the
+    /// same discovery-scoped clone it already built via
+    /// [`Self::with_discovery_budget`], threading through
+    /// `RevocationDiscovery::freshness` — never a caller-facing knob on its
+    /// own, since freshness is a per-discovery-call policy, not a
+    /// per-client one.
+    pub(crate) fn with_revocation_freshness(&self, freshness: Duration) -> Self {
+        Self {
+            base: self.base.clone(),
+            http: self.http.clone(),
+            budget: self.budget.clone(),
+            revocation_cache: self.revocation_cache.clone(),
+            revocation_freshness: freshness,
+        }
+    }
+
+    /// This client's attached revocation cache and its current freshness
+    /// setting, if a cache is attached. `crate::revocation`'s two discovery
+    /// functions read this — never `&VerificationPolicy` — to check/mint
+    /// freshness markers and to record newly-discovered facts.
+    pub(crate) fn revocation_cache(&self) -> Option<(&RevocationCache, Duration)> {
+        self.revocation_cache
+            .as_ref()
+            .map(|cache| (cache, self.revocation_freshness))
     }
 
     /// Connect to a registry at `base_url` (e.g. `https://registry.example.com`).
@@ -725,6 +795,8 @@ impl RegistryClientBuilder {
             base,
             http,
             budget: None,
+            revocation_cache: None,
+            revocation_freshness: Duration::ZERO,
         })
     }
 
@@ -768,6 +840,8 @@ impl RegistryClientBuilder {
             base,
             http,
             budget: None,
+            revocation_cache: None,
+            revocation_freshness: Duration::ZERO,
         })
     }
 

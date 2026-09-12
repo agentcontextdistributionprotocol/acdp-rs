@@ -6711,3 +6711,222 @@ fn cache_ac11_revocation_discovery_still_copy_with_freshness_field() {
     let _copy2 = discovery;
     assert_eq!(discovery.freshness, std::time::Duration::ZERO);
 }
+
+// ── Phase-2 verification-pass gap closures (fresh-Opus review of
+// #257/#258/#260, BLOCKER-1 / MATERIAL-2 / MATERIAL-3) ──────────────────────
+//
+// BLOCKER-1: the cache's stored facts now carry the vantage that minted
+// them. A producer-signed fact is self-contained (RFC-ACDP-0014 §8) and
+// crosses vantages (already covered by `cache_ac1`, above). A
+// registry-attested fact is one specific registry's claim (§6: "apply it
+// ... for contexts served by or receipted by that same registry") and must
+// NOT apply at a different vantage — `cache_blocker1_*` below covers that
+// direction, which was previously untested and unenforced.
+//
+// MATERIAL-2: no existing test recorded a non-empty fact set twice for the
+// same `agent_id` via two INDEPENDENT, real discoveries — the unit test
+// `record_success_dedups_identical_facts` only clones one in-memory value.
+// `cache_material2_*` below warms a cache via a live harness and re-verifies
+// several times at `freshness: ZERO` (so every call genuinely re-discovers),
+// asserting the fact count never grows past 1.
+//
+// MATERIAL-3: `discover: None` previously seeded nothing at all, even with a
+// cache attached — contradicting the rustdoc/CHANGELOG claim that attaching
+// a cache "unconditionally" seeds facts. `cache_material3_*` below proves
+// the fix: a `discover: None` call still seeds the cached producer-signed
+// fact and issues zero live discovery requests.
+
+/// BLOCKER-1: a registry-attested revocation minted (cached) while talking
+/// to vantage A must NOT apply when the SAME cache is read while talking to
+/// a DIFFERENT vantage B — even under `all_trust_classes()`.
+///
+/// Two `RegistryClient`s point at the SAME physical harness
+/// (`RegistryClient::authority()` reads the client's own base URL, not the
+/// pinned socket — see `cache_ac8`, which establishes this exact trick).
+/// `client_a`'s vantage ("localhost") matches `REGISTRY_DID`'s own
+/// authority, so a live discovery genuinely finds and applies the
+/// registry-attested revocation there. `client_b`'s vantage
+/// ("localhost:<port>") does NOT match `REGISTRY_DID`'s authority, so
+/// `client_b`'s OWN live discovery legitimately finds nothing (RFC-ACDP-0014
+/// §6 step 2 / the RFC-ACDP-0011 §7 house binding rejects the mismatch) —
+/// any failure at `client_b` can therefore only come from an incorrectly
+/// unfiltered seeded fact, isolating exactly the bug this test targets.
+///
+/// `receipts: ReceiptPolicy::Ignore` sidesteps the UNRELATED failure mode
+/// `cache_ac8` already documented: `discovery_rig`'s minted receipt cross-
+/// checks its `registry_did` against `client.authority()`, which would
+/// itself fail at vantage B purely because of the differing port, for a
+/// reason that has nothing to do with this test.
+#[tokio::test]
+async fn cache_blocker1_registry_attested_fact_does_not_cross_vantage() {
+    let seed = 0xF1u8;
+    let rig = discovery_rig(seed).await;
+    let cache = RevocationCache::new();
+    let client_a = rig.client.clone().with_revocation_cache(cache.clone());
+
+    // A genuine registry-attested revocation of the target's key, published
+    // under the registry's own identity — mirrors `cache_ac7b`.
+    let registry_signer_key = SigningKey::from_bytes(&[seed; 32]);
+    let registry = Producer::new(
+        registry_signer_key,
+        AgentDid::new(REGISTRY_DID),
+        format!("{REGISTRY_DID}#receipt-key-1"),
+    );
+    let req = registry
+        .publish_request()
+        .acdp_version("0.3.0")
+        .title("registry-attested revocation (blocker-1)")
+        .context_type(ContextType::KeyRevocation)
+        .visibility(Visibility::Public)
+        .metadata(json!({
+            "revoked_key_fingerprint": rig.producer_fp,
+            "compromised_since": "2026-01-01T00:00:00.000Z",
+            "revoked_key_controller": rig.producer_did,
+        }))
+        .build()
+        .expect("build");
+    rig.h
+        .server
+        .publish_verified(&req, None, &rig.h.resolver)
+        .await
+        .expect("registry-attested revocation publish");
+
+    let all = RevocationDiscovery::all_trust_classes();
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(all),
+        receipts: ReceiptPolicy::Ignore,
+        ..Default::default()
+    };
+
+    let err =
+        VerifiedContext::fetch_with_policy(&client_a, &rig.h.resolver, &rig.target_ctx_id, &policy)
+            .await
+            .expect_err(
+                "vantage A: live discovery must find and apply the registry-attested revocation, \
+         warming the cache with origin = A",
+            );
+    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+
+    let alt_base = format!("https://localhost:{}", rig.h.tls.addr.port());
+    let client_b =
+        RegistryClient::with_test_endpoint(&alt_base, rig.h.tls.addr, &rig.h.tls.root_cert_pem)
+            .expect("alt-authority client")
+            .with_revocation_cache(cache);
+    assert_ne!(
+        client_a.authority(),
+        client_b.authority(),
+        "sanity: the two clients must report different vantages"
+    );
+
+    let verified =
+        VerifiedContext::fetch_with_policy(&client_b, &rig.h.resolver, &rig.target_ctx_id, &policy)
+            .await
+            .expect(
+                "vantage B: the registry-attested fact minted at vantage A must NOT apply here — \
+         B's own live discovery legitimately finds nothing (registry-binding mismatch), and \
+         the cached fact must be filtered out by origin",
+            );
+    assert_eq!(verified.key_status(), KeyAuthorization::CurrentlyAuthorized);
+}
+
+/// MATERIAL-2: dedup must hold across INDEPENDENT, real discoveries against
+/// a live harness, not merely across clones of one in-memory value (the
+/// gap the unit test `record_success_dedups_identical_facts` leaves open).
+/// With `freshness: Duration::ZERO` (the default), every one of the N
+/// verifies below genuinely re-runs discovery against the harness — the
+/// entry's fact count must never grow past 1.
+#[tokio::test]
+async fn cache_material2_dedup_holds_across_independent_real_discoveries() {
+    let id = cache_identity(0xF2, "cache-material2");
+    let cache = RevocationCache::new();
+
+    let h = LineageServerHarness::builder(lifecycle_caps())
+        .with_producer_did_document(id.path, id.did_doc.clone())
+        .build()
+        .await;
+    let boundary = at("2026-05-01T00:00:00.000Z");
+    h.seed_revocations(&id.revoker, &id.target_fp, &[boundary])
+        .await;
+    let client = h.client().with_revocation_cache(cache.clone());
+    let discovery = RevocationDiscovery::producer_signed_only(); // freshness: ZERO
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+    let t = publish_plain_target(&h, &id).await;
+
+    for i in 0..6 {
+        let err = VerifiedContext::fetch_with_policy(&client, &h.resolver, &t, &policy)
+            .await
+            .expect_err(&format!("call {i}: R must still be found and fail closed"));
+        assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+    }
+    assert!(
+        h.hits("search") > 6,
+        "sanity: each of the 6 calls above must have genuinely re-run discovery \
+         (freshness: ZERO never suppresses a lookup)"
+    );
+    assert_eq!(
+        cache.fact_count(id.producer_did.as_str()),
+        1,
+        "dedup must hold across independently-run discoveries against a live harness, not \
+         merely across clones of one in-memory value — the entry must not grow past 1 fact \
+         across 6 separate re-discoveries of the same revocation"
+    );
+}
+
+/// MATERIAL-3: `discover: None` must still seed a cached producer-signed
+/// fact — attaching a `RevocationCache` is itself the opt-in for
+/// anti-rollback, independent of whether `discover` is configured on any
+/// given call. Warm the cache with discovery on, then re-verify the SAME
+/// context with `discover: None` and confirm it still fails closed, with
+/// ZERO new discovery requests (the fact must come purely from the cache,
+/// not from a live re-discovery).
+#[tokio::test]
+async fn cache_material3_seeds_producer_signed_fact_even_with_discover_none() {
+    let id = cache_identity(0xF3, "cache-material3");
+    let cache = RevocationCache::new();
+
+    let h = LineageServerHarness::builder(lifecycle_caps())
+        .with_producer_did_document(id.path, id.did_doc.clone())
+        .build()
+        .await;
+    let boundary = at("2026-05-01T00:00:00.000Z");
+    h.seed_revocations(&id.revoker, &id.target_fp, &[boundary])
+        .await;
+    let client = h.client().with_revocation_cache(cache);
+    let discovery = RevocationDiscovery::producer_signed_only();
+    let policy_discover = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+    let t = publish_plain_target(&h, &id).await;
+
+    let err = VerifiedContext::fetch_with_policy(&client, &h.resolver, &t, &policy_discover)
+        .await
+        .expect_err("warm-up: discovery must find R and fail closed");
+    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+
+    let searches_before = h.hits("search");
+    let policy_no_discover = VerificationPolicy {
+        revocations: RevocationPolicy::new(Vec::new()), // discover: None
+        ..Default::default()
+    };
+    let err2 = VerifiedContext::fetch_with_policy(&client, &h.resolver, &t, &policy_no_discover)
+        .await
+        .expect_err(
+            "discover: None must still seed the cached producer-signed fact and fail closed \
+             (MATERIAL-3) — this is what extends anti-rollback to fetch/fetch_current, which \
+             can never set `discover` at all",
+        );
+    assert!(
+        matches!(err2, AcdpError::KeyNotAuthorized(_)),
+        "got {err2:?}"
+    );
+    assert_eq!(
+        h.hits("search"),
+        searches_before,
+        "discover: None must issue ZERO live discovery requests — the fact must come purely \
+         from the seeded cache, never from a fresh search"
+    );
+}

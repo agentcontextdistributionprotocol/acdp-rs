@@ -14,13 +14,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   A new `RevocationCache` (`RegistryClient::with_revocation_cache`) is two objects sharing
   one lock, not one. **Facts** — verified `KeyRevocation`s discovery finds — are always
-  unioned into classification, indefinitely and unconditionally, per §7:114's "cache
+  unioned into classification, indefinitely, per §7:114's "cache
   verified revocations indefinitely": a revocation is monotone, so seeding from cached
   facts can only tighten a verdict, never loosen one, making the fact store an
   anti-rollback control rather than a performance feature — a registry that serves a
   revocation once and later hides it (or goes offline) cannot make an already-warmed
-  client forget it. **Freshness markers** — "vantage V completed a full, untruncated
-  discovery for this producer/trust-class at time T" — are a cached *absence*, which
+  client forget it. This seeding happens even when a call sets `discover: None` (attaching
+  a cache is itself the opt-in, independent of whether that call runs live discovery),
+  which is what extends the protection to `VerifiedContext::fetch`/`fetch_current` — the
+  `discover: None` path seeds producer-signed facts only, never registry-attested ones.
+  A **producer-signed** fact is self-contained (§8) and applies regardless of which
+  registry served it; a **registry-attested** one is additionally tagged with the vantage
+  that minted it and applies only when read back through a client talking to that SAME
+  vantage (§6 scopes it to "contexts served by or receipted by that same registry") — so
+  sharing one cache across clients for two different registries never lets registry A's
+  attestation apply to a context served by registry B. **Freshness markers** — "vantage V
+  completed a full, untruncated discovery for this producer/trust-class at time T" — are a
+  cached *absence*, which
   §7:114 does not license and §8 explicitly warns about; they are bounded by a new
   `RevocationDiscovery::freshness: Duration` field (`Copy`-preserving, additive,
   defaulting to `Duration::ZERO` — off — from both named constructors), per vantage, per

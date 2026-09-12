@@ -124,9 +124,10 @@ impl Default for VerificationPolicy {
 /// is permanent, cache accordingly). [`Self::discover`] (RFC-ACDP-0014
 /// §8) is the opt-in complement: when set, `verify_retrieved` itself
 /// runs those same two lookups and unions their result with `known`
-/// (see [`RevocationDiscovery`]). When `known` is empty AND `discover`
-/// is `None`, the phase is inert and verification behaves exactly as
-/// before RFC-ACDP-0014.
+/// (see [`RevocationDiscovery`]). When `known` is empty, `discover` is
+/// `None`, AND no [`crate::RevocationCache`] is attached to the client,
+/// the phase is inert and verification behaves exactly as before
+/// RFC-ACDP-0014.
 ///
 /// Issue #257 gives `discover`'s own caching a first-class home:
 /// [`crate::RevocationCache`], attached to the [`crate::RegistryClient`]
@@ -135,8 +136,19 @@ impl Default for VerificationPolicy {
 /// "own indefinite cache" a caller would otherwise have to hand-roll
 /// around `known` — verified revocations discovered on one call are
 /// unioned into every later call against the same client, unconditionally
-/// and indefinitely, independent of [`RevocationDiscovery::freshness`].
-/// See that field's doc and `crate::revocation_cache` for the full model,
+/// and indefinitely, independent of [`RevocationDiscovery::freshness`], and
+/// **regardless of whether that later call itself sets `discover`** —
+/// attaching a cache is itself the opt-in (MATERIAL-3, fresh-Opus review
+/// of Phase 2): a call made with `discover: None` still seeds
+/// producer-signed facts from the cache (never registry-attested ones —
+/// see below), which is what extends this anti-rollback protection to
+/// [`VerifiedContext::fetch`]/[`VerifiedContext::fetch_current`] (LIM-2),
+/// the two entry points that can never set `discover` at all. A
+/// registry-attested fact, by contrast, is additionally scoped to the
+/// vantage that minted it (BLOCKER-1, RFC-ACDP-0014 §6): reading it back
+/// through a client talking to a different authority never applies it,
+/// even under [`RevocationDiscovery::include_registry_attested`]. See
+/// that field's doc and `crate::revocation_cache` for the full model,
 /// including the separate, opt-in, TTL-bounded marker that can additionally
 /// skip a repeat lookup.
 ///
@@ -482,6 +494,13 @@ pub struct RevocationDiscovery {
     /// governs only whether a lookup that would otherwise re-confirm "no
     /// NEW revocation" is skipped. See `crate::revocation_cache` for the
     /// full two-object model.
+    ///
+    /// That "unconditionally" is exact for a producer-signed fact (§8:
+    /// self-contained, applies at any vantage) but is scoped for a
+    /// registry-attested one (§6): the cache additionally filters those to
+    /// the vantage that minted them, so attaching one cache to clients for
+    /// two different registries does not let registry A's attestation
+    /// apply to a context served by registry B.
     ///
     /// A recommended ceiling, not enforced: RFC-ACDP-0006 §4.2 caps
     /// `WebResolver`'s own DID-document cache TTL at 3600 s, and that is a
@@ -1128,13 +1147,47 @@ impl VerifiedContext {
         // is no code path below that can zero it out the way `discovered`
         // legitimately is on failure.
         let (discovered, revocation_discovery, seeded_facts) = match &policy.revocations.discover {
-            None => (Vec::new(), None, Vec::new()),
+            // MATERIAL-3 (fresh-Opus review of Phase 2): attaching a
+            // `RevocationCache` IS the opt-in for anti-rollback, independent
+            // of whether `discover` itself is configured — seed producer-
+            // signed facts here too, not only in the `Some` arm below. This
+            // is what extends anti-rollback protection to
+            // `VerifiedContext::fetch`/`fetch_current` (LIM-2), which
+            // hardcode `VerificationPolicy::default()` and so can NEVER
+            // set `discover` at all — without this, those two entry points
+            // would get zero benefit from an attached cache. Seeding is
+            // monotone (facts can only tighten a verdict, never loosen
+            // one), so doing it unconditionally is safe. With `discover:
+            // None` there is no `include_registry_attested` to consult, so
+            // seed producer-signed facts ONLY: registry-attested requires
+            // the explicit opt-in `RevocationDiscovery::include_registry_attested`
+            // carries (D6), and BLOCKER-1's origin filter would need this
+            // call's serving vantage regardless, so staying conservative
+            // here costs nothing.
+            None => {
+                let agent_id = &ctx.body.agent_id;
+                let vantage = client.authority();
+                let seeded_facts = client
+                    .revocation_cache()
+                    .map(|(cache, _freshness)| {
+                        cache.facts_for(agent_id.as_str(), false, vantage.as_deref())
+                    })
+                    .unwrap_or_default();
+                (Vec::new(), None, seeded_facts)
+            }
             Some(discovery) => {
                 let agent_id = &ctx.body.agent_id;
                 let include_attested = discovery.include_registry_attested;
+                // BLOCKER-1: pass this call's own vantage through so
+                // `facts_for` can filter registry-attested facts to
+                // `origin == current vantage` (RFC-ACDP-0014 §6) —
+                // producer-signed facts are unaffected either way (§8).
+                let vantage = client.authority();
                 let seeded_facts = client
                     .revocation_cache()
-                    .map(|(cache, _freshness)| cache.facts_for(agent_id.as_str(), include_attested))
+                    .map(|(cache, _freshness)| {
+                        cache.facts_for(agent_id.as_str(), include_attested, vantage.as_deref())
+                    })
                     .unwrap_or_default();
                 // Issue #258 (D-B): a combined request/byte budget is
                 // enforced inside `RegistryClient`'s request methods, on

@@ -291,7 +291,12 @@ reaching for the `freshness` knob:
   never loosen one. This is what makes the fact store an **anti-rollback
   security control**, not a performance feature: a registry that serves a
   revocation on one call and hides it on the next (or simply goes offline)
-  cannot make an already-warmed client forget it.
+  cannot make an already-warmed client forget it. Attaching a cache is
+  itself the opt-in for this protection — a call made with
+  `RevocationPolicy::discover: None` still seeds cached **producer-signed**
+  facts (never registry-attested ones — see below), which is what extends
+  anti-rollback to `VerifiedContext::fetch`/`fetch_current`, the two entry
+  points that can never set `discover` at all.
 - **Freshness markers** — "vantage V completed a full, untruncated
   discovery for this producer/trust-class at time T." This is a cached
   *absence*, which §7:114 does **not** license and which §8 warns about
@@ -302,7 +307,14 @@ reaching for the `freshness` knob:
   when discovery completes fully and successfully — a transport error, a
   `SearchTruncated`, a budget exhaustion, or a `total_timeout` trip never
   mints one, so a transient blip can never turn into a silent
-  window-long downgrade.
+  window-long downgrade. A candidate that fails RFC-ACDP-0014 §5
+  verification (bad signature, wrong scope, self-signed) is simply
+  dropped from the result and does **not** prevent a marker from being
+  minted — "completes fully and successfully" describes the *lookup*
+  reaching its natural end within its page/lineage/budget caps, not every
+  candidate it examined turning out to be valid. This grants no new
+  power to a hostile vantage: the marker is per-vantage already, and that
+  vantage already controls what it serves.
 
 **`freshness` defaults to `Duration::ZERO` (off) from both
 `producer_signed_only()` and `all_trust_classes()`.** Attaching a cache at
@@ -335,14 +347,30 @@ discovery.freshness = Duration::from_secs(300); // opt in to skipping repeat loo
 ```
 
 A caller sharing one cache across producers or across a whole
-`CrossRegistryResolver` walk shares that cache's exposure too: a
-**registry-attested** fact is tagged by its own `trust_class` and read
-back filtered to the classes the CURRENT call's discovery configuration
-opted into (`producer_signed_only()` never applies a cached
-registry-attested fact, even one warmed by an earlier `all_trust_classes()`
-call against the same producer) — but a **producer-signed** fact, once
-verified, is unconditionally self-contained (RFC-ACDP-0014 §5) and applies
-regardless of which registry served it.
+`CrossRegistryResolver` walk shares that cache's exposure too — but two
+independent filters bound it:
+
+- **Trust class.** A registry-attested fact is read back filtered to the
+  classes the CURRENT call's discovery configuration opted into
+  (`producer_signed_only()` never applies a cached registry-attested
+  fact, even one warmed by an earlier `all_trust_classes()` call against
+  the same producer).
+- **Origin (RFC-ACDP-0014 §6).** A registry-attested fact is *additionally*
+  tagged with the vantage (`RegistryClient::authority()`) that minted it
+  and is applied only when reading through a client talking to that SAME
+  authority — never merely because its `trust_class` matches. §6 licenses
+  a registry-attested claim only "for contexts served by or receipted by
+  that same registry"; storing `trust_class` alone answers a different
+  question ("did this caller opt into the class") than "was this claim
+  made by the registry now serving this context," so both are tracked. A
+  caller sharing one cache across clients for two *different* registries
+  never has registry A's attestation apply to a context served by
+  registry B.
+
+A **producer-signed** fact, once verified, is unconditionally
+self-contained (RFC-ACDP-0014 §5/§8) and applies regardless of which
+registry served it — it is filtered by neither trust class (once opted
+into `known`/discovery at all) nor origin.
 
 Facts are deduplicated on insert and capped per producer; once the cap is
 reached an entry stops accepting new facts and drops its markers,

@@ -585,6 +585,19 @@ pub async fn find_revocations(
     // nothing but `Err`, and if facts rode in this return value they would
     // vanish on exactly the failure an attacker can induce).
     let vantage = client.authority();
+    // N7 (fresh-Opus review of Phase 2): both the marker check and the
+    // fact record below are gated on `Some(vantage)`, so a client whose
+    // base URL has no resolvable host (`authority()` returns `None`)
+    // silently makes caching a no-op for this call — unreachable in
+    // practice (`RegistryClient` is always built from a parsed URL), but
+    // worth signaling rather than leaving unsignalled.
+    #[cfg(feature = "tracing")]
+    if vantage.is_none() && client.revocation_cache().is_some() {
+        tracing::warn!(
+            "find_revocations: a RevocationCache is attached but client.authority() is None \
+             — caching is silently inert for this call"
+        );
+    }
     if let (Some((cache, freshness)), Some(vantage)) =
         (client.revocation_cache(), vantage.as_deref())
     {
@@ -933,6 +946,17 @@ pub async fn find_registry_attested_revocations(
     // downstream in `verify_retrieved`, never folded into this return
     // value).
     let vantage = client.authority();
+    // N7 (fresh-Opus review of Phase 2): see `find_revocations`'s identical
+    // note — both the marker check and the fact record below are gated on
+    // `Some(vantage)`, so a client with no resolvable authority silently
+    // makes caching a no-op for this call.
+    #[cfg(feature = "tracing")]
+    if vantage.is_none() && client.revocation_cache().is_some() {
+        tracing::warn!(
+            "find_registry_attested_revocations: a RevocationCache is attached but \
+             client.authority() is None — caching is silently inert for this call"
+        );
+    }
     if let (Some((cache, freshness)), Some(vantage)) =
         (client.revocation_cache(), vantage.as_deref())
     {

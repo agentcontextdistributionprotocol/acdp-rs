@@ -174,16 +174,26 @@ impl Default for VerificationPolicy {
 /// rather than the call returning `Err` — that method never
 /// short-circuits on a policy-phase failure by design.
 ///
-/// "Uniformly" has two carve-outs, both structural rather than a policy
-/// choice: [`VerifiedContext::fetch`] and
+/// "Uniformly" has one remaining carve-out, structural rather than a
+/// policy choice: [`VerifiedContext::fetch`] and
 /// [`VerifiedContext::fetch_current`] hardcode
 /// [`VerificationPolicy::default`] and so can never carry a non-empty
 /// `known` or a `discover`; callers wanting either use the
-/// `_with_policy` forms instead. And
-/// [`crate::CrossRegistryResolver`] builds its own internal policy with
-/// no injection point, so neither `known` nor `discover` can reach a
-/// cross-registry walk at all. Both are recorded as known limitations
-/// (issue #248 LIM-1/LIM-2) rather than silently true.
+/// `_with_policy` forms instead. This is recorded as a known limitation
+/// (issue #248 LIM-2) rather than silently true. Phase 2's cache still
+/// extends anti-rollback protection to these two entry points — see
+/// [`Self::discover`]'s doc — but they can never *configure* discovery
+/// themselves.
+///
+/// **Issue #260 closed the sibling limitation, LIM-1.**
+/// [`crate::CrossRegistryResolver::with_revocation_policy`] now injects a
+/// [`RevocationPolicy`] into every node a cross-registry walk verifies,
+/// and [`crate::CrossRegistryResolver::with_revocation_cache`] shares one
+/// [`crate::RevocationCache`] across the walk (walk-scoped by default —
+/// see that method's doc). The resolver derives `receipts` itself, per
+/// node, from that node's advertised capabilities, so it takes a
+/// [`RevocationPolicy`], never a caller-supplied [`VerificationPolicy`] —
+/// see `CrossRegistryResolver::with_revocation_policy`'s doc for why.
 ///
 /// Only put revocations here that you have verified (strict body
 /// pipeline + the §5 not-self-signed rule) and, per §6, that you have

@@ -383,16 +383,73 @@ re-discovery, never safety).
 policy-taking entry points — `fetch_with_policy`,
 `fetch_current_with_policy`, `fetch_report`, `fetch_report_diagnose`,
 and `fetch_report_with_fetcher` — honor `discover` through the shared
-verification pipeline. Two paths structurally cannot carry it:
+verification pipeline. `CrossRegistryResolver` (issue #260) now does
+too: `CrossRegistryResolver::with_revocation_policy` injects a
+`RevocationPolicy` into every node the resolver verifies, and
+`CrossRegistryResolver::with_revocation_cache` shares one
+`RevocationCache` across the walk. One path still structurally cannot
+carry it:
 
 - `fetch` and `fetch_current` hardcode `VerificationPolicy::default()`
   and take no policy argument at all; use the `_with_policy` forms if
-  you need discovery.
-- `CrossRegistryResolver` has no policy injection point (it builds its
-  own internal policy for the lineage walk), so cross-registry
-  `derived_from` resolution never discovers revocations. This is a
-  known limitation, not an oversight — see the issue #248 plan's
-  LIM-1/LIM-2.
+  you need discovery. This is a known limitation, not an oversight —
+  see the issue #248 plan's LIM-2. (LIM-1, the `CrossRegistryResolver`
+  gap, was closed by issue #260.)
+
+**`CrossRegistryResolver` and revocation discovery (issue #260).**
+`with_revocation_policy` takes a `RevocationPolicy`, never a full
+`VerificationPolicy` — the resolver derives `receipts` itself, per
+node, from that node's own advertised capabilities (`Require` iff the
+upstream claims `acdp-registry-receipts`), a capability-dependent
+escalation a caller cannot express statically for a walk whose
+authorities are not known in advance. `known` still travels with the
+policy, so a caller can enforce a pre-discovered revocation set across
+a whole walk without enabling live discovery at all.
+
+```rust,no_run
+# #[cfg(feature = "client")]
+# fn build_resolver() -> acdp::client::CrossRegistryResolver {
+use acdp::client::{CrossRegistryResolver, RevocationDiscovery, RevocationPolicy};
+
+CrossRegistryResolver::new().with_revocation_policy(
+    RevocationPolicy::new(vec![]).with_discovery(RevocationDiscovery::producer_signed_only()),
+)
+# }
+```
+
+**The cache is walk-scoped by default.** Unless
+`with_revocation_cache` is called, `CrossRegistryResolver` creates a
+FRESH `RevocationCache` for each `walk_derived_from` call and shares it
+across every node that walk visits — so discovery for a given
+`(authority, trust class)` runs at most once per walk, not once per
+node, regardless of `max_nodes`. No cached absence outlives the call, so
+suppression is safe without a long-lived cache to manage — a caller who
+wants discovery to stay warm ACROSS separate walks opts in explicitly
+via `with_revocation_cache`. A nonzero `RevocationDiscovery::freshness`
+is still required for a marker to ever suppress a repeat lookup — merely
+sharing a cache object does not, on its own, skip anything (the same
+rule as the direct, non-resolver path above).
+
+Two caveats:
+
+- **The 30s / 30s default collision.** `RevocationDiscovery::total_timeout`
+  and `ResolverOptions::total_timeout` both default to 30s, but they
+  nest: a discovery-enabled walk on all defaults can have its entire
+  walk budget consumed by one node's discovery. This fails closed (the
+  walk simply times out), so it is safe, but surprising — set
+  `discovery.total_timeout` well below `ResolverOptions::total_timeout`,
+  or raise the latter, when enabling discovery here. The walk-scoped
+  cache substantially mitigates this by collapsing repeat discoveries.
+- **A bare `resolve()` call, outside `walk_derived_from`, is bounded
+  only by the discovery timeout** — `ResolverOptions::total_timeout`
+  wraps `walk_derived_from`, not `resolve` on its own — and gets the
+  walk-scoped cache's benefit only if `with_revocation_cache` was
+  called explicitly.
+
+`CrossRegistryResolver` does not add its own request/byte budget on top
+of this — issue #258's `RevocationDiscovery::max_requests`/`max_bytes`
+already bound the per-node discovery cost; a duplicate resolver-level
+knob would be redundant.
 
 ### Diagnostics: fetch_report
 
@@ -502,6 +559,14 @@ Use `.with_allowlist([...])` to restrict which authorities the resolver will
 contact, and `.seed_client(authority, client)` to pre-wire a configured client
 (e.g. with a custom CA) for a known authority. Every URL the resolver builds is
 checked against its `SsrfPolicy` — see [Security](security.md).
+
+`.with_revocation_policy(...)` and `.with_revocation_cache(...)` (issue #260)
+let the resolver carry RFC-ACDP-0014 revocation discovery into every node it
+verifies — see "Caching discovered revocations" above for the full model,
+including the walk-scoped cache default and the 30s/30s timeout caveat.
+`seed_client` is fill-if-absent for the cache too: a seeded client with no
+`RevocationCache` of its own is given the resolver's (or the current walk's);
+one that already carries its own keeps it.
 
 ## Publishing from the client
 

@@ -3146,6 +3146,23 @@ impl LineageServerHarnessBuilder {
         self
     }
 
+    /// Host a REGISTRY DID document at `/.well-known/did.json` WITHOUT
+    /// enabling a receipt signer — for issue #260's `CrossRegistryResolver`
+    /// tests, which need `resolve()`'s step 3b (registry DID → DID
+    /// document resolution) to succeed but must NOT have every publish
+    /// carry a registry receipt: a receipt's `registry_did` is minted
+    /// once and cross-checked against the SERVING client's
+    /// `.authority()` (RFC-ACDP-0010's serving-authority binding), which
+    /// a vantage-binding test deliberately varies across calls (see
+    /// `cache_ac8_marker_is_per_vantage`'s own doc for the same
+    /// precedent). [`Self::with_receipt_signer`] is the right choice
+    /// when a test actually wants receipts; this is the right choice
+    /// when it only needs the registry DID document served.
+    fn with_registry_did_document(mut self, doc: serde_json::Value) -> Self {
+        self.registry_did_doc = Some(doc);
+        self
+    }
+
     /// Serve `server.capabilities()` at `/.well-known/acdp.json` —
     /// needed by `find_registry_attested_revocations`, which fetches
     /// capabilities unconditionally before its search loop.
@@ -5924,6 +5941,44 @@ async fn publish_plain_target(h: &LineageServerHarness, id: &CacheIdentity) -> C
     resp.ctx_id
 }
 
+/// Publish an `n`-node `derived_from` CHAIN signed by `id.target` on a real
+/// `LineageServerHarness`: `chain[0]` has no parent, `chain[i]` (`i > 0`) has
+/// `derived_from: [chain[i-1]]`. Returns oldest→newest. Used by the issue
+/// #260 `CrossRegistryResolver` revocation-discovery tests below, which walk
+/// `derived_from` FROM `chain[n-1]` back to `chain[0]` — `n-1` ancestors
+/// actually pass through [`CrossRegistryResolver::resolve`] (the root itself
+/// is excluded per `walk_derived_from`'s doc), each one triggering its own
+/// revocation-discovery attempt under the policy the test's resolver
+/// carries.
+async fn publish_derived_chain(
+    h: &LineageServerHarness,
+    id: &CacheIdentity,
+    n: usize,
+) -> Vec<CtxId> {
+    assert!(n >= 1, "a chain needs at least one node");
+    let mut chain: Vec<CtxId> = Vec::with_capacity(n);
+    for i in 0..n {
+        let mut builder = id
+            .target
+            .publish_request()
+            .acdp_version("0.3.0")
+            .title(format!("resolver chain node {i}"))
+            .context_type(ContextType::Analysis)
+            .visibility(Visibility::Public);
+        if let Some(parent) = chain.last() {
+            builder = builder.derived_from(vec![parent.clone()]);
+        }
+        let req = builder.build().expect("build");
+        let resp = h
+            .server
+            .publish_verified(&req, None, &h.resolver)
+            .await
+            .expect("publish");
+        chain.push(resp.ctx_id);
+    }
+    chain
+}
+
 /// Build a plain, non-revocation `Body` signed by `producer` at an
 /// explicit `ctx_id`/`lineage_id`, without going through any server —
 /// for the hand-built single-route mocks below (mirrors `revocation_body`,
@@ -6928,5 +6983,431 @@ async fn cache_material3_seeds_producer_signed_fact_even_with_discover_none() {
         searches_before,
         "discover: None must issue ZERO live discovery requests — the fact must come purely \
          from the seeded cache, never from a fresh search"
+    );
+}
+
+// ── issue #260 (Phase 3): CrossRegistryResolver revocation-discovery ────────
+//
+// All tests below drive `acdp::client::CrossRegistryResolver` against the
+// same real `LineageServerHarness` used throughout this file (never a
+// hand-built mock), via `publish_derived_chain` (defined above,
+// `publish_plain_target`'s neighbor) for the multi-node `derived_from`
+// chains AC1/AC2/AC6/AC7 need, and `resolver.seed_client` to avoid real DNS
+// resolution — the same trick `fed_006_registry_did_mismatch` /
+// `sec_01_cross_registry_pins_authority_dns` (`tests/tls_conformance.rs`)
+// already use.
+
+/// AC1: **the multiplier does not materialize, on default configuration.**
+/// A walk over `CHAIN_LEN - 1` ancestor nodes from the SAME producer, same
+/// registry, must issue producer-signed discovery searches exactly ONCE
+/// (`2 type_forms x 3 statuses = 6`, matching the pre-#258/#257 constant
+/// this wave's Phase 1 pinned), not once per node — via the resolver's
+/// DEFAULT walk-scoped cache (no `with_revocation_cache` call at all).
+/// "Default configuration" here means the resolver creates its own
+/// walk-scoped cache; the caller's OWN `RevocationDiscovery::freshness`
+/// still has to be nonzero for a marker to ever suppress a repeat lookup —
+/// that half of the model is unchanged from Phase 2 (see AC2, the honest
+/// counterpart, for what happens at `freshness: ZERO`).
+///
+/// This also exercises AC3 ("shared across every client the resolver
+/// builds") and AC4(a) ("a seeded client with no cache participates in the
+/// walk-wide cache"): `h.client()` carries no `RevocationCache` of its own,
+/// and `resolve_inner`'s fill-if-absent logic treats a client already
+/// sitting in `client_cache` (whether it got there via `seed_client` or a
+/// lazy build) identically — there is no separate code path for "lazily
+/// built" the way `seed_client` bypasses only the network-building step,
+/// not the cache-attach step.
+#[tokio::test]
+async fn resolver_ac1_walk_scoped_cache_suppresses_repeat_discovery_by_default() {
+    use acdp::client::CrossRegistryResolver;
+
+    const CHAIN_LEN: usize = 5;
+
+    let id = cache_identity(0xF0, "resolver-ac1");
+    let registry_pub = SigningKey::from_bytes(&[0x11u8; 32]).verifying_key_bytes();
+    let h = LineageServerHarness::builder(lifecycle_caps())
+        .with_registry_did_document(ed25519_did_doc(REGISTRY_DID, "key-1", &registry_pub))
+        .with_well_known_acdp()
+        .with_producer_did_document(id.path, id.did_doc.clone())
+        .build()
+        .await;
+    let chain = publish_derived_chain(&h, &id, CHAIN_LEN).await;
+    let root_body = h
+        .server
+        .retrieve(chain.last().unwrap(), None)
+        .expect("retrieve")
+        .expect("found")
+        .body;
+
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.freshness = std::time::Duration::from_secs(60);
+    let policy = RevocationPolicy::default().with_discovery(discovery);
+
+    let resolver = CrossRegistryResolver::new()
+        .with_did_resolver(
+            WebResolver::with_test_endpoint(&h.tls.root_cert_pem, "localhost", h.tls.addr)
+                .expect("pinned resolver"),
+        )
+        .with_revocation_policy(policy);
+    resolver.seed_client(REGISTRY_AUTHORITY, h.client());
+
+    let before = h.hits("search");
+    let ancestors = resolver
+        .walk_derived_from(&root_body)
+        .await
+        .expect("a discovery-enabled walk over plain (non-revoked) contexts must succeed");
+    assert_eq!(ancestors.len(), CHAIN_LEN - 1);
+    let delta = h.hits("search") - before;
+    assert_eq!(
+        delta,
+        6,
+        "issue #260 AC1: a walk over {} ancestor nodes from the SAME producer/authority \
+         must issue producer-signed discovery exactly ONCE (6 searches), not once per node \
+         (which would be {}) — the default, resolver-created walk-scoped cache is what \
+         collapses this",
+        CHAIN_LEN - 1,
+        6 * (CHAIN_LEN - 1),
+    );
+}
+
+/// AC2: the honest counterpart to AC1. An EXPLICITLY caller-supplied cache
+/// (`with_revocation_cache`, bypassing the resolver's own walk-scoped
+/// default) with `freshness` left at its type default (`Duration::ZERO`)
+/// suppresses NOTHING — discovery still runs once per node. Proves the
+/// cost claim is falsifiable in both directions: merely sharing a cache
+/// object is not what suppresses discovery; a nonzero `freshness` is what
+/// does, exactly as in Phase 2's direct (non-resolver) model.
+#[tokio::test]
+async fn resolver_ac2_explicit_cache_with_zero_freshness_suppresses_nothing() {
+    use acdp::client::CrossRegistryResolver;
+
+    const CHAIN_LEN: usize = 5;
+
+    let id = cache_identity(0xF6, "resolver-ac2");
+    let registry_pub = SigningKey::from_bytes(&[0x11u8; 32]).verifying_key_bytes();
+    let h = LineageServerHarness::builder(lifecycle_caps())
+        .with_registry_did_document(ed25519_did_doc(REGISTRY_DID, "key-1", &registry_pub))
+        .with_well_known_acdp()
+        .with_producer_did_document(id.path, id.did_doc.clone())
+        .build()
+        .await;
+    let chain = publish_derived_chain(&h, &id, CHAIN_LEN).await;
+    let root_body = h
+        .server
+        .retrieve(chain.last().unwrap(), None)
+        .expect("retrieve")
+        .expect("found")
+        .body;
+
+    let discovery = RevocationDiscovery::producer_signed_only();
+    assert_eq!(
+        discovery.freshness,
+        std::time::Duration::ZERO,
+        "sanity: producer_signed_only()'s freshness defaults to ZERO"
+    );
+    let policy = RevocationPolicy::default().with_discovery(discovery);
+
+    let resolver = CrossRegistryResolver::new()
+        .with_did_resolver(
+            WebResolver::with_test_endpoint(&h.tls.root_cert_pem, "localhost", h.tls.addr)
+                .expect("pinned resolver"),
+        )
+        .with_revocation_policy(policy)
+        .with_revocation_cache(RevocationCache::new());
+    resolver.seed_client(REGISTRY_AUTHORITY, h.client());
+
+    let before = h.hits("search");
+    let ancestors = resolver
+        .walk_derived_from(&root_body)
+        .await
+        .expect("a discovery-enabled walk over plain (non-revoked) contexts must succeed");
+    assert_eq!(ancestors.len(), CHAIN_LEN - 1);
+    let delta = h.hits("search") - before;
+    assert_eq!(
+        delta,
+        6 * (CHAIN_LEN - 1),
+        "issue #260 AC2: a caller-supplied cache with freshness ZERO must suppress NOTHING \
+         — discovery runs once per node ({} nodes x 6 searches each)",
+        CHAIN_LEN - 1,
+    );
+}
+
+/// AC4(b): `seed_client` is preserve-if-present, the other half of
+/// fill-if-absent (AC1/AC3/AC4(a) above cover the fill-if-absent half). A
+/// client that already carries its OWN `RevocationCache` (warmed with a
+/// fact BEFORE it is seeded into the resolver) keeps that cache — the
+/// resolver must NOT overwrite it with its own (also explicitly attached,
+/// but empty) cache.
+///
+/// Both the control and the test resolver below carry their OWN,
+/// resolver-level `RevocationCache` (empty) — this is deliberate: it is
+/// what makes the mutation "always overwrite" actually observable. If the
+/// resolver carried no cache of its own at all (`cache: None` in
+/// `resolve_inner`), preserve-vs-overwrite would have nothing to overwrite
+/// WITH, and this test could not fail under that mutation — exactly the
+/// kind of unfalsifiable AC this wave's own review process has twice
+/// caught before (see `plans/PROGRESS.md`'s #248/#257 notes).
+///
+/// Isolated with a positive control: the SAME resolver configuration
+/// (no revocation policy, i.e. `discover: None`, but WITH its own empty
+/// resolver-level cache) seeded with a PLAIN (un-warmed) client succeeds —
+/// proving that the fail-closed result seen with the warmed client below
+/// comes specifically from the preserved fact, not from some other effect.
+#[tokio::test]
+async fn resolver_ac4b_seeded_client_with_its_own_cache_is_preserved() {
+    use acdp::client::CrossRegistryResolver;
+
+    let id = cache_identity(0xF2, "resolver-ac4b");
+    let registry_pub = SigningKey::from_bytes(&[0x11u8; 32]).verifying_key_bytes();
+    let h = LineageServerHarness::builder(lifecycle_caps())
+        .with_registry_did_document(ed25519_did_doc(REGISTRY_DID, "key-1", &registry_pub))
+        .with_well_known_acdp()
+        .with_producer_did_document(id.path, id.did_doc.clone())
+        .build()
+        .await;
+    let boundary = at("2026-05-01T00:00:00.000Z");
+    h.seed_revocations(&id.revoker, &id.target_fp, &[boundary])
+        .await;
+    let t = publish_plain_target(&h, &id).await;
+
+    let make_resolver = || {
+        CrossRegistryResolver::new()
+            .with_did_resolver(
+                WebResolver::with_test_endpoint(&h.tls.root_cert_pem, "localhost", h.tls.addr)
+                    .expect("pinned resolver"),
+            )
+            // The resolver itself carries an explicit, but EMPTY, cache —
+            // No `with_revocation_policy` call: `discover: None`.
+            .with_revocation_cache(RevocationCache::new())
+    };
+
+    // Positive control: a PLAIN seeded client (no cache of its own) under
+    // this same discover:None + resolver-level-empty-cache config
+    // succeeds — `RevocationPolicy::default()` carries no `known` and no
+    // `discover`, so the phase is inert regardless of what the harness has
+    // seeded, and the resolver's own cache is empty either way.
+    let control = make_resolver();
+    control.seed_client(REGISTRY_AUTHORITY, h.client());
+    control
+        .resolve(&t)
+        .await
+        .expect("control: discover:None + an empty cache must be inert and succeed");
+
+    // Warm a SEPARATE client's OWN cache with the fact BEFORE seeding it:
+    // a direct discovery call with `freshness: ZERO` (the default) records
+    // only the FACT, not a marker, isolating "the fact survived seeding"
+    // from "the marker suppressed re-discovery".
+    let pre_cache = RevocationCache::new();
+    let warmed_client = h.client().with_revocation_cache(pre_cache);
+    let discovery = RevocationDiscovery::producer_signed_only();
+    let policy_discover = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+    let warm_err =
+        VerifiedContext::fetch_with_policy(&warmed_client, &h.resolver, &t, &policy_discover)
+            .await
+            .expect_err("warm-up: discovery must find the seeded revocation and fail closed");
+    assert!(
+        matches!(warm_err, AcdpError::KeyNotAuthorized(_)),
+        "got {warm_err:?}"
+    );
+
+    // Seed the ALREADY-WARM client into a FRESH discover:None resolver that
+    // ALSO carries its own (different, empty) cache. If preserve-if-present
+    // holds, the warmed client's own fact-bearing cache wins and the call
+    // still fails closed; if the resolver instead overwrote it with its
+    // own empty one (the mutation this test guards against), the fact
+    // would be lost and the call would wrongly succeed.
+    let test_resolver = make_resolver();
+    test_resolver.seed_client(REGISTRY_AUTHORITY, warmed_client);
+    let err = test_resolver.resolve(&t).await.expect_err(
+        "issue #260 AC4(b): a seeded client's OWN pre-attached cache must be preserved, not \
+         overwritten by the resolver's own (empty) cache — its already-recorded fact must \
+         still fail closed",
+    );
+    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+}
+
+/// AC5: **vantage binding is pinned, not merely structural.** A freshness
+/// marker minted while resolving via one `RegistryClient` vantage
+/// (`.authority()`) must not suppress discovery when the SAME producer and
+/// SAME context are later resolved via a DIFFERENT vantage — even when both
+/// share one `RevocationCache` (`with_revocation_cache`). `client.authority()`
+/// (read by `crate::revocation`'s marker/fact bookkeeping, RFC-ACDP-0014 §6
+/// scoping) is deliberately NOT the same string as the resolver-level
+/// authority key used for `client_for` lookups / DID matching — vantage B
+/// below is re-seeded under the SAME resolver-level key ("localhost",
+/// matching the ctx_id's own embedded authority and the harness's real
+/// `registry_did`) but is a physically different `RegistryClient` (a
+/// different `.base`, hence a different `.authority()`), pinned to the
+/// SAME physical harness. This is what proves the scoping is genuinely
+/// per-vantage rather than accidentally per-resolver-authority-key.
+#[tokio::test]
+async fn resolver_ac5_vantage_binding_pins_discovery_to_the_serving_client() {
+    use acdp::client::CrossRegistryResolver;
+
+    let id = cache_identity(0xF3, "resolver-ac5");
+    let registry_pub = SigningKey::from_bytes(&[0x11u8; 32]).verifying_key_bytes();
+    let h = LineageServerHarness::builder(lifecycle_caps())
+        .with_registry_did_document(ed25519_did_doc(REGISTRY_DID, "key-1", &registry_pub))
+        .with_well_known_acdp()
+        .with_producer_did_document(id.path, id.did_doc.clone())
+        .build()
+        .await;
+    let t = publish_plain_target(&h, &id).await;
+
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.freshness = std::time::Duration::from_secs(60);
+    let policy = RevocationPolicy::default().with_discovery(discovery);
+    let shared_cache = RevocationCache::new();
+
+    let resolver = CrossRegistryResolver::new()
+        .with_did_resolver(
+            WebResolver::with_test_endpoint(&h.tls.root_cert_pem, "localhost", h.tls.addr)
+                .expect("pinned resolver"),
+        )
+        .with_revocation_policy(policy)
+        .with_revocation_cache(shared_cache);
+
+    // Vantage A: the harness's own client, `.authority() == "localhost"`.
+    resolver.seed_client(REGISTRY_AUTHORITY, h.client());
+    resolver
+        .resolve(&t)
+        .await
+        .expect("vantage A baseline mints A's marker");
+
+    // Vantage B: SAME ctx_id / producer / physical harness, re-seeded under
+    // the SAME resolver-level authority KEY, but a DIFFERENT `RegistryClient`
+    // (a different `.base` — same host `localhost` so the harness's
+    // `localhost`-only TLS certificate still validates, but a distinct
+    // bogus port — hence a different `.authority()`), pinned via
+    // `.resolve()` to the SAME physical socket regardless of the URL's own
+    // port.
+    let alt_base = format!("https://localhost:{}", h.tls.addr.port());
+    let vantage_b = RegistryClient::with_test_endpoint(&alt_base, h.tls.addr, &h.tls.root_cert_pem)
+        .expect("vantage B client");
+    assert_ne!(
+        vantage_b.authority().as_deref(),
+        Some("localhost"),
+        "sanity: vantage B must report a genuinely different authority"
+    );
+    resolver.seed_client(REGISTRY_AUTHORITY, vantage_b);
+
+    let before_b = h.hits("search");
+    resolver.resolve(&t).await.expect("vantage B baseline");
+    assert!(
+        h.hits("search") > before_b,
+        "issue #260 AC5: a freshness marker minted while resolving via vantage A must NOT \
+         suppress discovery when the SAME producer/context is later resolved via a DIFFERENT \
+         vantage B, even though both share one RevocationCache"
+    );
+}
+
+/// AC6: the concrete payoff of the walk-scoped cache. A per-`search`-request
+/// delay makes ONE discovery round cost roughly `6 * 80ms = 480ms`; an
+/// (incorrect) per-node cache would cost `CHAIN_LEN - 1` rounds — about
+/// 1.9s for 4 ancestors — comfortably over the small `total_timeout` below.
+/// The walk-scoped default keeps the walk to ONE round regardless of chain
+/// length, so it finishes comfortably inside budget. Uses a scaled-down
+/// `total_timeout` (not the literal 30s default) so the test runs fast
+/// while still proving the same structural property the 30s default relies
+/// on in production.
+#[tokio::test]
+async fn resolver_ac6_walk_scoped_cache_lets_a_discovery_enabled_walk_complete() {
+    use acdp::client::{CrossRegistryResolver, ResolverOptions};
+
+    const CHAIN_LEN: usize = 5;
+
+    let id = cache_identity(0xF4, "resolver-ac6");
+    let registry_pub = SigningKey::from_bytes(&[0x11u8; 32]).verifying_key_bytes();
+    let h = LineageServerHarness::builder(lifecycle_caps())
+        .with_registry_did_document(ed25519_did_doc(REGISTRY_DID, "key-1", &registry_pub))
+        .with_well_known_acdp()
+        .with_producer_did_document(id.path, id.did_doc.clone())
+        .build()
+        .await;
+    let chain = publish_derived_chain(&h, &id, CHAIN_LEN).await;
+    let root_body = h
+        .server
+        .retrieve(chain.last().unwrap(), None)
+        .expect("retrieve")
+        .expect("found")
+        .body;
+
+    h.set_delay("search", std::time::Duration::from_millis(80));
+
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.freshness = std::time::Duration::from_secs(60);
+    let policy = RevocationPolicy::default().with_discovery(discovery);
+
+    let resolver = CrossRegistryResolver::new()
+        .with_did_resolver(
+            WebResolver::with_test_endpoint(&h.tls.root_cert_pem, "localhost", h.tls.addr)
+                .expect("pinned resolver"),
+        )
+        .with_revocation_policy(policy)
+        .with_options(ResolverOptions {
+            total_timeout: std::time::Duration::from_millis(800),
+            ..ResolverOptions::default()
+        });
+    resolver.seed_client(REGISTRY_AUTHORITY, h.client());
+
+    let ancestors = resolver.walk_derived_from(&root_body).await.expect(
+        "issue #260 AC6: a discovery-enabled walk must complete within a small total_timeout \
+         because the walk-scoped cache collapses discovery to ONE round regardless of chain \
+         length",
+    );
+    assert_eq!(ancestors.len(), CHAIN_LEN - 1);
+}
+
+/// AC7: with no revocation configuration injected at all (no
+/// `with_revocation_policy` call — `RevocationPolicy::default()` is inert:
+/// empty `known`, `discover: None`), resolver behavior is byte-identical to
+/// v0.13.0 — zero discovery-related search traffic.
+#[tokio::test]
+async fn resolver_ac7_no_revocation_config_is_byte_identical_to_pre_260() {
+    use acdp::client::CrossRegistryResolver;
+
+    const CHAIN_LEN: usize = 4;
+
+    let id = cache_identity(0xF5, "resolver-ac7");
+    let registry_pub = SigningKey::from_bytes(&[0x11u8; 32]).verifying_key_bytes();
+    let h = LineageServerHarness::builder(lifecycle_caps())
+        .with_registry_did_document(ed25519_did_doc(REGISTRY_DID, "key-1", &registry_pub))
+        .with_well_known_acdp()
+        .with_producer_did_document(id.path, id.did_doc.clone())
+        .build()
+        .await;
+    let chain = publish_derived_chain(&h, &id, CHAIN_LEN).await;
+    let root_body = h
+        .server
+        .retrieve(chain.last().unwrap(), None)
+        .expect("retrieve")
+        .expect("found")
+        .body;
+
+    let resolver = CrossRegistryResolver::new().with_did_resolver(
+        WebResolver::with_test_endpoint(&h.tls.root_cert_pem, "localhost", h.tls.addr)
+            .expect("pinned resolver"),
+    );
+    resolver.seed_client(REGISTRY_AUTHORITY, h.client());
+    assert_eq!(
+        resolver.revocation_policy(),
+        &RevocationPolicy::default(),
+        "sanity: a resolver with no with_revocation_policy call carries the inert default"
+    );
+
+    let before = h.hits("search");
+    let ancestors = resolver
+        .walk_derived_from(&root_body)
+        .await
+        .expect("walk must complete");
+    assert_eq!(ancestors.len(), CHAIN_LEN - 1);
+    assert_eq!(
+        h.hits("search"),
+        before,
+        "issue #260 AC7: with no revocation configuration injected, resolver behavior is \
+         byte-identical to pre-#260 — zero discovery-related search traffic"
     );
 }

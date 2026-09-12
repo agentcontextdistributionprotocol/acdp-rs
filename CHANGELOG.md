@@ -71,6 +71,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bodies only (a non-success response's error-envelope read is never charged).
   `crates/acdp-client/src/revocation.rs` is unchanged by this work.
 
+- *(client)* let `CrossRegistryResolver` carry RFC-ACDP-0014 revocation discovery
+  ([#260](https://github.com/agentcontextdistributionprotocol/acdp-rs/issues/260))
+
+  `CrossRegistryResolver` could not carry revocation auto-discovery at all (LIM-1): it
+  built its own internal `VerificationPolicy` per node with no injection point, so every
+  node it resolved verified with `known`-only revocations regardless of what the caller
+  configured elsewhere. Closed additively with exactly three new methods —
+  `with_revocation_policy(RevocationPolicy) -> Self`, `with_revocation_cache(RevocationCache)
+  -> Self`, and the `revocation_policy(&self) -> &RevocationPolicy` readback — no new
+  types, and `ResolverOptions` is untouched (a revocation field there would let a caller
+  tuning `max_depth` via `with_options`'s "replace the complete struct" contract silently
+  reset their revocation configuration). `with_revocation_policy` takes a
+  `RevocationPolicy`, never a full `VerificationPolicy`: the resolver derives
+  `receipts` itself, per node, from that node's own advertised capabilities (`Require`
+  iff the upstream claims `acdp-registry-receipts`) — a capability-dependent escalation a
+  caller cannot express statically for a walk whose authorities are not known in advance,
+  so accepting a full policy would either silently override the caller's `receipts` or
+  let a caller unknowingly strip `Require` on a receipts-capable upstream.
+
+  **The cache is walk-scoped by default.** Unless `with_revocation_cache` is called,
+  `CrossRegistryResolver::walk_derived_from` creates a FRESH `RevocationCache` for that
+  call only and shares it across every node the walk visits, so discovery for a given
+  `(authority, trust class)` runs at most once per walk rather than once per node,
+  regardless of `max_nodes` — no cached absence outlives the call, so this is safe even
+  though it makes suppression reachable without a caller-managed, long-lived cache
+  (a caller who wants discovery to stay warm across separate walks opts in explicitly via
+  `with_revocation_cache`). `seed_client` is fill-if-absent, preserve-if-present: a client
+  handed to (or built by) the resolver that carries no `RevocationCache` of its own is
+  given the active one (walk-scoped or resolver-level); a client that already carries its
+  own keeps it. Vantage binding (RFC-ACDP-0014 §6 scoping) falls out for free: discovery
+  always uses the per-authority client `client_for` selects, so each node's revocations are
+  discovered at the authority that actually served it. No new resolver-level request/byte
+  budget — issue #258's `RevocationDiscovery::max_requests`/`max_bytes` already bound
+  per-node discovery cost.
+
 ## [0.13.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.12.0...acdp-v0.13.0) - 2026-09-11
 
 ### Added

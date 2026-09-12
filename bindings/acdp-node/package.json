@@ -45,11 +45,5 @@
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
-  },
-  "optionalDependencies": {
-    "@agentcontextdistributionprotocol/acdp-darwin-x64": "0.10.0",
-    "@agentcontextdistributionprotocol/acdp-darwin-arm64": "0.10.0",
-    "@agentcontextdistributionprotocol/acdp-linux-x64-gnu": "0.10.0",
-    "@agentcontextdistributionprotocol/acdp-linux-arm64-gnu": "0.10.0"
   }
 }

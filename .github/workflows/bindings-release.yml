@@ -76,8 +76,13 @@ jobs:
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.13.0
+      # `npm ci`, not `npm install`: this step runs *before* the version
+      # stamp below touches package.json, so the manifest here still
+      # matches the committed lockfile and `npm ci` can enforce that (#249).
+      # Do NOT move this after the stamp — see the publish job's identical
+      # install step for what happens then.
       - name: Install dependencies
-        run: npm install
+        run: npm ci
       # The committed lockfile pins the toolchain; this asserts the pin
       # actually held.
       - name: Assert the pinned @napi-rs/cli version
@@ -162,6 +167,19 @@ jobs:
           V="${{ inputs.version }}"; [ -z "$V" ] && V="${GITHUB_REF_NAME#acdp-node-v}"
           echo "stamping version $V"
           jq --arg v "$V" '.version=$v' package.json > package.json.tmp && mv package.json.tmp package.json
+      # Deliberately still `npm install`, not `npm ci` (#249). #249 removed
+      # the self-referential `optionalDependencies` block that used to pin
+      # the four platform packages to package.json's own version — that was
+      # the actual source of the old lock/manifest disagreement here, since
+      # the stamp above changes that version *before* this step and nothing
+      # republishes the lockfile in between. With that block gone, spot
+      # checks suggest `npm ci` may now tolerate a plain version-field stamp
+      # (it appears to validate only dependency specifiers against the
+      # lock, not the root package's own name/version), but this is the one
+      # job that gates real releases and the only path where a wrong call
+      # has a production cost, so don't bet that invariant here. `npm
+      # install` still authoritatively reads the committed lockfile (see the
+      # bindings-npm-audit job in bindings.yml) and needs no such assumption.
       - name: Install dependencies
         run: npm install
       # The committed lockfile pins the toolchain; this asserts the pin

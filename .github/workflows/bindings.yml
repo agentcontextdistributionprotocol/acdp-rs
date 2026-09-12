@@ -121,9 +121,13 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
+      # `npm ci` (not `npm install`): the committed lockfile no longer
+      # carries the self-referential `optionalDependencies` block (#249)
+      # napi-cli reconstructs it at publish time from `napi.triples`, so
+      # the manifest and lockfile agree here and `npm ci` can enforce that.
       - name: Install @napi-rs/cli
         working-directory: bindings/acdp-node
-        run: npm install
+        run: npm ci
       - name: Assert the pinned @napi-rs/cli version
         working-directory: bindings/acdp-node      # REQUIRED — `working-directory` is per-step,
                                                     # and `node -e` resolves require() against cwd
@@ -338,8 +342,10 @@ jobs:
         working-directory: bindings/acdp-node
         # See the acdp-node job's "Build the native binary" step for why
         # this needs a doubled `--` to reach napi's cargo passthrough.
+        # `npm ci`: see the acdp-node job's install step for why the
+        # lockfile and manifest agree here (#249).
         run: |
-          npm install
+          npm ci
           npm run build:debug -- -- --locked
       - uses: taiki-e/install-action@0751bff5da373f43f04fdc57a72795931a822bd7 # wasm-pack
         with:
@@ -406,9 +412,9 @@ jobs:
         with:
           node-version: '20'
       # bindings/acdp-node/package-lock.json is committed (see .gitignore's
-      # acdp-node section) and `npm install` honors it, resolving the pinned
-      # graph rather than fresh.
+      # acdp-node section); `npm ci` installs exactly that pinned graph and
+      # fails the job outright if it ever drifts from package.json (#249).
       - working-directory: bindings/acdp-node
-        run: npm install
+        run: npm ci
       - working-directory: bindings/acdp-node
         run: npm audit

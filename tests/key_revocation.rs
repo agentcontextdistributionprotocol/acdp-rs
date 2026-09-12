@@ -6289,18 +6289,78 @@ async fn cache_ac3_default_freshness_zero_saves_no_requests() {
     );
 }
 
-/// AC5: with `freshness: W` (a real, short, non-injected TTL), a marker
-/// minted by a clean baseline call suppresses a REPEAT lookup within `W`
-/// — even after a new revocation is published — and stops suppressing it
-/// once `W` elapses (a real ~60 ms sleep against a 50 ms window, per the
-/// plan's guidance, sidestepping any `tokio::time::pause` interaction).
+/// AC5a: with a generous `freshness` window, a marker minted by a clean
+/// baseline call suppresses a REPEAT lookup entirely — even after a new
+/// revocation is published in the meantime.
+///
+/// The window is deliberately LARGE (30 s). An earlier version of this
+/// test used a 50 ms window and a 60 ms sleep to prove suppression and
+/// expiry on one timeline, and it was flaky on CI (`ubuntu/beta` and
+/// `windows/stable` both failed at the in-window assertion). The cause
+/// was not margin-tuning: `seed_revocations` performs a real Ed25519
+/// publish over TLS *between* minting the marker and checking it, so on
+/// a loaded runner the window expired mid-test, discovery re-ran, and R2
+/// fail-closed where the test expected suppression. Splitting the two
+/// properties apart removes the race rather than widening it — neither
+/// half now depends on work finishing inside a deadline. Expiry is
+/// proven separately by `cache_ac5b_*`.
 #[tokio::test]
-async fn cache_ac5_freshness_window_then_expiry_reveals_new_revocation() {
+async fn cache_ac5a_freshness_window_suppresses_repeat_lookup() {
     let rig = discovery_rig(0xE5).await;
     let cache = RevocationCache::new();
     let client = rig.client.with_revocation_cache(cache);
     let mut discovery = RevocationDiscovery::producer_signed_only();
-    discovery.freshness = std::time::Duration::from_millis(50);
+    discovery.freshness = std::time::Duration::from_secs(30);
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+
+    let verified =
+        VerifiedContext::fetch_with_policy(&client, &rig.h.resolver, &rig.target_ctx_id, &policy)
+            .await
+            .expect("clean baseline mints the marker");
+    assert_eq!(verified.key_status(), KeyAuthorization::CurrentlyAuthorized);
+    let after_warm = rig.h.hits("search");
+    assert!(after_warm > 0, "the baseline call must actually search");
+
+    // R2 is reachable only by discovery — never placed in `known`.
+    rig.h
+        .seed_revocations(&rig.producer, &rig.producer_fp, &[rig.receipt_time])
+        .await;
+
+    let still_ok =
+        VerifiedContext::fetch_with_policy(&client, &rig.h.resolver, &rig.target_ctx_id, &policy)
+            .await
+            .expect("within the freshness window, R2 must not be applied");
+    assert_eq!(still_ok.key_status(), KeyAuthorization::CurrentlyAuthorized);
+    assert_eq!(
+        rig.h.hits("search"),
+        after_warm,
+        "within the freshness window, discovery must be skipped entirely — zero new \
+         search requests"
+    );
+}
+
+/// AC5b: a marker STOPS suppressing once its `freshness` elapses, so a
+/// revocation published after the marker was minted is still discovered.
+///
+/// This is the half that closes RFC-ACDP-0014 §7:114's actual silence —
+/// §7:114 licenses caching a verified revocation indefinitely but says
+/// nothing about re-checking for NEW ones. A marker that never expired
+/// would reintroduce exactly that gap, so this test must stay able to
+/// fail: it goes RED if suppression becomes permanent.
+///
+/// The window is deliberately TINY (1 ms) against a 250 ms sleep, which
+/// is the opposite race to `cache_ac5a_*` and equally unloseable — CI
+/// slowness can only make the window MORE expired, never less.
+#[tokio::test]
+async fn cache_ac5b_freshness_expiry_reveals_new_revocation() {
+    let rig = discovery_rig(0xE6).await;
+    let cache = RevocationCache::new();
+    let client = rig.client.with_revocation_cache(cache);
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.freshness = std::time::Duration::from_millis(1);
     let policy = VerificationPolicy {
         revocations: RevocationPolicy::default().with_discovery(discovery),
         ..Default::default()
@@ -6313,25 +6373,11 @@ async fn cache_ac5_freshness_window_then_expiry_reveals_new_revocation() {
     assert_eq!(verified.key_status(), KeyAuthorization::CurrentlyAuthorized);
     let after_warm = rig.h.hits("search");
 
-    // R2 is reachable only by discovery — never placed in `known`.
     rig.h
         .seed_revocations(&rig.producer, &rig.producer_fp, &[rig.receipt_time])
         .await;
 
-    // Within the window: the marker suppresses the lookup entirely.
-    let still_ok =
-        VerifiedContext::fetch_with_policy(&client, &rig.h.resolver, &rig.target_ctx_id, &policy)
-            .await
-            .expect("within the freshness window, R2 must not be applied");
-    assert_eq!(still_ok.key_status(), KeyAuthorization::CurrentlyAuthorized);
-    assert_eq!(
-        rig.h.hits("search"),
-        after_warm,
-        "within the freshness window, discovery must be skipped entirely — zero new \
-         search requests"
-    );
-
-    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
 
     let err =
         VerifiedContext::fetch_with_policy(&client, &rig.h.resolver, &rig.target_ctx_id, &policy)

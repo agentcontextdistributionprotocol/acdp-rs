@@ -385,3 +385,98 @@ into a published wheel's dependency graph. The structural change landed as its o
 commit instead of relaxing the assertion. **This was also the first live proof of the #240
 lockfile-pinning work** — the resulting sync commit changed exactly **32** `acdp*` version
 lines, matching that phase's stated acceptance criterion.
+
+## issues #257 / #258 / #260 — revocation budget, cache, resolver injection (wave closed 2026-09-12)
+
+Settled by Opus under the standing delegation for this run; **pending the owner's review**. The
+two genuine one-way doors went to Fable *before* implementation, and a third was found and adopted
+during whole-wave review.
+
+**1. The cache is TWO objects, not one — facts always seed, only markers may skip. (Fable.)**
+#257 framed this as "does a hit skip discovery or only seed it?". Separating the two dissolves the
+question. **Facts** (verified `KeyRevocation`s) are licensed by RFC-ACDP-0014 §7:114 to be cached
+indefinitely, are always unioned and never substituted, and — because revocations are monotone —
+can only tighten a verdict. That makes the fact store an **anti-rollback security control, not a
+performance feature**: it saves zero requests by default, and the docs say so rather than
+overselling it. **Markers** ("vantage V was asked for P, class C, at t") are a cached *absence*,
+which §7:114 does not license and §8 warns about directly; they are TTL-bounded, per-vantage, and
+off by default (`freshness: Duration::ZERO`).
+
+*Foreclosure, stated rather than implied:* this door is one-way in one direction only.
+Skip-default → seed-default later is a perf regression; seed-default → skip-default later is a
+silent security regression and effectively unshippable. Seeding by default is both the safe
+posture and the one that keeps the remaining freedom.
+
+**2. Facts merge inside `verify_retrieved`, downstream of the failure arms.**
+The discovery failure arms set `discovered = Vec::new()`. Folding cached facts into the lookups'
+return value would therefore **erase them on exactly the path an attacker can force** — a 503, an
+induced `SearchTruncated`, or (newly, thanks to #258) a budget trip. The verifier caught this as a
+BLOCKER; it was not in the executor's first implementation. Merging at the `effective` site keeps
+facts surviving every failure mode, and is still spine-lock-safe.
+
+**3. Registry-attested facts are scoped to their minting vantage; producer-signed are not.**
+The live path binds attested revocations via `cross_check_registry_binding`; the first cache
+implementation discarded that binding, so a shared handle would apply one registry's claim
+everywhere. RFC-ACDP-0014 §6 is normative — attested revocations apply to contexts *"served by or
+receipted by that same registry"*. The asymmetry is the RFC's: §8 makes producer-signed revocations
+self-contained ("verifies identically wherever it came from"), so they **should** cross vantages,
+and the wave's own anti-rollback test depends on it. Filtering both would have broken anti-rollback;
+filtering neither was the blocker.
+
+**4. Facts seed even when `discover: None`.** Three doc sites claimed facts apply "unconditionally"
+while the code returned an empty set on that arm. Resolved in the code rather than by watering down
+the docs: attaching a cache *is* the opt-in, seeding is monotone, and it is the only anti-rollback
+`fetch`/`fetch_current` can ever get, since LIM-2 leaves them unable to opt into discovery at all.
+Producer-signed only on that arm — there is no `include_registry_attested` to consult and D6
+requires an explicit opt-in.
+
+**5. #260 is non-breaking: builders on the resolver, injecting `RevocationPolicy`. (Fable.)**
+Three additive methods; `ResolverOptions` untouched. A field there would have been breaking, but it
+is also wrong on the merits: `with_options`'s contract is *"replace the complete options struct"*,
+so a revocation field would mean a caller tuning `max_depth` silently resets their revocation
+config. Injecting a whole `VerificationPolicy` was rejected because the resolver *derives* `receipts`
+per node from advertised capabilities — a caller-supplied static policy cannot express "Require iff
+this authority claims the profile", so the API would either silently override the caller or become a
+**downgrade primitive**. `revocations` is the one field the resolver never sets. Non-breaking is what
+made the whole wave a patch (0.13.1) rather than a minor.
+
+**6. Walk-scoped cache freshness derived from `ResolverOptions::total_timeout` — adopted in review.**
+A third option nobody had evaluated. Because the resolver's walk-scoped cache dies with the call, a
+marker cannot outlive an operation `total_timeout` already bounds — so deriving freshness there
+delivers #260's headline benefit on genuine defaults without touching `marker_fresh`, without a new
+public method, and without regressing the direct path. It **restored the plan's original acceptance
+criterion**, which said "on default configuration" and which the executor had been forced to
+reinterpret after a factual error in the plan text (see below). Caller-supplied caches keep the
+caller's own freshness, including `ZERO`, since that handle may outlive the walk.
+
+**7. No new Cargo dependency — `lru` deliberately rejected.** It was the obvious choice and is
+already in `acdp-client`'s built graph transitively. But a **direct** edge rewrites the
+`acdp-client` entry in `bindings/acdp-py/Cargo.lock` and `bindings/acdp-node/Cargo.lock`, and
+`release-plz.yml`'s sync guard hard-fails when a release-time sync touches a non-`version = "` line
+— the failure that broke the #248 release. The bound is hand-rolled instead. Because eviction can
+only lose caching and never safety, capacity-triggered eviction suffices; no LRU recency tracking.
+
+**8. Two planned phases were REMOVED after review showed they were not prerequisites.**
+The plan opened with an extraction refactor of `revocation.rs` and a test-harness phase, both
+asserted as required. Both claims were false. Every client request site propagates with `?`, so a
+budget enforced in `RegistryClient` on a per-discovery clone is check-before-issue and
+combined-across-lookups by construction — #258 shipped with `revocation.rs` untouched. And only
+*page-cap* exhaustion is unreachable in the harness; request-budget exhaustion is testable today.
+Rather than do a ~1141-line refactor of security-critical code in the same release as three
+security fixes, both were filed as #264 and #265.
+
+**9. Process finding — four acceptance criteria across two waves had tests that could not fail.**
+#248's union test, this wave's dedup test, the registry-attested marker test, and the `seed_client`
+overwrite test. All four were green and proving nothing; mutation probes caught every one, and
+reading the tests caught none. A fifth near-miss: a naive `max_bytes: Some(1)` budget test cannot
+distinguish a combined budget from a per-lookup one, and had to be calibrated against measured
+response sizes. **Treat "apply the mutation, confirm RED, restore" as mandatory per phase.**
+
+**10. A CI failure that was not a flaky-timeout to widen.** `cache_ac5_*` failed on
+`ubuntu/beta` and `windows/stable`. The test proved suppression and expiry on one timeline with a
+50 ms window, and called `seed_revocations` — a real Ed25519 publish over TLS — *inside* the window
+it was measuring. No margin fixes that. Split into two tests racing in opposite directions
+(`ac5a`: 30 s window, unloseable to slowness; `ac5b`: 1 ms window vs a 250 ms sleep, where slowness
+can only help). Each half is mutation-proven to catch the failure the other cannot. The 50 ms/60 ms
+budget originated in this plan — in a wave whose own plan warns that #248 shipped a spuriously
+passing timing test.

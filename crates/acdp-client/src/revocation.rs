@@ -572,6 +572,45 @@ pub async fn find_revocations(
     // instead of silently yielding an empty result.
     let agent_id = AgentDid::parse(agent_id.as_str())?;
 
+    // Issue #257: a per-vantage freshness marker, when a cache is attached
+    // AND still fresh, skips this entire lookup — zero requests issued.
+    // Keyed by `(vantage, agent_id, ProducerSigned)`, never by anything
+    // registry-specific: this function's scope is the producer itself.
+    // `marker_fresh` is a plain-bool fast path when no cache is attached or
+    // `freshness == Duration::ZERO` (the default from both
+    // `RevocationDiscovery` named constructors), so this costs nothing in
+    // the common case. Facts are handled separately, downstream, at
+    // `verify_retrieved`'s `effective` merge — never folded in here (see
+    // the wave plan's B1: this function's own failure paths below set
+    // nothing but `Err`, and if facts rode in this return value they would
+    // vanish on exactly the failure an attacker can induce).
+    let vantage = client.authority();
+    // N7 (fresh-Opus review of Phase 2): both the marker check and the
+    // fact record below are gated on `Some(vantage)`, so a client whose
+    // base URL has no resolvable host (`authority()` returns `None`)
+    // silently makes caching a no-op for this call — unreachable in
+    // practice (`RegistryClient` is always built from a parsed URL), but
+    // worth signaling rather than leaving unsignalled.
+    #[cfg(feature = "tracing")]
+    if vantage.is_none() && client.revocation_cache().is_some() {
+        tracing::warn!(
+            "find_revocations: a RevocationCache is attached but client.authority() is None \
+             — caching is silently inert for this call"
+        );
+    }
+    if let (Some((cache, freshness)), Some(vantage)) =
+        (client.revocation_cache(), vantage.as_deref())
+    {
+        if cache.marker_fresh(
+            vantage,
+            agent_id.as_str(),
+            RevocationTrustClass::ProducerSigned,
+            freshness,
+        ) {
+            return Ok(Vec::new());
+        }
+    }
+
     let mut revocations = Vec::new();
     let mut seen = std::collections::HashSet::new();
     // Discovery-order list of distinct lineage ids (walked below) plus
@@ -739,6 +778,23 @@ pub async fn find_revocations(
             }
         }
     }
+
+    // Issue #257: this point is reached only on a fully successful,
+    // untruncated discovery (every early-return above is an `Err`), so
+    // recording here is exactly "mint a marker only on full success" by
+    // construction. `record_success` dedups `revocations` into the cached
+    // fact set via `KeyRevocation`'s `Eq` and caps growth per entry — see
+    // `crate::revocation_cache`.
+    if let (Some((cache, _freshness)), Some(vantage)) =
+        (client.revocation_cache(), vantage.as_deref())
+    {
+        cache.record_success(
+            vantage,
+            agent_id.as_str(),
+            RevocationTrustClass::ProducerSigned,
+            &revocations,
+        );
+    }
     Ok(revocations)
 }
 
@@ -876,6 +932,43 @@ pub async fn find_registry_attested_revocations(
     controller: &AgentDid,
 ) -> Result<Vec<KeyRevocation>, AcdpError> {
     let controller = AgentDid::parse(controller.as_str())?;
+
+    // Issue #257: the marker check MUST precede `client.capabilities()`
+    // below — that fetch is unconditional and otherwise costs one request
+    // on every "suppressed" call. Keyed by `(vantage, controller,
+    // RegistryAttested)` — `controller` is the producer/controller DID
+    // this call was asked about, deliberately NEVER the registry's own DID
+    // (`capabilities.registry_did`, not yet even fetched at this point):
+    // keying by the search identity instead would let one marker suppress
+    // discovery for every producer at this registry, not just this one.
+    // See `find_revocations` above for the shared rationale (fast path
+    // when unattached or `freshness == Duration::ZERO`; facts are handled
+    // downstream in `verify_retrieved`, never folded into this return
+    // value).
+    let vantage = client.authority();
+    // N7 (fresh-Opus review of Phase 2): see `find_revocations`'s identical
+    // note — both the marker check and the fact record below are gated on
+    // `Some(vantage)`, so a client with no resolvable authority silently
+    // makes caching a no-op for this call.
+    #[cfg(feature = "tracing")]
+    if vantage.is_none() && client.revocation_cache().is_some() {
+        tracing::warn!(
+            "find_registry_attested_revocations: a RevocationCache is attached but \
+             client.authority() is None — caching is silently inert for this call"
+        );
+    }
+    if let (Some((cache, freshness)), Some(vantage)) =
+        (client.revocation_cache(), vantage.as_deref())
+    {
+        if cache.marker_fresh(
+            vantage,
+            controller.as_str(),
+            RevocationTrustClass::RegistryAttested,
+            freshness,
+        ) {
+            return Ok(Vec::new());
+        }
+    }
 
     // Fetched exactly once, outside the type-form × status loop below —
     // see the doc above for why hoisting this is required, not
@@ -1038,6 +1131,20 @@ pub async fn find_registry_attested_revocations(
                 );
             }
         }
+    }
+
+    // Issue #257: reached only on full, untruncated success — see
+    // `find_revocations`'s identical note above. Keyed by `controller`,
+    // matching the marker check at the top of this function.
+    if let (Some((cache, _freshness)), Some(vantage)) =
+        (client.revocation_cache(), vantage.as_deref())
+    {
+        cache.record_success(
+            vantage,
+            controller.as_str(),
+            RevocationTrustClass::RegistryAttested,
+            &revocations,
+        );
     }
     Ok(revocations)
 }

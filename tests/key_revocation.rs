@@ -19,13 +19,14 @@
 
 mod common;
 
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use acdp::client::{
     classify_under_revocation, verify_revocation_body, DiscoveryFailurePolicy, HttpsDataRefFetcher,
-    KeyAuthorization, ReceiptPolicy, RegistryClient, RevocationDiscovery, RevocationPolicy,
-    VerificationPolicy, VerifiedContext,
+    KeyAuthorization, ReceiptPolicy, RegistryClient, RevocationCache, RevocationDiscovery,
+    RevocationPolicy, VerificationPolicy, VerifiedContext,
 };
 use acdp::crypto::{
     canonicalize_value, compute_content_hash, derive_lineage_id, fingerprint_ed25519,
@@ -3145,6 +3146,23 @@ impl LineageServerHarnessBuilder {
         self
     }
 
+    /// Host a REGISTRY DID document at `/.well-known/did.json` WITHOUT
+    /// enabling a receipt signer — for issue #260's `CrossRegistryResolver`
+    /// tests, which need `resolve()`'s step 3b (registry DID → DID
+    /// document resolution) to succeed but must NOT have every publish
+    /// carry a registry receipt: a receipt's `registry_did` is minted
+    /// once and cross-checked against the SERVING client's
+    /// `.authority()` (RFC-ACDP-0010's serving-authority binding), which
+    /// a vantage-binding test deliberately varies across calls (see
+    /// `cache_ac8_marker_is_per_vantage`'s own doc for the same
+    /// precedent). [`Self::with_receipt_signer`] is the right choice
+    /// when a test actually wants receipts; this is the right choice
+    /// when it only needs the registry DID document served.
+    fn with_registry_did_document(mut self, doc: serde_json::Value) -> Self {
+        self.registry_did_doc = Some(doc);
+        self
+    }
+
     /// Serve `server.capabilities()` at `/.well-known/acdp.json` —
     /// needed by `find_registry_attested_revocations`, which fetches
     /// capabilities unconditionally before its search loop.
@@ -4735,8 +4753,9 @@ async fn phase4_ac2_discovery_only_revocation_flips_success_to_key_not_authorize
 /// AC3: all FIVE policy-taking entry points honor `discover` —
 /// `fetch_with_policy`, `fetch_current_with_policy`, `fetch_report`,
 /// `fetch_report_diagnose`, `fetch_report_with_fetcher`. (`fetch` /
-/// `fetch_current` hardcode the default policy and `CrossRegistryResolver`
-/// has no policy-injection point — LIM-1/LIM-2, out of scope by design.)
+/// `fetch_current` hardcode the default policy — LIM-2, out of scope by
+/// design. LIM-1, `CrossRegistryResolver` having no policy-injection
+/// point, was closed by issue #260 — see the `resolver_ac*` tests below.)
 ///
 /// Split into five independent `#[tokio::test]` functions (one per entry
 /// point, each with its own `discovery_rig` seed) rather than one test
@@ -5167,4 +5186,2324 @@ async fn phase4_ac7_total_timeout_bounds_wall_clock_and_names_the_timeout() {
     }
 
     rig.h.clear_delay("search");
+}
+
+// ── issue #258 — combined revocation-discovery request/byte budget ────────
+//
+// All tests below reuse `discovery_rig` with NO revocations seeded, so
+// every discovery run is a "zero-match" search: `find_revocations` issues
+// exactly 6 `/contexts/search` requests (2 type_forms x 3 statuses, no
+// candidates, no retrieves, no lineage walks) and
+// `find_registry_attested_revocations` issues exactly 1 `/.well-known/
+// acdp.json` fetch plus 6 more searches — verified empirically against
+// this harness before these numbers were hardcoded below. `hits("context")`
+// also ticks up by 1 per `fetch_with_policy` call, but that single hit is
+// `VerifiedContext::fetch_with_policy`'s OWN top-level retrieve of the
+// target context through the CALLER's client, never the budget-scoped
+// clone `verify_retrieved` builds for discovery — so it is deliberately
+// excluded from every budgeted-total assertion below (folding it in would
+// make the "combined ceiling" assertions off-by-one and, worse, wrongly
+// imply retrieval of the target itself is charged to the discovery
+// budget).
+
+/// AC1: `RevocationDiscovery` is still `Copy` after adding the two budget
+/// fields — both are `Copy` types, so this is a compile-time proof, not a
+/// runtime one. (`#[non_exhaustive]` and "no `Default` impl" are also
+/// unchanged, but those are load-bearing on the *absence* of code — the
+/// type still has no `Default` impl and the module still compiles with
+/// only the two named constructors building it — rather than something a
+/// runtime assertion can exercise.)
+#[test]
+fn budget_ac1_revocation_discovery_still_copy() {
+    fn assert_copy<T: Copy>() {}
+    assert_copy::<RevocationDiscovery>();
+    // Exercise the Copy path directly: using `discovery` again after
+    // passing the first copy by value would be a compile error if this
+    // type had silently become `Clone`-only.
+    let discovery = RevocationDiscovery::producer_signed_only();
+    let _copy1 = discovery;
+    let _copy2 = discovery;
+    assert_eq!(discovery.max_requests, None);
+    assert_eq!(discovery.max_bytes, None);
+}
+
+/// AC2: with both `max_requests` and `max_bytes` left `None` (what both
+/// named constructors set), request counts are byte-identical to the
+/// pre-#258 behavior — exact counts, not `> 0`.
+#[tokio::test]
+async fn budget_ac2_none_none_matches_pre_258_request_counts() {
+    let rig = discovery_rig(0xB2).await;
+    let before_search = rig.h.hits("search");
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default()
+            .with_discovery(RevocationDiscovery::producer_signed_only()),
+        ..Default::default()
+    };
+    let verified = VerifiedContext::fetch_with_policy(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &policy,
+    )
+    .await
+    .expect("unbudgeted zero-match discovery must succeed exactly as before #258");
+    assert_eq!(verified.key_status(), KeyAuthorization::CurrentlyAuthorized);
+    assert_eq!(
+        rig.h.hits("search") - before_search,
+        6,
+        "producer_signed_only() with no budget must issue exactly 6 searches \
+         (2 type_forms x 3 statuses), unchanged from v0.13.0"
+    );
+
+    let rig2 = discovery_rig(0xB3).await;
+    let before_search2 = rig2.h.hits("search");
+    let before_caps2 = rig2.h.hits("acdp_json");
+    let policy2 = VerificationPolicy {
+        revocations: RevocationPolicy::default()
+            .with_discovery(RevocationDiscovery::all_trust_classes()),
+        ..Default::default()
+    };
+    let verified2 = VerifiedContext::fetch_with_policy(
+        &rig2.client,
+        &rig2.h.resolver,
+        &rig2.target_ctx_id,
+        &policy2,
+    )
+    .await
+    .expect("unbudgeted zero-match dual discovery must succeed exactly as before #258");
+    assert_eq!(
+        verified2.key_status(),
+        KeyAuthorization::CurrentlyAuthorized
+    );
+    assert_eq!(
+        rig2.h.hits("search") - before_search2,
+        12,
+        "all_trust_classes() with no budget must issue exactly 12 searches \
+         (6 per lookup), unchanged from v0.13.0"
+    );
+    assert_eq!(
+        rig2.h.hits("acdp_json") - before_caps2,
+        1,
+        "the registry-attested lookup's single unconditional capabilities() \
+         fetch must be unaffected by the (unset) budget"
+    );
+}
+
+/// AC3 (load-bearing — the test that distinguishes a combined budget from
+/// two per-lookup budgets): the SAME `max_requests: Some(N)` must yield
+/// the same total ceiling whether `include_registry_attested` is `false`
+/// or `true`. Natural (unbudgeted) totals are 6 requests single-lookup and
+/// 13 (12 search + 1 caps) dual-lookup — both well above `N = 4` — so if
+/// discovery instead handed each lookup its OWN budget of 4, the dual run
+/// would observe up to 8 requests, not <= 4. See probe (b) in the
+/// falsifiability tests below for the mutation that turns this red.
+#[tokio::test]
+async fn budget_ac3_combined_ceiling_not_doubled_by_include_registry_attested() {
+    const N: usize = 4;
+
+    let rig = discovery_rig(0xB4).await;
+    let before_search = rig.h.hits("search");
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.max_requests = Some(NonZeroUsize::new(N).unwrap());
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+    let err = VerifiedContext::fetch_with_policy(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &policy,
+    )
+    .await
+    .expect_err("max_requests: Some(4) must exhaust before the natural 6 searches complete");
+    assert!(
+        matches!(err, AcdpError::RevocationDiscoveryFailed { .. }),
+        "got {err:?}"
+    );
+    let single_total = rig.h.hits("search") - before_search;
+    assert_eq!(
+        single_total, N,
+        "single-lookup total must be exactly N — check-before-issue is exact here"
+    );
+
+    let rig2 = discovery_rig(0xB5).await;
+    let before_search2 = rig2.h.hits("search");
+    let before_caps2 = rig2.h.hits("acdp_json");
+    let mut discovery2 = RevocationDiscovery::all_trust_classes();
+    discovery2.max_requests = Some(NonZeroUsize::new(N).unwrap());
+    let policy2 = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery2),
+        ..Default::default()
+    };
+    let err2 = VerifiedContext::fetch_with_policy(
+        &rig2.client,
+        &rig2.h.resolver,
+        &rig2.target_ctx_id,
+        &policy2,
+    )
+    .await
+    .expect_err("max_requests: Some(4) must exhaust before the natural 13 requests complete");
+    assert!(matches!(err2, AcdpError::RevocationDiscoveryFailed { .. }));
+    let dual_total =
+        (rig2.h.hits("search") - before_search2) + (rig2.h.hits("acdp_json") - before_caps2);
+    assert!(
+        dual_total <= N,
+        "dual-lookup total ({dual_total}) must be <= N ({N}) — a combined budget, \
+         not one ceiling per lookup (which would allow up to 2N = {})",
+        2 * N
+    );
+}
+
+/// AC7: check-before-issue is proven both ways. Single-lookup (serial,
+/// `include_registry_attested: false`): `hits()` total is exactly `K`.
+/// Both-classes (concurrent under `try_join!`): `hits()` total is `<= K`
+/// and never `K + 1` — the weaker bound is required because `try_join!`
+/// cancels the sibling future the instant one arm errors, so a request
+/// whose slot was already reserved can be dropped before the server
+/// records it. Uses a different K than AC3 to keep the two tests
+/// independent.
+#[tokio::test]
+async fn budget_ac7_check_before_issue_exact_single_bounded_dual() {
+    const K: usize = 3;
+
+    let rig = discovery_rig(0xB6).await;
+    let before_search = rig.h.hits("search");
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.max_requests = Some(NonZeroUsize::new(K).unwrap());
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+    VerifiedContext::fetch_with_policy(&rig.client, &rig.h.resolver, &rig.target_ctx_id, &policy)
+        .await
+        .expect_err("K=3 must exhaust before the natural 6 searches complete");
+    assert_eq!(
+        rig.h.hits("search") - before_search,
+        K,
+        "single-lookup, serial requests: hits() must be exactly K"
+    );
+
+    let rig2 = discovery_rig(0xB7).await;
+    let before_search2 = rig2.h.hits("search");
+    let before_caps2 = rig2.h.hits("acdp_json");
+    let mut discovery2 = RevocationDiscovery::all_trust_classes();
+    discovery2.max_requests = Some(NonZeroUsize::new(K).unwrap());
+    let policy2 = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery2),
+        ..Default::default()
+    };
+    VerifiedContext::fetch_with_policy(
+        &rig2.client,
+        &rig2.h.resolver,
+        &rig2.target_ctx_id,
+        &policy2,
+    )
+    .await
+    .expect_err("K=3 must exhaust before the natural 13 requests complete");
+    let dual_total =
+        (rig2.h.hits("search") - before_search2) + (rig2.h.hits("acdp_json") - before_caps2);
+    assert!(
+        dual_total <= K,
+        "both-classes, concurrent requests: hits() ({dual_total}) must be <= K ({K})"
+    );
+}
+
+/// A dedicated `max_bytes`-only exhaustion test (no `max_requests` set):
+/// with `max_bytes: Some(1)`, the FIRST search response's bytes already
+/// exceed the budget, so the SECOND check-before-issue call must refuse
+/// before a second request is ever sent.
+#[tokio::test]
+async fn budget_max_bytes_alone_exhausts_before_second_request() {
+    let rig = discovery_rig(0xB8).await;
+    let before_search = rig.h.hits("search");
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.max_bytes = Some(1);
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+    let err = VerifiedContext::fetch_with_policy(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &policy,
+    )
+    .await
+    .expect_err("max_bytes: Some(1) must exhaust after the first response is read");
+    match &err {
+        AcdpError::RevocationDiscoveryFailed { source } => {
+            assert!(
+                matches!(**source, AcdpError::RevocationDiscoveryBudgetExceeded(_)),
+                "got {source:?}"
+            );
+            assert!(source.to_string().contains("max_bytes"), "got {source}");
+        }
+        other => panic!("expected RevocationDiscoveryFailed, got {other:?}"),
+    }
+    assert_eq!(
+        rig.h.hits("search") - before_search,
+        1,
+        "exactly one search must be issued before the byte budget is observed as exhausted"
+    );
+}
+
+/// AC4 + AC6: exhaustion under `FailClosed` returns
+/// `Err(RevocationDiscoveryFailed { source })` where `source` is
+/// `AcdpError::RevocationDiscoveryBudgetExceeded`, from all four
+/// `Err`-propagating entry points, `VerificationReport::policy_phase_error`
+/// from `fetch_report_diagnose`, and the error (both the wrapper and the
+/// inner `source`) is NEVER transient — unlike the 503 case covered by
+/// `phase4_ac4_fail_closed_503_propagates_as_revocation_discovery_failed`.
+#[tokio::test]
+async fn budget_ac4_ac6_fail_closed_propagates_and_is_not_transient() {
+    let rig = discovery_rig(0xB9).await;
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.max_requests = Some(NonZeroUsize::new(2).unwrap());
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+
+    fn assert_budget_failure(err: &AcdpError) {
+        match err {
+            AcdpError::RevocationDiscoveryFailed { source } => {
+                assert!(
+                    matches!(**source, AcdpError::RevocationDiscoveryBudgetExceeded(_)),
+                    "got {source:?}"
+                );
+            }
+            other => panic!("expected RevocationDiscoveryFailed, got {other:?}"),
+        }
+        assert!(
+            !err.is_transient(),
+            "budget exhaustion must never be transient; got {err:?}"
+        );
+    }
+
+    let err = VerifiedContext::fetch_with_policy(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &policy,
+    )
+    .await
+    .expect_err("fetch_with_policy must propagate budget exhaustion");
+    assert_budget_failure(&err);
+
+    let err = VerifiedContext::fetch_current_with_policy(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_lineage_id,
+        &policy,
+    )
+    .await
+    .expect_err("fetch_current_with_policy must also propagate");
+    assert_budget_failure(&err);
+
+    let err =
+        VerifiedContext::fetch_report(&rig.client, &rig.h.resolver, &rig.target_ctx_id, &policy)
+            .await
+            .expect_err("fetch_report must also propagate");
+    assert_budget_failure(&err);
+
+    let fetcher = HttpsDataRefFetcher::new();
+    let err = VerifiedContext::fetch_report_with_fetcher(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &policy,
+        &fetcher,
+    )
+    .await
+    .expect_err("fetch_report_with_fetcher must also propagate");
+    assert_budget_failure(&err);
+
+    let (verified, report) = VerifiedContext::fetch_report_diagnose(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &policy,
+    )
+    .await
+    .expect("fetch_report_diagnose never returns Err");
+    assert!(verified.is_none());
+    match &report.policy_phase_error {
+        Some(e @ AcdpError::RevocationDiscoveryFailed { .. }) => assert_budget_failure(e),
+        other => panic!("expected Some(RevocationDiscoveryFailed), got {other:?}"),
+    }
+}
+
+/// AC5: under `ProceedWithKnown`, budget exhaustion yields `Ok`,
+/// verification proceeds on `known` alone, and the failure is retrievable
+/// from BOTH `VerifiedContext::revocation_discovery_failure()` and
+/// `VerificationReport::revocation_discovery` — never silent.
+#[tokio::test]
+async fn budget_ac5_proceed_with_known_surfaces_failure_without_erroring() {
+    let rig = discovery_rig(0xBA).await;
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.max_requests = Some(NonZeroUsize::new(2).unwrap());
+    discovery.on_failure = DiscoveryFailurePolicy::ProceedWithKnown;
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+
+    let verified = VerifiedContext::fetch_with_policy(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &policy,
+    )
+    .await
+    .expect("ProceedWithKnown must let verification succeed on `known` alone");
+    assert_eq!(verified.key_status(), KeyAuthorization::CurrentlyAuthorized);
+    let failure = verified
+        .revocation_discovery_failure()
+        .expect("the swallowed budget failure must still be observable");
+    match failure {
+        AcdpError::RevocationDiscoveryFailed { source } => {
+            assert!(matches!(
+                **source,
+                AcdpError::RevocationDiscoveryBudgetExceeded(_)
+            ));
+        }
+        other => panic!("expected RevocationDiscoveryFailed, got {other:?}"),
+    }
+
+    let (verified2, report) =
+        VerifiedContext::fetch_report(&rig.client, &rig.h.resolver, &rig.target_ctx_id, &policy)
+            .await
+            .expect("ProceedWithKnown must let fetch_report succeed too");
+    assert!(verified2.revocation_discovery_failure().is_some());
+    match &report.revocation_discovery {
+        Some(Err(e)) => match e {
+            AcdpError::RevocationDiscoveryFailed { source } => {
+                assert!(matches!(
+                    **source,
+                    AcdpError::RevocationDiscoveryBudgetExceeded(_)
+                ));
+            }
+            other => panic!("expected RevocationDiscoveryFailed, got {other:?}"),
+        },
+        other => panic!("expected Some(Err(RevocationDiscoveryFailed)), got {other:?}"),
+    }
+}
+
+/// AC8: the caller's ORIGINAL `RegistryClient` carries no budget. A
+/// budget is attached only to the discovery-scoped clone `verify_retrieved`
+/// builds internally, so a plain `retrieve` issued directly on `rig.client`
+/// AFTER an exhausted discovery must succeed — no cross-contamination.
+#[tokio::test]
+async fn budget_ac8_original_client_carries_no_budget() {
+    let rig = discovery_rig(0xBB).await;
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.max_requests = Some(NonZeroUsize::new(1).unwrap());
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+    VerifiedContext::fetch_with_policy(&rig.client, &rig.h.resolver, &rig.target_ctx_id, &policy)
+        .await
+        .expect_err("max_requests: Some(1) must exhaust against a 6-search natural total");
+
+    // The ORIGINAL client — never handed to `with_discovery_budget` —
+    // must still work normally after the exhausted discovery above.
+    let ctx = rig
+        .client
+        .retrieve(&rig.target_ctx_id)
+        .await
+        .expect("the caller's original client must carry no budget at all");
+    assert_eq!(ctx.body.ctx_id, rig.target_ctx_id);
+}
+
+/// M1 (verification-gap closure): every budget test above reuses
+/// `discovery_rig` with NO revocations seeded, so discovery only ever
+/// issues `search` (`hits("context")` and `hits("lineage")` never move)
+/// — deleting `check_discovery_budget()?` from `RegistryClient::retrieve`
+/// or `RegistryClient::lineage` leaves the whole suite green. This test
+/// seeds exactly one revocation so `find_revocations` actually retrieves
+/// the matching candidate (`client.retrieve`, the "context" route) AND
+/// walks its lineage (`client.lineage`, the "lineage" route), and picks
+/// `max_requests` to land exactly on the boundary between "the retrieve
+/// got through" and "the lineage walk was refused before it was sent".
+///
+/// Natural request order for one producer-signed match under
+/// `producer_signed_only()`: the double loop tries all 2 type_forms x 3
+/// statuses unconditionally (no early exit), and `(type_form=
+/// "key-revocation", status="active")` — the very first pair — is where
+/// a freshly seeded, non-superseded, non-retracted revocation matches.
+/// So the call order is: search #1 (match) -> retrieve #2 (inline, the
+/// instant a new candidate is seen) -> search #3..#7 (the remaining 5
+/// pairs, no match) -> exactly one `client.lineage` walk of the newly
+/// discovered lineage (call #8, since the candidate was already `seen`
+/// via the retrieve above, the walk only re-confirms membership). Seven
+/// calls precede the lineage walk (6 search + 1 retrieve), so
+/// `max_requests: Some(7)` lets all seven through — both budget-checked,
+/// both counted — and refuses only the eighth, the lineage call, before
+/// it is ever sent to the server.
+///
+/// `hits("context")`'s expected delta is 2, not 1: `fetch_with_policy`
+/// always does its OWN top-level retrieve of the target through the
+/// CALLER's (unbudgeted) client before discovery ever runs — see the
+/// block comment above `budget_ac1_revocation_discovery_still_copy` —
+/// plus the ONE discovery-scoped retrieve of the seeded candidate.
+#[tokio::test]
+async fn budget_m1_seeded_revocation_bounds_retrieve_and_lineage() {
+    const N: usize = 7;
+
+    let rig = discovery_rig(0xC8).await;
+    rig.h
+        .seed_revocations(&rig.producer, &rig.producer_fp, &[rig.receipt_time])
+        .await;
+    let before_search = rig.h.hits("search");
+    let before_context = rig.h.hits("context");
+    let before_lineage = rig.h.hits("lineage");
+
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.max_requests = Some(NonZeroUsize::new(N).unwrap());
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+    let err = VerifiedContext::fetch_with_policy(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &policy,
+    )
+    .await
+    .expect_err(
+        "max_requests: Some(7) must exhaust exactly at the lineage walk, after \
+         the 6 searches and the one matching candidate's retrieve already went through",
+    );
+    match &err {
+        AcdpError::RevocationDiscoveryFailed { source } => {
+            assert!(
+                matches!(**source, AcdpError::RevocationDiscoveryBudgetExceeded(_)),
+                "got {source:?}"
+            );
+        }
+        other => panic!("expected RevocationDiscoveryFailed, got {other:?}"),
+    }
+
+    assert_eq!(
+        rig.h.hits("search") - before_search,
+        6,
+        "all 6 (type_form, status) searches must complete before the budget bites"
+    );
+    assert_eq!(
+        rig.h.hits("context") - before_context,
+        2,
+        "the top-level retrieve (1) plus the one matching candidate's \
+         discovery-scoped retrieve (1) must both be let through — retrieve's \
+         own `check_discovery_budget()?` reserved slot #7 rather than refusing it"
+    );
+    assert_eq!(
+        rig.h.hits("lineage") - before_lineage,
+        0,
+        "the lineage walk must be refused BEFORE any request reaches the server — \
+         this is the assertion that goes red if `check_discovery_budget()?` is \
+         deleted from `RegistryClient::lineage`"
+    );
+}
+
+/// N2 (load-bearing — the byte-budget analogue of AC3): the SAME
+/// `max_bytes` must yield the same total ceiling whether
+/// `include_registry_attested` is `false` or `true`, exactly as AC3
+/// proves for `max_requests`. Zero revocations are seeded (as in the
+/// `budget_ac2`/`ac3`/`ac7` family above), so every `/contexts/search`
+/// response is a fixed-size ~33-byte empty-match body (measured against
+/// this harness, not assumed) and `max_bytes: Some(100)` is calibrated
+/// below, in the SAME test, against a single-lookup run first — so this
+/// test does not hardcode a byte size that a harness change could
+/// silently invalidate.
+///
+/// Single-lookup calibration first: with `max_bytes: Some(100)` and
+/// `producer_signed_only()`, successive ~33-byte responses accumulate
+/// 33, 66, 99, 132 — the 4th request's own check-before-issue still
+/// sees 99 < 100 and is let through, and only the 5th observes the
+/// overrun. So `K1` (the single-lookup total) is expected to land
+/// strictly between 1 and the natural unbudgeted total of 6 — asserted,
+/// not assumed, so a harness response-size change fails loudly here
+/// rather than silently weakening the dual-lookup assertion below.
+///
+/// Dual-lookup with the SAME `max_bytes: Some(100)`: a genuinely
+/// COMBINED byte counter can only ever total `K1` requests-worth of
+/// bytes, split however the concurrent `try_join!` interleaves the two
+/// lookups — so the dual total must be `<= K1`. A (bugged) per-lookup
+/// separate budget would instead let EACH lookup independently
+/// accumulate up to `K1` requests before its own copy of the counter
+/// trips, for a dual total of up to `2 * K1` — comfortably more than
+/// `K1` and easily distinguished from the combined case. (`<=`, not
+/// `==`, for the same reason AC3/AC7 use `<=` for the dual case: a
+/// `try_join!` race can let both lookups' very first, unrecorded-yet
+/// requests through before either observes the other's bytes.)
+#[tokio::test]
+async fn budget_n2_max_bytes_combines_across_both_lookups() {
+    const MAX_BYTES: u64 = 100;
+
+    let rig1 = discovery_rig(0xC9).await;
+    let before_search1 = rig1.h.hits("search");
+    let mut discovery1 = RevocationDiscovery::producer_signed_only();
+    discovery1.max_bytes = Some(MAX_BYTES);
+    let policy1 = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery1),
+        ..Default::default()
+    };
+    VerifiedContext::fetch_with_policy(
+        &rig1.client,
+        &rig1.h.resolver,
+        &rig1.target_ctx_id,
+        &policy1,
+    )
+    .await
+    .expect_err("max_bytes: Some(100) must exhaust before the natural 6 searches complete");
+    let k1 = rig1.h.hits("search") - before_search1;
+    assert!(
+        k1 > 1 && k1 < 6,
+        "calibration invariant broken (k1={k1}) — this harness's search response \
+         size must have changed; re-tune MAX_BYTES rather than trusting the \
+         assertions below"
+    );
+
+    let rig2 = discovery_rig(0xCB).await;
+    let before_search2 = rig2.h.hits("search");
+    let before_caps2 = rig2.h.hits("acdp_json");
+    let mut discovery2 = RevocationDiscovery::all_trust_classes();
+    discovery2.max_bytes = Some(MAX_BYTES);
+    let policy2 = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery2),
+        ..Default::default()
+    };
+    let err2 = VerifiedContext::fetch_with_policy(
+        &rig2.client,
+        &rig2.h.resolver,
+        &rig2.target_ctx_id,
+        &policy2,
+    )
+    .await
+    .expect_err("max_bytes: Some(100) must exhaust before the natural 13 requests complete");
+    assert!(
+        matches!(
+            &err2,
+            AcdpError::RevocationDiscoveryFailed { source }
+                if matches!(**source, AcdpError::RevocationDiscoveryBudgetExceeded(_))
+        ),
+        "got {err2:?}"
+    );
+    let dual_total =
+        (rig2.h.hits("search") - before_search2) + (rig2.h.hits("acdp_json") - before_caps2);
+    assert!(
+        dual_total <= k1,
+        "dual-lookup total ({dual_total}) must be <= the single-lookup \
+         calibration (k1={k1}) — a combined byte budget, not one ceiling per \
+         lookup (which would allow up to 2*k1 = {})",
+        2 * k1
+    );
+}
+
+/// N2 (continued): both knobs set simultaneously, with `max_bytes`
+/// exhausted from the FIRST response and `max_requests` left generous
+/// enough to never bind on its own. This exercises
+/// `check_before_request`'s byte-exhausted-so-don't-consume-a-request-slot
+/// ordering (`registry.rs`'s `check_before_request`: the byte check runs
+/// first and is a side-effect-free load) in the presence of a
+/// `max_requests` value — a configuration no other test in this suite
+/// runs, since every other `max_bytes`-only test leaves `max_requests`
+/// unset.
+#[tokio::test]
+async fn budget_n2_both_knobs_set_byte_exhaustion_does_not_consume_request_slot() {
+    let rig = discovery_rig(0xCA).await;
+    let before_search = rig.h.hits("search");
+
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.max_bytes = Some(1);
+    // Generous enough that if the byte-exhausted check still consumed a
+    // request slot, the natural 6-search total would still complete
+    // "successfully" from `max_requests`'s point of view alone — so the
+    // ONLY thing that can produce a budget failure here is the byte
+    // check, and it must fire on the SECOND call, not later.
+    discovery.max_requests = Some(NonZeroUsize::new(6).unwrap());
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+    let err = VerifiedContext::fetch_with_policy(
+        &rig.client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &policy,
+    )
+    .await
+    .expect_err(
+        "with both knobs set, max_bytes: Some(1) must still exhaust after the \
+         first response, well before max_requests: Some(6) would ever bind",
+    );
+    match &err {
+        AcdpError::RevocationDiscoveryFailed { source } => {
+            assert!(
+                matches!(**source, AcdpError::RevocationDiscoveryBudgetExceeded(_)),
+                "got {source:?}"
+            );
+            assert!(
+                source.to_string().contains("max_bytes"),
+                "the byte check must be the one that fires, not max_requests; got {source}"
+            );
+        }
+        other => panic!("expected RevocationDiscoveryFailed, got {other:?}"),
+    }
+    assert_eq!(
+        rig.h.hits("search") - before_search,
+        1,
+        "byte-exhausted must refuse the SECOND request outright — it must not \
+         consume a request-count slot first and let the request through anyway"
+    );
+}
+
+// ── Issue #257: the revocation cache (facts + markers) ──────────────────────
+//
+// D-A: the cache is TWO objects. Facts (verified `KeyRevocation`s) are always
+// unioned into classification, indefinitely, per RFC-ACDP-0014 §7:114 — an
+// anti-rollback security control. Freshness markers ("vantage V completed a
+// full, untruncated discovery for producer P at time T") are TTL-bounded,
+// per-vantage, and off by default (`freshness: Duration::ZERO`), because §8
+// warns that absence of search results is not evidence of absence.
+//
+// AC2 and AC6 carry the security argument (B1): facts must survive an
+// induced discovery failure, and a marker must never be minted on anything
+// short of full, untruncated success.
+
+/// A two-key `did:web:localhost:<path>` identity for the cache tests below:
+/// `key-1` signs ordinary/target content, `key-2` signs revocations of
+/// `key-1` (RFC-ACDP-0014 §5 step 2 forbids self-revocation). Deliberately
+/// receipt-signer-free — most of these tests reach RFC-ACDP-0014 §7 step 4
+/// ("no verified receipt ⇒ fail closed") rather than the receipt-attested
+/// pre/post-boundary distinction `discovery_rig` uses, which keeps the setup
+/// minimal; the tests that specifically need a receipt-attested boundary (or
+/// the registry's own §6 identity) reuse `discovery_rig` instead.
+struct CacheIdentity {
+    path: &'static str,
+    #[allow(dead_code)] // kept for callers that want the raw DID string
+    producer_did: String,
+    did_doc: serde_json::Value,
+    target: Producer,
+    revoker: Producer,
+    target_fp: String,
+}
+
+fn cache_identity(seed: u8, path: &'static str) -> CacheIdentity {
+    let target_key = SigningKey::from_bytes(&[seed; 32]);
+    let target_pub = target_key.verifying_key_bytes();
+    let target_fp = fingerprint_ed25519(&target_pub);
+    let revoker_key = SigningKey::from_bytes(&[seed.wrapping_add(1); 32]);
+    let revoker_pub = revoker_key.verifying_key_bytes();
+    let producer_did = candidate_did(path);
+    let did_doc =
+        two_key_ed25519_did_doc(&producer_did, "key-1", &target_pub, "key-2", &revoker_pub);
+    let target = Producer::new(
+        target_key,
+        AgentDid::new(producer_did.as_str()),
+        format!("{producer_did}#key-1"),
+    );
+    let revoker = Producer::new(
+        revoker_key,
+        AgentDid::new(producer_did.as_str()),
+        format!("{producer_did}#key-2"),
+    );
+    CacheIdentity {
+        path,
+        producer_did,
+        did_doc,
+        target,
+        revoker,
+        target_fp,
+    }
+}
+
+/// Publish a plain, non-revocation, receipt-less target context signed by
+/// `id.target` on a real `LineageServerHarness`, via the harness's real
+/// `RegistryServer`/`InMemoryStore` (not a hand-built mock).
+async fn publish_plain_target(h: &LineageServerHarness, id: &CacheIdentity) -> CtxId {
+    let req = id
+        .target
+        .publish_request()
+        .acdp_version("0.3.0")
+        .title("cache test target")
+        .context_type(ContextType::Analysis)
+        .visibility(Visibility::Public)
+        .build()
+        .expect("build");
+    let resp = h
+        .server
+        .publish_verified(&req, None, &h.resolver)
+        .await
+        .expect("publish");
+    resp.ctx_id
+}
+
+/// Publish an `n`-node `derived_from` CHAIN signed by `id.target` on a real
+/// `LineageServerHarness`: `chain[0]` has no parent, `chain[i]` (`i > 0`) has
+/// `derived_from: [chain[i-1]]`. Returns oldest→newest. Used by the issue
+/// #260 `CrossRegistryResolver` revocation-discovery tests below, which walk
+/// `derived_from` FROM `chain[n-1]` back to `chain[0]` — `n-1` ancestors
+/// actually pass through [`CrossRegistryResolver::resolve`] (the root itself
+/// is excluded per `walk_derived_from`'s doc), each one triggering its own
+/// revocation-discovery attempt under the policy the test's resolver
+/// carries.
+async fn publish_derived_chain(
+    h: &LineageServerHarness,
+    id: &CacheIdentity,
+    n: usize,
+) -> Vec<CtxId> {
+    assert!(n >= 1, "a chain needs at least one node");
+    let mut chain: Vec<CtxId> = Vec::with_capacity(n);
+    for i in 0..n {
+        let mut builder = id
+            .target
+            .publish_request()
+            .acdp_version("0.3.0")
+            .title(format!("resolver chain node {i}"))
+            .context_type(ContextType::Analysis)
+            .visibility(Visibility::Public);
+        if let Some(parent) = chain.last() {
+            builder = builder.derived_from(vec![parent.clone()]);
+        }
+        let req = builder.build().expect("build");
+        let resp = h
+            .server
+            .publish_verified(&req, None, &h.resolver)
+            .await
+            .expect("publish");
+        chain.push(resp.ctx_id);
+    }
+    chain
+}
+
+/// Build a plain, non-revocation `Body` signed by `producer` at an
+/// explicit `ctx_id`/`lineage_id`, without going through any server —
+/// for the hand-built single-route mocks below (mirrors `revocation_body`,
+/// used elsewhere in this file for the same reason, minus the
+/// `key-revocation` content type).
+fn plain_signed_body(
+    producer: &Producer,
+    ctx_id: &str,
+    lineage_id: &LineageId,
+    created_at: DateTime<Utc>,
+) -> Body {
+    let req = producer
+        .publish_request()
+        .acdp_version("0.3.0")
+        .title("cache test target (mock)")
+        .context_type(ContextType::Analysis)
+        .visibility(Visibility::Public)
+        .build()
+        .expect("build");
+    Body::from_publish_request(
+        &req,
+        CtxId::parse(ctx_id).expect("valid ctx_id"),
+        lineage_id.clone(),
+        REGISTRY_AUTHORITY,
+        created_at,
+    )
+}
+
+/// AC1: the anti-rollback case in its purest form. Warm the cache against
+/// `h1`, which genuinely serves R for producer P; then verify a FRESH
+/// target under the SAME producer identity against `h2`, an entirely
+/// separate, real `LineageServerHarness` that has never seen R at all — a
+/// genuine, successful, empty discovery (not an error, not a truncation),
+/// simulating a registry that has stopped serving a revocation it once
+/// served. The cached fact must still fail-close verification on `h2`.
+///
+/// Facts are keyed only by producer `agent_id` (never by vantage), so this
+/// works across two independent registries sharing nothing but the
+/// identity string — precisely the anti-rollback property RFC-ACDP-0014
+/// §7:114 licenses.
+#[tokio::test]
+async fn cache_ac1_fact_survives_a_registry_that_stops_serving_it() {
+    let id = cache_identity(0xC1, "cache-ac1");
+    let cache = RevocationCache::new();
+
+    let h1 = LineageServerHarness::builder(lifecycle_caps())
+        .with_producer_did_document(id.path, id.did_doc.clone())
+        .build()
+        .await;
+    let boundary = at("2026-05-01T00:00:00.000Z");
+    h1.seed_revocations(&id.revoker, &id.target_fp, &[boundary])
+        .await;
+    let client1 = h1.client().with_revocation_cache(cache.clone());
+    let discovery = RevocationDiscovery::producer_signed_only();
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+    let t1 = publish_plain_target(&h1, &id).await;
+    let err = VerifiedContext::fetch_with_policy(&client1, &h1.resolver, &t1, &policy)
+        .await
+        .expect_err(
+            "warm-up: R must be found via discovery and fail closed (§7 step 4 — no receipt)",
+        );
+    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+
+    // A second, entirely separate real harness — same identity, no
+    // revocation ever seeded. `hits("search")` below proves this call
+    // genuinely re-ran discovery (not suppressed by a marker: freshness
+    // is ZERO by default) and found nothing new.
+    let h2 = LineageServerHarness::builder(lifecycle_caps())
+        .with_producer_did_document(id.path, id.did_doc.clone())
+        .build()
+        .await;
+    let client2 = h2.client().with_revocation_cache(cache);
+    let t2 = publish_plain_target(&h2, &id).await;
+    let err2 = VerifiedContext::fetch_with_policy(&client2, &h2.resolver, &t2, &policy)
+        .await
+        .expect_err(
+            "the cached fact R must still fail-close verification even though h2's own \
+             discovery genuinely found nothing",
+        );
+    assert!(
+        matches!(err2, AcdpError::KeyNotAuthorized(_)),
+        "got {err2:?}"
+    );
+    assert!(
+        h2.hits("search") > 0,
+        "sanity: h2's discovery must have genuinely run (not been skipped) and found nothing"
+    );
+}
+
+/// AC2 (the B1 criterion): facts survive an induced 503 under
+/// `ProceedWithKnown`. Warm the cache (R is genuinely discovered and
+/// fails verification closed), then induce a transport error and switch
+/// to `ProceedWithKnown` — the fact must still fail-close the SAME
+/// target, even though this call's own discovery attempt failed.
+#[tokio::test]
+async fn cache_ac2_facts_survive_induced_503_under_proceed_with_known() {
+    let rig = discovery_rig(0xE1).await;
+    let cache = RevocationCache::new();
+    let client = rig.client.with_revocation_cache(cache);
+    rig.h
+        .seed_revocations(&rig.producer, &rig.producer_fp, &[rig.receipt_time])
+        .await;
+
+    let discovery = RevocationDiscovery::producer_signed_only();
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+    let err =
+        VerifiedContext::fetch_with_policy(&client, &rig.h.resolver, &rig.target_ctx_id, &policy)
+            .await
+            .expect_err("warm-up discovery must find R and fail closed");
+    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+
+    rig.h
+        .set_error("search", axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    let mut discovery2 = RevocationDiscovery::producer_signed_only();
+    discovery2.on_failure = DiscoveryFailurePolicy::ProceedWithKnown;
+    let policy2 = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery2),
+        ..Default::default()
+    };
+    let err2 =
+        VerifiedContext::fetch_with_policy(&client, &rig.h.resolver, &rig.target_ctx_id, &policy2)
+            .await
+            .expect_err(
+                "the cached fact R must still fail-close verification even though this \
+         call's discovery attempt failed (503)",
+            );
+    assert!(
+        matches!(err2, AcdpError::KeyNotAuthorized(_)),
+        "got {err2:?}"
+    );
+}
+
+/// AC2 (continued): facts survive an induced `SearchTruncated`. Genuine
+/// page-cap truncation needs a hand-built mock (the real harness cannot
+/// serve enough pages — see the repo map), so this test warms the cache
+/// against a real harness (`h1`, seeding R), then verifies a fresh target
+/// under the SAME producer identity against a minimal mock registry (`h2`)
+/// whose `/contexts/search` always returns a stuck cursor.
+#[tokio::test]
+async fn cache_ac2_facts_survive_induced_search_truncated_under_proceed_with_known() {
+    use std::collections::HashMap;
+
+    let id = cache_identity(0xC3, "cache-ac2b");
+    let cache = RevocationCache::new();
+
+    let h1 = LineageServerHarness::builder(lifecycle_caps())
+        .with_producer_did_document(id.path, id.did_doc.clone())
+        .build()
+        .await;
+    let boundary = at("2026-05-01T00:00:00.000Z");
+    h1.seed_revocations(&id.revoker, &id.target_fp, &[boundary])
+        .await;
+    let client1 = h1.client().with_revocation_cache(cache.clone());
+    let discovery = RevocationDiscovery::producer_signed_only();
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+    let t1 = publish_plain_target(&h1, &id).await;
+    let err = VerifiedContext::fetch_with_policy(&client1, &h1.resolver, &t1, &policy)
+        .await
+        .expect_err("warm-up: R must be found via discovery and fail closed");
+    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+
+    // Minimal mock: DID doc + one target context + a search route that
+    // always truncates. No `/lineages/{id}` route is needed — a search
+    // response of `matches: []` never names a lineage_id to walk.
+    let t2_ctx_id_str = "acdp://registry.example.com/00000000-0000-4000-8000-0000000000c3";
+    let t2_lineage = LineageId::parse(format!("lin:sha256:{}", "7".repeat(64))).unwrap();
+    let t2_body = plain_signed_body(&id.target, t2_ctx_id_str, &t2_lineage, Utc::now());
+    let t2_full_json = serde_json::to_value(full_context(t2_body)).unwrap();
+    let doc = id.did_doc.clone();
+    let path = id.path;
+    let router = Router::new()
+        .route(
+            "/contexts/search",
+            get(
+                |_: axum::extract::Query<HashMap<String, String>>| async move {
+                    Json(json!({"matches": [], "next_cursor": "stuck"}))
+                },
+            ),
+        )
+        .route(
+            &candidate_did_route(path),
+            get(move || {
+                let doc = doc.clone();
+                async move { Json(doc) }
+            }),
+        )
+        .route(
+            "/contexts/{id}",
+            get(
+                move |axum::extract::Path(_id): axum::extract::Path<String>| {
+                    let body = t2_full_json.clone();
+                    async move { Json(body) }
+                },
+            ),
+        );
+    let tls2 = TlsTestServer::start(router).await;
+    let resolver2 = WebResolver::with_test_endpoint(&tls2.root_cert_pem, "localhost", tls2.addr)
+        .expect("pinned resolver");
+    let client2 = RegistryClient::with_test_endpoint(
+        &format!("https://{REGISTRY_AUTHORITY}"),
+        tls2.addr,
+        &tls2.root_cert_pem,
+    )
+    .expect("pinned client")
+    .with_revocation_cache(cache);
+
+    let mut discovery2 = RevocationDiscovery::producer_signed_only();
+    discovery2.on_failure = DiscoveryFailurePolicy::ProceedWithKnown;
+    let policy2 = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery2),
+        ..Default::default()
+    };
+    let t2_ctx_id = CtxId::parse(t2_ctx_id_str).unwrap();
+    let err2 = VerifiedContext::fetch_with_policy(&client2, &resolver2, &t2_ctx_id, &policy2)
+        .await
+        .expect_err(
+            "the cached fact R must still fail-close verification even though this \
+             call's discovery attempt hit SearchTruncated",
+        );
+    assert!(
+        matches!(err2, AcdpError::KeyNotAuthorized(_)),
+        "got {err2:?}"
+    );
+}
+
+/// AC2 (continued): facts survive an induced Phase 1 (#258) budget
+/// exhaustion.
+#[tokio::test]
+async fn cache_ac2_facts_survive_induced_budget_exhaustion_under_proceed_with_known() {
+    let rig = discovery_rig(0xE2).await;
+    let cache = RevocationCache::new();
+    let client = rig.client.with_revocation_cache(cache);
+    rig.h
+        .seed_revocations(&rig.producer, &rig.producer_fp, &[rig.receipt_time])
+        .await;
+
+    let discovery = RevocationDiscovery::producer_signed_only();
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+    let err =
+        VerifiedContext::fetch_with_policy(&client, &rig.h.resolver, &rig.target_ctx_id, &policy)
+            .await
+            .expect_err("warm-up discovery must find R and fail closed");
+    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+
+    let mut discovery2 = RevocationDiscovery::producer_signed_only();
+    discovery2.max_requests = Some(NonZeroUsize::new(1).unwrap());
+    discovery2.on_failure = DiscoveryFailurePolicy::ProceedWithKnown;
+    let policy2 = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery2),
+        ..Default::default()
+    };
+    let err2 =
+        VerifiedContext::fetch_with_policy(&client, &rig.h.resolver, &rig.target_ctx_id, &policy2)
+            .await
+            .expect_err(
+                "the cached fact R must still fail-close verification even though this \
+         call's discovery attempt hit the request budget",
+            );
+    assert!(
+        matches!(err2, AcdpError::KeyNotAuthorized(_)),
+        "got {err2:?}"
+    );
+}
+
+/// AC3: with a cache attached and `freshness: ZERO` (the default), a
+/// second identical verify searches EXACTLY as much as the first — the
+/// cache saves zero requests by default.
+#[tokio::test]
+async fn cache_ac3_default_freshness_zero_saves_no_requests() {
+    let rig = discovery_rig(0xE3).await;
+    let cache = RevocationCache::new();
+    let client = rig.client.with_revocation_cache(cache);
+    let discovery = RevocationDiscovery::producer_signed_only();
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+
+    let before = rig.h.hits("search");
+    VerifiedContext::fetch_with_policy(&client, &rig.h.resolver, &rig.target_ctx_id, &policy)
+        .await
+        .expect("no revocation seeded; must verify cleanly");
+    let after_call1 = rig.h.hits("search");
+    let delta1 = after_call1 - before;
+    assert!(delta1 > 0, "the first call must actually search");
+
+    VerifiedContext::fetch_with_policy(&client, &rig.h.resolver, &rig.target_ctx_id, &policy)
+        .await
+        .expect("must verify cleanly again");
+    let delta2 = rig.h.hits("search") - after_call1;
+    assert_eq!(
+        delta2, delta1,
+        "with freshness: ZERO (the default), attaching a cache must save exactly zero \
+         requests — the second call must search exactly as much as the first"
+    );
+}
+
+/// AC5a: with a generous `freshness` window, a marker minted by a clean
+/// baseline call suppresses a REPEAT lookup entirely — even after a new
+/// revocation is published in the meantime.
+///
+/// The window is deliberately LARGE (30 s). An earlier version of this
+/// test used a 50 ms window and a 60 ms sleep to prove suppression and
+/// expiry on one timeline, and it was flaky on CI (`ubuntu/beta` and
+/// `windows/stable` both failed at the in-window assertion). The cause
+/// was not margin-tuning: `seed_revocations` performs a real Ed25519
+/// publish over TLS *between* minting the marker and checking it, so on
+/// a loaded runner the window expired mid-test, discovery re-ran, and R2
+/// fail-closed where the test expected suppression. Splitting the two
+/// properties apart removes the race rather than widening it — neither
+/// half now depends on work finishing inside a deadline. Expiry is
+/// proven separately by `cache_ac5b_*`.
+#[tokio::test]
+async fn cache_ac5a_freshness_window_suppresses_repeat_lookup() {
+    let rig = discovery_rig(0xE5).await;
+    let cache = RevocationCache::new();
+    let client = rig.client.with_revocation_cache(cache);
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.freshness = std::time::Duration::from_secs(30);
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+
+    let verified =
+        VerifiedContext::fetch_with_policy(&client, &rig.h.resolver, &rig.target_ctx_id, &policy)
+            .await
+            .expect("clean baseline mints the marker");
+    assert_eq!(verified.key_status(), KeyAuthorization::CurrentlyAuthorized);
+    let after_warm = rig.h.hits("search");
+    assert!(after_warm > 0, "the baseline call must actually search");
+
+    // R2 is reachable only by discovery — never placed in `known`.
+    rig.h
+        .seed_revocations(&rig.producer, &rig.producer_fp, &[rig.receipt_time])
+        .await;
+
+    let still_ok =
+        VerifiedContext::fetch_with_policy(&client, &rig.h.resolver, &rig.target_ctx_id, &policy)
+            .await
+            .expect("within the freshness window, R2 must not be applied");
+    assert_eq!(still_ok.key_status(), KeyAuthorization::CurrentlyAuthorized);
+    assert_eq!(
+        rig.h.hits("search"),
+        after_warm,
+        "within the freshness window, discovery must be skipped entirely — zero new \
+         search requests"
+    );
+}
+
+/// AC5b: a marker STOPS suppressing once its `freshness` elapses, so a
+/// revocation published after the marker was minted is still discovered.
+///
+/// This is the half that closes RFC-ACDP-0014 §7:114's actual silence —
+/// §7:114 licenses caching a verified revocation indefinitely but says
+/// nothing about re-checking for NEW ones. A marker that never expired
+/// would reintroduce exactly that gap, so this test must stay able to
+/// fail: it goes RED if suppression becomes permanent.
+///
+/// The window is deliberately TINY (1 ms) against a 250 ms sleep, which
+/// is the opposite race to `cache_ac5a_*` and equally unloseable — CI
+/// slowness can only make the window MORE expired, never less.
+#[tokio::test]
+async fn cache_ac5b_freshness_expiry_reveals_new_revocation() {
+    let rig = discovery_rig(0xE6).await;
+    let cache = RevocationCache::new();
+    let client = rig.client.with_revocation_cache(cache);
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.freshness = std::time::Duration::from_millis(1);
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+
+    let verified =
+        VerifiedContext::fetch_with_policy(&client, &rig.h.resolver, &rig.target_ctx_id, &policy)
+            .await
+            .expect("clean baseline mints the marker");
+    assert_eq!(verified.key_status(), KeyAuthorization::CurrentlyAuthorized);
+    let after_warm = rig.h.hits("search");
+
+    rig.h
+        .seed_revocations(&rig.producer, &rig.producer_fp, &[rig.receipt_time])
+        .await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+
+    let err =
+        VerifiedContext::fetch_with_policy(&client, &rig.h.resolver, &rig.target_ctx_id, &policy)
+            .await
+            .expect_err(
+                "after the freshness window elapses, R2 must be discovered and fail closed",
+            );
+    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+    assert!(
+        rig.h.hits("search") > after_warm,
+        "discovery must have genuinely re-run after the freshness window elapsed"
+    );
+}
+
+/// AC6: no marker is minted on an induced `SearchTruncated` — a second
+/// call, still well within a long freshness window, must search again
+/// rather than being (wrongly) suppressed by a marker from the truncated
+/// attempt. Self-contained mock (no receipt, no real backing store): the
+/// point here is purely marker-absence, observed via request counts.
+#[tokio::test]
+async fn cache_ac6_no_marker_minted_on_induced_search_truncated() {
+    use std::collections::HashMap;
+
+    let id = cache_identity(0xE6, "cache-ac6-truncated");
+    let target_ctx_id_str = "acdp://registry.example.com/00000000-0000-4000-8000-0000000000e6";
+    let lineage = LineageId::parse(format!("lin:sha256:{}", "8".repeat(64))).unwrap();
+    let body = plain_signed_body(&id.target, target_ctx_id_str, &lineage, Utc::now());
+    let full_json = serde_json::to_value(full_context(body)).unwrap();
+
+    let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let doc = id.did_doc.clone();
+    let path = id.path;
+    let router = Router::new()
+        .route(
+            "/contexts/search",
+            get({
+                let hits = hits.clone();
+                move |_: axum::extract::Query<HashMap<String, String>>| {
+                    let hits = hits.clone();
+                    async move {
+                        hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Json(json!({"matches": [], "next_cursor": "stuck"}))
+                    }
+                }
+            }),
+        )
+        .route(
+            &candidate_did_route(path),
+            get(move || {
+                let doc = doc.clone();
+                async move { Json(doc) }
+            }),
+        )
+        .route(
+            "/contexts/{id}",
+            get(
+                move |axum::extract::Path(_id): axum::extract::Path<String>| {
+                    let body = full_json.clone();
+                    async move { Json(body) }
+                },
+            ),
+        );
+    let tls = TlsTestServer::start(router).await;
+    let resolver = WebResolver::with_test_endpoint(&tls.root_cert_pem, "localhost", tls.addr)
+        .expect("pinned resolver");
+    let client = RegistryClient::with_test_endpoint(
+        &format!("https://{REGISTRY_AUTHORITY}"),
+        tls.addr,
+        &tls.root_cert_pem,
+    )
+    .expect("pinned client")
+    .with_revocation_cache(RevocationCache::new());
+
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.freshness = std::time::Duration::from_secs(60);
+    discovery.on_failure = DiscoveryFailurePolicy::ProceedWithKnown;
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+    let target_ctx_id = CtxId::parse(target_ctx_id_str).unwrap();
+
+    let verified = VerifiedContext::fetch_with_policy(&client, &resolver, &target_ctx_id, &policy)
+        .await
+        .expect(
+            "ProceedWithKnown must let verification succeed despite the induced SearchTruncated",
+        );
+    assert!(
+        verified.revocation_discovery_failure().is_some(),
+        "the induced SearchTruncated must be recorded, not silent"
+    );
+    let hits_after_1 = hits.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(hits_after_1 > 0);
+
+    let verified2 = VerifiedContext::fetch_with_policy(&client, &resolver, &target_ctx_id, &policy)
+        .await
+        .expect("ProceedWithKnown must let verification succeed again");
+    assert!(verified2.revocation_discovery_failure().is_some());
+    assert!(
+        hits.load(std::sync::atomic::Ordering::SeqCst) > hits_after_1,
+        "a truncated (not fully successful) discovery must never mint a marker: the \
+         second call, still within the freshness window, must have searched again"
+    );
+}
+
+/// AC6 (continued): no marker is minted on an induced Phase 1 (#258)
+/// budget exhaustion.
+#[tokio::test]
+async fn cache_ac6_no_marker_minted_on_induced_budget_exhaustion() {
+    let rig = discovery_rig(0xE7).await;
+    let cache = RevocationCache::new();
+    let client = rig.client.with_revocation_cache(cache);
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.freshness = std::time::Duration::from_secs(60);
+    discovery.max_requests = Some(NonZeroUsize::new(1).unwrap());
+    discovery.on_failure = DiscoveryFailurePolicy::ProceedWithKnown;
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+
+    let before = rig.h.hits("search");
+    VerifiedContext::fetch_with_policy(&client, &rig.h.resolver, &rig.target_ctx_id, &policy)
+        .await
+        .expect(
+            "ProceedWithKnown must let verification succeed despite the induced budget exhaustion",
+        );
+    let after1 = rig.h.hits("search");
+    assert!(
+        after1 > before,
+        "the first call must have issued at least one search before exhausting the budget"
+    );
+
+    VerifiedContext::fetch_with_policy(&client, &rig.h.resolver, &rig.target_ctx_id, &policy)
+        .await
+        .expect("must succeed again");
+    assert!(
+        rig.h.hits("search") > after1,
+        "a budget-exhausted discovery must never mint a marker: the second call, \
+         still within the freshness window, must have searched again"
+    );
+}
+
+/// AC6 (continued): no marker is minted on an induced `total_timeout`
+/// trip.
+#[tokio::test]
+async fn cache_ac6_no_marker_minted_on_induced_total_timeout() {
+    let rig = discovery_rig(0xE8).await;
+    let cache = RevocationCache::new();
+    let client = rig.client.with_revocation_cache(cache);
+    rig.h
+        .set_delay("search", std::time::Duration::from_millis(300));
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.freshness = std::time::Duration::from_secs(60);
+    discovery.total_timeout = std::time::Duration::from_millis(50);
+    discovery.on_failure = DiscoveryFailurePolicy::ProceedWithKnown;
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+
+    let before = rig.h.hits("search");
+    VerifiedContext::fetch_with_policy(&client, &rig.h.resolver, &rig.target_ctx_id, &policy)
+        .await
+        .expect("ProceedWithKnown must let verification succeed despite the induced timeout");
+    rig.h.clear_delay("search");
+    let after1 = rig.h.hits("search");
+    assert!(
+        after1 > before,
+        "the first call must have issued at least one search before timing out"
+    );
+
+    VerifiedContext::fetch_with_policy(&client, &rig.h.resolver, &rig.target_ctx_id, &policy)
+        .await
+        .expect("must succeed again");
+    assert!(
+        rig.h.hits("search") > after1,
+        "a timed-out discovery must never mint a marker: the second call, still \
+         within the freshness window, must have searched again"
+    );
+}
+
+/// AC7(a): a marker minted for `producer_signed_only()` does not suppress
+/// the independent registry-attested lookup a subsequent
+/// `all_trust_classes()` call makes for the same producer, within the
+/// same freshness window.
+#[tokio::test]
+async fn cache_ac7a_marker_for_one_class_does_not_suppress_the_other() {
+    let rig = discovery_rig(0xE9).await;
+    let cache = RevocationCache::new();
+    let client = rig.client.with_revocation_cache(cache);
+
+    let mut only = RevocationDiscovery::producer_signed_only();
+    only.freshness = std::time::Duration::from_secs(60);
+    let policy_only = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(only),
+        ..Default::default()
+    };
+    VerifiedContext::fetch_with_policy(&client, &rig.h.resolver, &rig.target_ctx_id, &policy_only)
+        .await
+        .expect("clean baseline under producer_signed_only()");
+
+    let acdp_json_before = rig.h.hits("acdp_json");
+    let mut all = RevocationDiscovery::all_trust_classes();
+    all.freshness = std::time::Duration::from_secs(60);
+    let policy_all = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(all),
+        ..Default::default()
+    };
+    VerifiedContext::fetch_with_policy(&client, &rig.h.resolver, &rig.target_ctx_id, &policy_all)
+        .await
+        .expect("clean baseline under all_trust_classes()");
+    assert!(
+        rig.h.hits("acdp_json") > acdp_json_before,
+        "a marker minted for producer-signed discovery must not suppress the \
+         independent registry-attested lookup"
+    );
+}
+
+/// AC7(b): a `producer_signed_only()` run against a cache holding a
+/// registry-attested fact does NOT apply it.
+#[tokio::test]
+async fn cache_ac7b_producer_signed_only_ignores_a_cached_registry_attested_fact() {
+    let seed = 0xEAu8;
+    let rig = discovery_rig(seed).await;
+    let cache = RevocationCache::new();
+    let client = rig.client.with_revocation_cache(cache);
+
+    // A genuine registry-attested revocation of the target's key,
+    // published under the registry's own identity — `SigningKey` is not
+    // `Clone`, so the receipt signer `discovery_rig` configured is
+    // reconstructed here from the same seed rather than threaded through.
+    let registry_signer_key = SigningKey::from_bytes(&[seed; 32]);
+    let registry = Producer::new(
+        registry_signer_key,
+        AgentDid::new(REGISTRY_DID),
+        format!("{REGISTRY_DID}#receipt-key-1"),
+    );
+    let req = registry
+        .publish_request()
+        .acdp_version("0.3.0")
+        .title("registry-attested revocation")
+        .context_type(ContextType::KeyRevocation)
+        .visibility(Visibility::Public)
+        .metadata(json!({
+            "revoked_key_fingerprint": rig.producer_fp,
+            "compromised_since": rig.receipt_time
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            "revoked_key_controller": rig.producer_did,
+        }))
+        .build()
+        .expect("build");
+    rig.h
+        .server
+        .publish_verified(&req, None, &rig.h.resolver)
+        .await
+        .expect("registry-attested revocation publish");
+
+    let all = RevocationDiscovery::all_trust_classes();
+    let policy_all = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(all),
+        ..Default::default()
+    };
+    let err = VerifiedContext::fetch_with_policy(
+        &client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &policy_all,
+    )
+    .await
+    .expect_err("the registry-attested revocation must be found and fail closed");
+    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+
+    let only = RevocationDiscovery::producer_signed_only();
+    let policy_only = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(only),
+        ..Default::default()
+    };
+    let verified = VerifiedContext::fetch_with_policy(
+        &client,
+        &rig.h.resolver,
+        &rig.target_ctx_id,
+        &policy_only,
+    )
+    .await
+    .expect("producer_signed_only() must not apply a cached registry-attested fact");
+    assert_eq!(verified.key_status(), KeyAuthorization::CurrentlyAuthorized);
+}
+
+/// Falsifiability-probe target (AC13c): the registry-attested marker key
+/// must be the producer/controller DID, never the registry's own search
+/// identity — otherwise a marker minted for one producer would suppress
+/// the lookup for every OTHER producer at the same registry too. Two
+/// distinct producers, one registry: warming producer P1's
+/// registry-attested marker must not suppress producer P2's independent
+/// lookup.
+#[tokio::test]
+async fn cache_ac7c_registry_attested_marker_is_per_producer_not_per_registry() {
+    let id1 = cache_identity(0xED, "cache-ac7c-p1");
+    let id2 = cache_identity(0xEE, "cache-ac7c-p2");
+    let h = LineageServerHarness::builder(lifecycle_caps())
+        .with_producer_did_document(id1.path, id1.did_doc.clone())
+        .with_producer_did_document(id2.path, id2.did_doc.clone())
+        .with_well_known_acdp()
+        .build()
+        .await;
+    let t1 = publish_plain_target(&h, &id1).await;
+    let t2 = publish_plain_target(&h, &id2).await;
+
+    let cache = RevocationCache::new();
+    let client = h.client().with_revocation_cache(cache);
+    let mut discovery = RevocationDiscovery::all_trust_classes();
+    discovery.freshness = std::time::Duration::from_secs(60);
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+
+    VerifiedContext::fetch_with_policy(&client, &h.resolver, &t1, &policy)
+        .await
+        .expect("baseline P1 mints P1's registry-attested marker");
+
+    let acdp_json_before = h.hits("acdp_json");
+    VerifiedContext::fetch_with_policy(&client, &h.resolver, &t2, &policy)
+        .await
+        .expect("baseline P2");
+    assert!(
+        h.hits("acdp_json") > acdp_json_before,
+        "a registry-attested marker minted for producer P1 must not suppress the \
+         lookup for a DIFFERENT producer P2 at the SAME registry"
+    );
+}
+
+/// AC8: a marker minted for vantage A does not suppress discovery at a
+/// different vantage B, for the same producer and cache. Two
+/// `RegistryClient`s pointed at the SAME real harness (`RegistryClient::authority()`
+/// reads the logical host+port from the client's own base URL, not the
+/// physical socket `.resolve()` pins it to) give genuinely different
+/// vantage strings without needing a second server.
+#[tokio::test]
+async fn cache_ac8_marker_is_per_vantage() {
+    // Deliberately the receipt-less `cache_identity` rig, not
+    // `discovery_rig`: `discovery_rig`'s receipt phase cross-checks the
+    // receipt's `registry_did` against `client.authority()`
+    // (RFC-ACDP-0010's serving-authority binding), which would itself
+    // fail once vantage B's explicit port makes that authority differ
+    // from the one the receipt was minted under — a real but unrelated
+    // failure mode this test must not trip over.
+    let id = cache_identity(0xEB, "cache-ac8");
+    let h = LineageServerHarness::builder(lifecycle_caps())
+        .with_producer_did_document(id.path, id.did_doc.clone())
+        .build()
+        .await;
+    let t = publish_plain_target(&h, &id).await;
+
+    let cache = RevocationCache::new();
+    let client_a = h.client().with_revocation_cache(cache.clone());
+    let alt_base = format!("https://localhost:{}", h.tls.addr.port());
+    let client_b = RegistryClient::with_test_endpoint(&alt_base, h.tls.addr, &h.tls.root_cert_pem)
+        .expect("alt-authority client")
+        .with_revocation_cache(cache);
+    assert_ne!(
+        client_a.authority(),
+        client_b.authority(),
+        "sanity: the two clients must report different vantages"
+    );
+
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.freshness = std::time::Duration::from_secs(60);
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+
+    VerifiedContext::fetch_with_policy(&client_a, &h.resolver, &t, &policy)
+        .await
+        .expect("baseline via vantage A mints A's marker");
+
+    let before_b = h.hits("search");
+    VerifiedContext::fetch_with_policy(&client_b, &h.resolver, &t, &policy)
+        .await
+        .expect("baseline via vantage B");
+    assert!(
+        h.hits("search") > before_b,
+        "a marker minted for vantage A must not suppress discovery at a different \
+         vantage B, even for the same producer"
+    );
+}
+
+/// AC9: a suppressed registry-attested lookup issues ZERO requests,
+/// including no `capabilities()` fetch — the marker check must precede
+/// that unconditional call, not merely the search loop.
+#[tokio::test]
+async fn cache_ac9_marker_precedes_capabilities_fetch() {
+    let rig = discovery_rig(0xEC).await;
+    let cache = RevocationCache::new();
+    let client = rig.client.with_revocation_cache(cache);
+    let mut discovery = RevocationDiscovery::all_trust_classes();
+    discovery.freshness = std::time::Duration::from_secs(60);
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+
+    VerifiedContext::fetch_with_policy(&client, &rig.h.resolver, &rig.target_ctx_id, &policy)
+        .await
+        .expect("baseline mints the registry-attested marker");
+    let acdp_json_after_warm = rig.h.hits("acdp_json");
+    assert!(acdp_json_after_warm > 0);
+
+    VerifiedContext::fetch_with_policy(&client, &rig.h.resolver, &rig.target_ctx_id, &policy)
+        .await
+        .expect("second call within the freshness window");
+    assert_eq!(
+        rig.h.hits("acdp_json"),
+        acdp_json_after_warm,
+        "a fresh marker must suppress the registry-attested lookup BEFORE its \
+         unconditional capabilities() fetch — zero new requests, not just zero new \
+         searches"
+    );
+}
+
+/// AC11 (partial — the rest is `cargo semver-checks` plus a lockfile diff,
+/// run as part of verification, not expressible as a unit test):
+/// `RevocationDiscovery` still derives `Copy` with the new `freshness`
+/// field, and both named constructors still default it to `Duration::ZERO`.
+#[test]
+fn cache_ac11_revocation_discovery_still_copy_with_freshness_field() {
+    fn assert_copy<T: Copy>() {}
+    assert_copy::<RevocationDiscovery>();
+    let discovery = RevocationDiscovery::producer_signed_only();
+    let _copy1 = discovery;
+    let _copy2 = discovery;
+    assert_eq!(discovery.freshness, std::time::Duration::ZERO);
+}
+
+// ── Phase-2 verification-pass gap closures (fresh-Opus review of
+// #257/#258/#260, BLOCKER-1 / MATERIAL-2 / MATERIAL-3) ──────────────────────
+//
+// BLOCKER-1: the cache's stored facts now carry the vantage that minted
+// them. A producer-signed fact is self-contained (RFC-ACDP-0014 §8) and
+// crosses vantages (already covered by `cache_ac1`, above). A
+// registry-attested fact is one specific registry's claim (§6: "apply it
+// ... for contexts served by or receipted by that same registry") and must
+// NOT apply at a different vantage — `cache_blocker1_*` below covers that
+// direction, which was previously untested and unenforced.
+//
+// MATERIAL-2: no existing test recorded a non-empty fact set twice for the
+// same `agent_id` via two INDEPENDENT, real discoveries — the unit test
+// `record_success_dedups_identical_facts` only clones one in-memory value.
+// `cache_material2_*` below warms a cache via a live harness and re-verifies
+// several times at `freshness: ZERO` (so every call genuinely re-discovers),
+// asserting the fact count never grows past 1.
+//
+// MATERIAL-3: `discover: None` previously seeded nothing at all, even with a
+// cache attached — contradicting the rustdoc/CHANGELOG claim that attaching
+// a cache "unconditionally" seeds facts. `cache_material3_*` below proves
+// the fix: a `discover: None` call still seeds the cached producer-signed
+// fact and issues zero live discovery requests.
+
+/// BLOCKER-1: a registry-attested revocation minted (cached) while talking
+/// to vantage A must NOT apply when the SAME cache is read while talking to
+/// a DIFFERENT vantage B — even under `all_trust_classes()`.
+///
+/// Two `RegistryClient`s point at the SAME physical harness
+/// (`RegistryClient::authority()` reads the client's own base URL, not the
+/// pinned socket — see `cache_ac8`, which establishes this exact trick).
+/// `client_a`'s vantage ("localhost") matches `REGISTRY_DID`'s own
+/// authority, so a live discovery genuinely finds and applies the
+/// registry-attested revocation there. `client_b`'s vantage
+/// ("localhost:<port>") does NOT match `REGISTRY_DID`'s authority, so
+/// `client_b`'s OWN live discovery legitimately finds nothing (RFC-ACDP-0014
+/// §6 step 2 / the RFC-ACDP-0011 §7 house binding rejects the mismatch) —
+/// any failure at `client_b` can therefore only come from an incorrectly
+/// unfiltered seeded fact, isolating exactly the bug this test targets.
+///
+/// `receipts: ReceiptPolicy::Ignore` sidesteps the UNRELATED failure mode
+/// `cache_ac8` already documented: `discovery_rig`'s minted receipt cross-
+/// checks its `registry_did` against `client.authority()`, which would
+/// itself fail at vantage B purely because of the differing port, for a
+/// reason that has nothing to do with this test.
+#[tokio::test]
+async fn cache_blocker1_registry_attested_fact_does_not_cross_vantage() {
+    let seed = 0xF1u8;
+    let rig = discovery_rig(seed).await;
+    let cache = RevocationCache::new();
+    let client_a = rig.client.clone().with_revocation_cache(cache.clone());
+
+    // A genuine registry-attested revocation of the target's key, published
+    // under the registry's own identity — mirrors `cache_ac7b`.
+    let registry_signer_key = SigningKey::from_bytes(&[seed; 32]);
+    let registry = Producer::new(
+        registry_signer_key,
+        AgentDid::new(REGISTRY_DID),
+        format!("{REGISTRY_DID}#receipt-key-1"),
+    );
+    let req = registry
+        .publish_request()
+        .acdp_version("0.3.0")
+        .title("registry-attested revocation (blocker-1)")
+        .context_type(ContextType::KeyRevocation)
+        .visibility(Visibility::Public)
+        .metadata(json!({
+            "revoked_key_fingerprint": rig.producer_fp,
+            "compromised_since": "2026-01-01T00:00:00.000Z",
+            "revoked_key_controller": rig.producer_did,
+        }))
+        .build()
+        .expect("build");
+    rig.h
+        .server
+        .publish_verified(&req, None, &rig.h.resolver)
+        .await
+        .expect("registry-attested revocation publish");
+
+    let all = RevocationDiscovery::all_trust_classes();
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(all),
+        receipts: ReceiptPolicy::Ignore,
+        ..Default::default()
+    };
+
+    let err =
+        VerifiedContext::fetch_with_policy(&client_a, &rig.h.resolver, &rig.target_ctx_id, &policy)
+            .await
+            .expect_err(
+                "vantage A: live discovery must find and apply the registry-attested revocation, \
+         warming the cache with origin = A",
+            );
+    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+
+    let alt_base = format!("https://localhost:{}", rig.h.tls.addr.port());
+    let client_b =
+        RegistryClient::with_test_endpoint(&alt_base, rig.h.tls.addr, &rig.h.tls.root_cert_pem)
+            .expect("alt-authority client")
+            .with_revocation_cache(cache);
+    assert_ne!(
+        client_a.authority(),
+        client_b.authority(),
+        "sanity: the two clients must report different vantages"
+    );
+
+    let verified =
+        VerifiedContext::fetch_with_policy(&client_b, &rig.h.resolver, &rig.target_ctx_id, &policy)
+            .await
+            .expect(
+                "vantage B: the registry-attested fact minted at vantage A must NOT apply here — \
+         B's own live discovery legitimately finds nothing (registry-binding mismatch), and \
+         the cached fact must be filtered out by origin",
+            );
+    assert_eq!(verified.key_status(), KeyAuthorization::CurrentlyAuthorized);
+}
+
+/// MATERIAL-2: dedup must hold across INDEPENDENT, real discoveries against
+/// a live harness, not merely across clones of one in-memory value (the
+/// gap the unit test `record_success_dedups_identical_facts` leaves open).
+/// With `freshness: Duration::ZERO` (the default), every one of the N
+/// verifies below genuinely re-runs discovery against the harness — the
+/// entry's fact count must never grow past 1.
+#[tokio::test]
+async fn cache_material2_dedup_holds_across_independent_real_discoveries() {
+    let id = cache_identity(0xF2, "cache-material2");
+    let cache = RevocationCache::new();
+
+    let h = LineageServerHarness::builder(lifecycle_caps())
+        .with_producer_did_document(id.path, id.did_doc.clone())
+        .build()
+        .await;
+    let boundary = at("2026-05-01T00:00:00.000Z");
+    h.seed_revocations(&id.revoker, &id.target_fp, &[boundary])
+        .await;
+    let client = h.client().with_revocation_cache(cache.clone());
+    let discovery = RevocationDiscovery::producer_signed_only(); // freshness: ZERO
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+    let t = publish_plain_target(&h, &id).await;
+
+    for i in 0..6 {
+        let err = VerifiedContext::fetch_with_policy(&client, &h.resolver, &t, &policy)
+            .await
+            .expect_err(&format!("call {i}: R must still be found and fail closed"));
+        assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+    }
+    assert!(
+        h.hits("search") > 6,
+        "sanity: each of the 6 calls above must have genuinely re-run discovery \
+         (freshness: ZERO never suppresses a lookup)"
+    );
+    assert_eq!(
+        cache.fact_count(id.producer_did.as_str()),
+        1,
+        "dedup must hold across independently-run discoveries against a live harness, not \
+         merely across clones of one in-memory value — the entry must not grow past 1 fact \
+         across 6 separate re-discoveries of the same revocation"
+    );
+}
+
+/// MATERIAL-3: `discover: None` must still seed a cached producer-signed
+/// fact — attaching a `RevocationCache` is itself the opt-in for
+/// anti-rollback, independent of whether `discover` is configured on any
+/// given call. Warm the cache with discovery on, then re-verify the SAME
+/// context with `discover: None` and confirm it still fails closed, with
+/// ZERO new discovery requests (the fact must come purely from the cache,
+/// not from a live re-discovery).
+#[tokio::test]
+async fn cache_material3_seeds_producer_signed_fact_even_with_discover_none() {
+    let id = cache_identity(0xF3, "cache-material3");
+    let cache = RevocationCache::new();
+
+    let h = LineageServerHarness::builder(lifecycle_caps())
+        .with_producer_did_document(id.path, id.did_doc.clone())
+        .build()
+        .await;
+    let boundary = at("2026-05-01T00:00:00.000Z");
+    h.seed_revocations(&id.revoker, &id.target_fp, &[boundary])
+        .await;
+    let client = h.client().with_revocation_cache(cache);
+    let discovery = RevocationDiscovery::producer_signed_only();
+    let policy_discover = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+    let t = publish_plain_target(&h, &id).await;
+
+    let err = VerifiedContext::fetch_with_policy(&client, &h.resolver, &t, &policy_discover)
+        .await
+        .expect_err("warm-up: discovery must find R and fail closed");
+    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+
+    let searches_before = h.hits("search");
+    let policy_no_discover = VerificationPolicy {
+        revocations: RevocationPolicy::new(Vec::new()), // discover: None
+        ..Default::default()
+    };
+    let err2 = VerifiedContext::fetch_with_policy(&client, &h.resolver, &t, &policy_no_discover)
+        .await
+        .expect_err(
+            "discover: None must still seed the cached producer-signed fact and fail closed \
+             (MATERIAL-3) — this is what extends anti-rollback to fetch/fetch_current, which \
+             can never set `discover` at all",
+        );
+    assert!(
+        matches!(err2, AcdpError::KeyNotAuthorized(_)),
+        "got {err2:?}"
+    );
+    assert_eq!(
+        h.hits("search"),
+        searches_before,
+        "discover: None must issue ZERO live discovery requests — the fact must come purely \
+         from the seeded cache, never from a fresh search"
+    );
+}
+
+// ── issue #260 (Phase 3): CrossRegistryResolver revocation-discovery ────────
+//
+// All tests below drive `acdp::client::CrossRegistryResolver` against the
+// same real `LineageServerHarness` used throughout this file (never a
+// hand-built mock), via `publish_derived_chain` (defined above,
+// `publish_plain_target`'s neighbor) for the multi-node `derived_from`
+// chains AC1/AC2/AC6/AC7 need, and `resolver.seed_client` to avoid real DNS
+// resolution — the same trick `fed_006_registry_did_mismatch` /
+// `sec_01_cross_registry_pins_authority_dns` (`tests/tls_conformance.rs`)
+// already use.
+
+/// AC1: **the multiplier does not materialize, on genuine default
+/// configuration.** A walk over `CHAIN_LEN - 1` ancestor nodes from the
+/// SAME producer, same registry, must issue producer-signed discovery
+/// searches exactly ONCE (`2 type_forms x 3 statuses = 6`, matching the
+/// pre-#258/#257 constant this wave's Phase 1 pinned), not once per node
+/// (which would be `6 * (CHAIN_LEN - 1) = 24`) — via the resolver's
+/// DEFAULT walk-scoped cache (no `with_revocation_cache` call at all) and
+/// `RevocationDiscovery::producer_signed_only()` with `freshness` left
+/// completely untouched (i.e. `Duration::ZERO`, the type default).
+///
+/// This restores the plan's original AC1 wording ("on default
+/// configuration") to its literal reading (MATERIAL-3, fresh-Opus
+/// whole-wave review): the resolver's own walk-scoped cache derives its
+/// effective `RevocationDiscovery::freshness` from
+/// `ResolverOptions::total_timeout` internally
+/// (`CrossRegistryResolver::resolve_inner`'s `walk_scoped_freshness`
+/// parameter), so a caller who sets nothing beyond
+/// `producer_signed_only()` still gets suppression — no nonzero
+/// `freshness` knob required. AC2 (below) is the honest counterpart:
+/// a caller-supplied cache (`with_revocation_cache`) never gets this
+/// derived value, so `freshness: ZERO` there still suppresses nothing.
+///
+/// This also exercises AC3 ("shared across every client the resolver
+/// builds") and AC4(a) ("a seeded client with no cache participates in the
+/// walk-wide cache"): `h.client()` carries no `RevocationCache` of its own,
+/// and `resolve_inner`'s fill-if-absent logic treats a client already
+/// sitting in `client_cache` (whether it got there via `seed_client` or a
+/// lazy build) identically — there is no separate code path for "lazily
+/// built" the way `seed_client` bypasses only the network-building step,
+/// not the cache-attach step.
+#[tokio::test]
+async fn resolver_ac1_walk_scoped_cache_suppresses_repeat_discovery_by_default() {
+    use acdp::client::CrossRegistryResolver;
+
+    const CHAIN_LEN: usize = 5;
+
+    let id = cache_identity(0xF0, "resolver-ac1");
+    let registry_pub = SigningKey::from_bytes(&[0x11u8; 32]).verifying_key_bytes();
+    let h = LineageServerHarness::builder(lifecycle_caps())
+        .with_registry_did_document(ed25519_did_doc(REGISTRY_DID, "key-1", &registry_pub))
+        .with_well_known_acdp()
+        .with_producer_did_document(id.path, id.did_doc.clone())
+        .build()
+        .await;
+    let chain = publish_derived_chain(&h, &id, CHAIN_LEN).await;
+    let root_body = h
+        .server
+        .retrieve(chain.last().unwrap(), None)
+        .expect("retrieve")
+        .expect("found")
+        .body;
+
+    // Genuine defaults (MATERIAL-3): `producer_signed_only()` with
+    // `freshness` completely untouched — no test manually raises it.
+    let discovery = RevocationDiscovery::producer_signed_only();
+    assert_eq!(
+        discovery.freshness,
+        std::time::Duration::ZERO,
+        "sanity: genuine defaults — producer_signed_only()'s freshness is untouched"
+    );
+    let policy = RevocationPolicy::default().with_discovery(discovery);
+
+    let resolver = CrossRegistryResolver::new()
+        .with_did_resolver(
+            WebResolver::with_test_endpoint(&h.tls.root_cert_pem, "localhost", h.tls.addr)
+                .expect("pinned resolver"),
+        )
+        .with_revocation_policy(policy);
+    resolver.seed_client(REGISTRY_AUTHORITY, h.client());
+
+    let before = h.hits("search");
+    let ancestors = resolver
+        .walk_derived_from(&root_body)
+        .await
+        .expect("a discovery-enabled walk over plain (non-revoked) contexts must succeed");
+    assert_eq!(ancestors.len(), CHAIN_LEN - 1);
+    let delta = h.hits("search") - before;
+    let counterfactual = 6 * (CHAIN_LEN - 1);
+    assert_eq!(
+        delta,
+        6,
+        "issue #260 AC1 (MATERIAL-3): a walk over {} ancestor nodes from the SAME \
+         producer/authority, on GENUINE default configuration (no with_revocation_cache, \
+         no manual freshness override), must issue producer-signed discovery exactly \
+         ONCE (6 searches), not once per node (which would be {counterfactual}) — the \
+         resolver's own walk-scoped cache derives its effective freshness from \
+         ResolverOptions::total_timeout, which is what collapses this without the caller \
+         needing to touch RevocationDiscovery::freshness at all",
+        CHAIN_LEN - 1,
+    );
+}
+
+/// AC2: the honest counterpart to AC1. An EXPLICITLY caller-supplied cache
+/// (`with_revocation_cache`, bypassing the resolver's own walk-scoped
+/// default) with `freshness` left at its type default (`Duration::ZERO`)
+/// suppresses NOTHING — discovery still runs once per node. Proves the
+/// cost claim is falsifiable in both directions: merely sharing a cache
+/// object is not what suppresses discovery; a nonzero `freshness` is what
+/// does, exactly as in Phase 2's direct (non-resolver) model.
+#[tokio::test]
+async fn resolver_ac2_explicit_cache_with_zero_freshness_suppresses_nothing() {
+    use acdp::client::CrossRegistryResolver;
+
+    const CHAIN_LEN: usize = 5;
+
+    let id = cache_identity(0xF6, "resolver-ac2");
+    let registry_pub = SigningKey::from_bytes(&[0x11u8; 32]).verifying_key_bytes();
+    let h = LineageServerHarness::builder(lifecycle_caps())
+        .with_registry_did_document(ed25519_did_doc(REGISTRY_DID, "key-1", &registry_pub))
+        .with_well_known_acdp()
+        .with_producer_did_document(id.path, id.did_doc.clone())
+        .build()
+        .await;
+    let chain = publish_derived_chain(&h, &id, CHAIN_LEN).await;
+    let root_body = h
+        .server
+        .retrieve(chain.last().unwrap(), None)
+        .expect("retrieve")
+        .expect("found")
+        .body;
+
+    let discovery = RevocationDiscovery::producer_signed_only();
+    assert_eq!(
+        discovery.freshness,
+        std::time::Duration::ZERO,
+        "sanity: producer_signed_only()'s freshness defaults to ZERO"
+    );
+    let policy = RevocationPolicy::default().with_discovery(discovery);
+
+    let resolver = CrossRegistryResolver::new()
+        .with_did_resolver(
+            WebResolver::with_test_endpoint(&h.tls.root_cert_pem, "localhost", h.tls.addr)
+                .expect("pinned resolver"),
+        )
+        .with_revocation_policy(policy)
+        .with_revocation_cache(RevocationCache::new());
+    resolver.seed_client(REGISTRY_AUTHORITY, h.client());
+
+    let before = h.hits("search");
+    let ancestors = resolver
+        .walk_derived_from(&root_body)
+        .await
+        .expect("a discovery-enabled walk over plain (non-revoked) contexts must succeed");
+    assert_eq!(ancestors.len(), CHAIN_LEN - 1);
+    let delta = h.hits("search") - before;
+    assert_eq!(
+        delta,
+        6 * (CHAIN_LEN - 1),
+        "issue #260 AC2: a caller-supplied cache with freshness ZERO must suppress NOTHING \
+         — discovery runs once per node ({} nodes x 6 searches each)",
+        CHAIN_LEN - 1,
+    );
+}
+
+/// AC4(b): `seed_client` is preserve-if-present, the other half of
+/// fill-if-absent (AC1/AC3/AC4(a) above cover the fill-if-absent half). A
+/// client that already carries its OWN `RevocationCache` (warmed with a
+/// fact BEFORE it is seeded into the resolver) keeps that cache — the
+/// resolver must NOT overwrite it with its own (also explicitly attached,
+/// but empty) cache.
+///
+/// Both the control and the test resolver below carry their OWN,
+/// resolver-level `RevocationCache` (empty) — this is deliberate: it is
+/// what makes the mutation "always overwrite" actually observable. If the
+/// resolver carried no cache of its own at all (`cache: None` in
+/// `resolve_inner`), preserve-vs-overwrite would have nothing to overwrite
+/// WITH, and this test could not fail under that mutation — exactly the
+/// kind of unfalsifiable AC this wave's own review process has twice
+/// caught before (see `plans/PROGRESS.md`'s #248/#257 notes).
+///
+/// Isolated with a positive control: the SAME resolver configuration
+/// (no revocation policy, i.e. `discover: None`, but WITH its own empty
+/// resolver-level cache) seeded with a PLAIN (un-warmed) client succeeds —
+/// proving that the fail-closed result seen with the warmed client below
+/// comes specifically from the preserved fact, not from some other effect.
+#[tokio::test]
+async fn resolver_ac4b_seeded_client_with_its_own_cache_is_preserved() {
+    use acdp::client::CrossRegistryResolver;
+
+    let id = cache_identity(0xF2, "resolver-ac4b");
+    let registry_pub = SigningKey::from_bytes(&[0x11u8; 32]).verifying_key_bytes();
+    let h = LineageServerHarness::builder(lifecycle_caps())
+        .with_registry_did_document(ed25519_did_doc(REGISTRY_DID, "key-1", &registry_pub))
+        .with_well_known_acdp()
+        .with_producer_did_document(id.path, id.did_doc.clone())
+        .build()
+        .await;
+    let boundary = at("2026-05-01T00:00:00.000Z");
+    h.seed_revocations(&id.revoker, &id.target_fp, &[boundary])
+        .await;
+    let t = publish_plain_target(&h, &id).await;
+
+    let make_resolver = || {
+        CrossRegistryResolver::new()
+            .with_did_resolver(
+                WebResolver::with_test_endpoint(&h.tls.root_cert_pem, "localhost", h.tls.addr)
+                    .expect("pinned resolver"),
+            )
+            // The resolver itself carries an explicit, but EMPTY, cache —
+            // No `with_revocation_policy` call: `discover: None`.
+            .with_revocation_cache(RevocationCache::new())
+    };
+
+    // Positive control: a PLAIN seeded client (no cache of its own) under
+    // this same discover:None + resolver-level-empty-cache config
+    // succeeds — `RevocationPolicy::default()` carries no `known` and no
+    // `discover`, so the phase is inert regardless of what the harness has
+    // seeded, and the resolver's own cache is empty either way.
+    let control = make_resolver();
+    control.seed_client(REGISTRY_AUTHORITY, h.client());
+    control
+        .resolve(&t)
+        .await
+        .expect("control: discover:None + an empty cache must be inert and succeed");
+
+    // Warm a SEPARATE client's OWN cache with the fact BEFORE seeding it:
+    // a direct discovery call with `freshness: ZERO` (the default) records
+    // only the FACT, not a marker, isolating "the fact survived seeding"
+    // from "the marker suppressed re-discovery".
+    let pre_cache = RevocationCache::new();
+    let warmed_client = h.client().with_revocation_cache(pre_cache);
+    let discovery = RevocationDiscovery::producer_signed_only();
+    let policy_discover = VerificationPolicy {
+        revocations: RevocationPolicy::default().with_discovery(discovery),
+        ..Default::default()
+    };
+    let warm_err =
+        VerifiedContext::fetch_with_policy(&warmed_client, &h.resolver, &t, &policy_discover)
+            .await
+            .expect_err("warm-up: discovery must find the seeded revocation and fail closed");
+    assert!(
+        matches!(warm_err, AcdpError::KeyNotAuthorized(_)),
+        "got {warm_err:?}"
+    );
+
+    // Seed the ALREADY-WARM client into a FRESH discover:None resolver that
+    // ALSO carries its own (different, empty) cache. If preserve-if-present
+    // holds, the warmed client's own fact-bearing cache wins and the call
+    // still fails closed; if the resolver instead overwrote it with its
+    // own empty one (the mutation this test guards against), the fact
+    // would be lost and the call would wrongly succeed.
+    let test_resolver = make_resolver();
+    test_resolver.seed_client(REGISTRY_AUTHORITY, warmed_client);
+    let err = test_resolver.resolve(&t).await.expect_err(
+        "issue #260 AC4(b): a seeded client's OWN pre-attached cache must be preserved, not \
+         overwritten by the resolver's own (empty) cache — its already-recorded fact must \
+         still fail closed",
+    );
+    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+}
+
+/// AC5: **vantage binding is pinned, not merely structural.** A freshness
+/// marker minted while resolving via one `RegistryClient` vantage
+/// (`.authority()`) must not suppress discovery when the SAME producer and
+/// SAME context are later resolved via a DIFFERENT vantage — even when both
+/// share one `RevocationCache` (`with_revocation_cache`). `client.authority()`
+/// (read by `crate::revocation`'s marker/fact bookkeeping, RFC-ACDP-0014 §6
+/// scoping) is deliberately NOT the same string as the resolver-level
+/// authority key used for `client_for` lookups / DID matching — vantage B
+/// below is re-seeded under the SAME resolver-level key ("localhost",
+/// matching the ctx_id's own embedded authority and the harness's real
+/// `registry_did`) but is a physically different `RegistryClient` (a
+/// different `.base`, hence a different `.authority()`), pinned to the
+/// SAME physical harness. This is what proves the scoping is genuinely
+/// per-vantage rather than accidentally per-resolver-authority-key.
+#[tokio::test]
+async fn resolver_ac5_vantage_binding_pins_discovery_to_the_serving_client() {
+    use acdp::client::CrossRegistryResolver;
+
+    let id = cache_identity(0xF3, "resolver-ac5");
+    let registry_pub = SigningKey::from_bytes(&[0x11u8; 32]).verifying_key_bytes();
+    let h = LineageServerHarness::builder(lifecycle_caps())
+        .with_registry_did_document(ed25519_did_doc(REGISTRY_DID, "key-1", &registry_pub))
+        .with_well_known_acdp()
+        .with_producer_did_document(id.path, id.did_doc.clone())
+        .build()
+        .await;
+    let t = publish_plain_target(&h, &id).await;
+
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.freshness = std::time::Duration::from_secs(60);
+    let policy = RevocationPolicy::default().with_discovery(discovery);
+    let shared_cache = RevocationCache::new();
+
+    let resolver = CrossRegistryResolver::new()
+        .with_did_resolver(
+            WebResolver::with_test_endpoint(&h.tls.root_cert_pem, "localhost", h.tls.addr)
+                .expect("pinned resolver"),
+        )
+        .with_revocation_policy(policy)
+        .with_revocation_cache(shared_cache);
+
+    // Vantage A: the harness's own client, `.authority() == "localhost"`.
+    resolver.seed_client(REGISTRY_AUTHORITY, h.client());
+    resolver
+        .resolve(&t)
+        .await
+        .expect("vantage A baseline mints A's marker");
+
+    // Vantage B: SAME ctx_id / producer / physical harness, re-seeded under
+    // the SAME resolver-level authority KEY, but a DIFFERENT `RegistryClient`
+    // (a different `.base` — same host `localhost` so the harness's
+    // `localhost`-only TLS certificate still validates, but this base
+    // explicitly spells out the real port, `h.tls.addr.port()` — hence a
+    // different `.authority()` string than vantage A's portless `h.client()`
+    // base), pinned via `.resolve()` to the SAME physical socket regardless
+    // of the URL's own port.
+    let alt_base = format!("https://localhost:{}", h.tls.addr.port());
+    let vantage_b = RegistryClient::with_test_endpoint(&alt_base, h.tls.addr, &h.tls.root_cert_pem)
+        .expect("vantage B client");
+    assert_ne!(
+        vantage_b.authority().as_deref(),
+        Some("localhost"),
+        "sanity: vantage B must report a genuinely different authority"
+    );
+    resolver.seed_client(REGISTRY_AUTHORITY, vantage_b);
+
+    let before_b = h.hits("search");
+    resolver.resolve(&t).await.expect("vantage B baseline");
+    assert!(
+        h.hits("search") > before_b,
+        "issue #260 AC5: a freshness marker minted while resolving via vantage A must NOT \
+         suppress discovery when the SAME producer/context is later resolved via a DIFFERENT \
+         vantage B, even though both share one RevocationCache"
+    );
+
+    // N1 (fresh-Opus whole-wave review): a positive control. Without this,
+    // AC5 would pass under a probe where NOTHING is ever suppressed (e.g.
+    // `marker_fresh` always returning `false`) — `hits("search") >
+    // before_b` is equally true either way. Re-seed vantage A and resolve
+    // again: A's own marker (minted just above, `freshness: 60s`) MUST
+    // still suppress discovery, distinguishing "B correctly not
+    // suppressed" from "nothing is ever suppressed at all".
+    resolver.seed_client(REGISTRY_AUTHORITY, h.client());
+    let before_a_again = h.hits("search");
+    resolver
+        .resolve(&t)
+        .await
+        .expect("vantage A, resolved again, reuses its own fresh marker");
+    assert_eq!(
+        h.hits("search"),
+        before_a_again,
+        "issue #260 AC5 positive control: a SECOND resolve via vantage A must be suppressed \
+         by A's own still-fresh marker — proving discovery CAN be suppressed at all, which is \
+         what makes 'vantage B is not suppressed' above a meaningful contrast rather than a \
+         tautology"
+    );
+}
+
+/// AC6: the concrete payoff of the walk-scoped cache, on GENUINE default
+/// configuration (MATERIAL-3: `producer_signed_only()` with `freshness`
+/// untouched — the resolver's own walk-scoped cache derives its effective
+/// freshness from this test's (scaled-down) `ResolverOptions::total_timeout`
+/// internally). A per-`search`-request delay makes ONE discovery round
+/// cost roughly `6 * 80ms = 480ms`; an (incorrect) per-node cache would
+/// cost `CHAIN_LEN - 1` rounds — about 1.9s for 4 ancestors — comfortably
+/// over the small `total_timeout` below. The walk-scoped default keeps the
+/// walk to ONE round regardless of chain length, so it finishes
+/// comfortably inside budget. Uses a scaled-down `total_timeout` (not the
+/// literal 30s default) so the test runs fast while still proving the
+/// same structural property the 30s default relies on in production.
+#[tokio::test]
+async fn resolver_ac6_walk_scoped_cache_lets_a_discovery_enabled_walk_complete() {
+    use acdp::client::{CrossRegistryResolver, ResolverOptions};
+
+    const CHAIN_LEN: usize = 5;
+
+    let id = cache_identity(0xF4, "resolver-ac6");
+    let registry_pub = SigningKey::from_bytes(&[0x11u8; 32]).verifying_key_bytes();
+    let h = LineageServerHarness::builder(lifecycle_caps())
+        .with_registry_did_document(ed25519_did_doc(REGISTRY_DID, "key-1", &registry_pub))
+        .with_well_known_acdp()
+        .with_producer_did_document(id.path, id.did_doc.clone())
+        .build()
+        .await;
+    let chain = publish_derived_chain(&h, &id, CHAIN_LEN).await;
+    let root_body = h
+        .server
+        .retrieve(chain.last().unwrap(), None)
+        .expect("retrieve")
+        .expect("found")
+        .body;
+
+    h.set_delay("search", std::time::Duration::from_millis(80));
+
+    // Genuine defaults (MATERIAL-3): no manual freshness override. The
+    // resolver's own walk-scoped cache derives its effective freshness
+    // from `ResolverOptions::total_timeout` below (800ms) — comfortably
+    // above the ~480ms one discovery round takes, so the walk still
+    // completes in ONE round.
+    let discovery = RevocationDiscovery::producer_signed_only();
+    let policy = RevocationPolicy::default().with_discovery(discovery);
+
+    let resolver = CrossRegistryResolver::new()
+        .with_did_resolver(
+            WebResolver::with_test_endpoint(&h.tls.root_cert_pem, "localhost", h.tls.addr)
+                .expect("pinned resolver"),
+        )
+        .with_revocation_policy(policy)
+        .with_options(ResolverOptions {
+            total_timeout: std::time::Duration::from_millis(800),
+            ..ResolverOptions::default()
+        });
+    resolver.seed_client(REGISTRY_AUTHORITY, h.client());
+
+    let ancestors = resolver.walk_derived_from(&root_body).await.expect(
+        "issue #260 AC6: a discovery-enabled walk must complete within a small total_timeout \
+         because the walk-scoped cache collapses discovery to ONE round regardless of chain \
+         length",
+    );
+    assert_eq!(ancestors.len(), CHAIN_LEN - 1);
+}
+
+/// AC7: with no revocation configuration injected at all (no
+/// `with_revocation_policy` call — `RevocationPolicy::default()` is inert:
+/// empty `known`, `discover: None`), resolver behavior is byte-identical to
+/// v0.13.0 — zero discovery-related search traffic.
+#[tokio::test]
+async fn resolver_ac7_no_revocation_config_is_byte_identical_to_pre_260() {
+    use acdp::client::CrossRegistryResolver;
+
+    const CHAIN_LEN: usize = 4;
+
+    let id = cache_identity(0xF5, "resolver-ac7");
+    let registry_pub = SigningKey::from_bytes(&[0x11u8; 32]).verifying_key_bytes();
+    let h = LineageServerHarness::builder(lifecycle_caps())
+        .with_registry_did_document(ed25519_did_doc(REGISTRY_DID, "key-1", &registry_pub))
+        .with_well_known_acdp()
+        .with_producer_did_document(id.path, id.did_doc.clone())
+        .build()
+        .await;
+    let chain = publish_derived_chain(&h, &id, CHAIN_LEN).await;
+    let root_body = h
+        .server
+        .retrieve(chain.last().unwrap(), None)
+        .expect("retrieve")
+        .expect("found")
+        .body;
+
+    let resolver = CrossRegistryResolver::new().with_did_resolver(
+        WebResolver::with_test_endpoint(&h.tls.root_cert_pem, "localhost", h.tls.addr)
+            .expect("pinned resolver"),
+    );
+    resolver.seed_client(REGISTRY_AUTHORITY, h.client());
+    assert_eq!(
+        resolver.revocation_policy(),
+        &RevocationPolicy::default(),
+        "sanity: a resolver with no with_revocation_policy call carries the inert default"
+    );
+
+    let before = h.hits("search");
+    let ancestors = resolver
+        .walk_derived_from(&root_body)
+        .await
+        .expect("walk must complete");
+    assert_eq!(ancestors.len(), CHAIN_LEN - 1);
+    assert_eq!(
+        h.hits("search"),
+        before,
+        "issue #260 AC7: with no revocation configuration injected, resolver behavior is \
+         byte-identical to pre-#260 — zero discovery-related search traffic"
+    );
 }

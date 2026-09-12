@@ -135,6 +135,23 @@ fn revocation_surface_reexported() {
 
 #[cfg(feature = "client")]
 #[test]
+fn revocation_cache_reexported() {
+    // Issue #257: `RevocationCache` resolves through the facade (the #248
+    // discovery-surface precedent, extended), and its `RegistryClient`
+    // builder knob compiles — both are the wave's permanent minimized
+    // public shape.
+    use acdp::client::{RegistryClient, RevocationCache};
+
+    let cache = RevocationCache::new();
+    let cache_for_clone = cache.clone();
+    let _f: fn(&RegistryClient, RevocationCache) -> RegistryClient =
+        RegistryClient::with_revocation_cache;
+    drop(cache);
+    drop(cache_for_clone);
+}
+
+#[cfg(feature = "client")]
+#[test]
 fn revocation_lineage_walk_reexported() {
     // `acdp::client::find_revocations_in_lineage` resolves through the
     // whole-crate umbrella re-export (`src/lib.rs:107-108`) with no
@@ -146,6 +163,37 @@ fn revocation_lineage_walk_reexported() {
     // Binding the (async) fn item itself proves the path resolves
     // without needing to actually drive it over a live registry.
     let _a = find_revocations_in_lineage;
+}
+
+#[cfg(feature = "client")]
+#[test]
+fn cross_registry_revocation_surface_reexported() {
+    // Issue #260: `CrossRegistryResolver` gains exactly three revocation-
+    // related methods — `with_revocation_policy`, `with_revocation_cache`,
+    // and the `revocation_policy` readback — all resolving through the
+    // facade with no new types (`RevocationPolicy`/`RevocationCache` are
+    // both pre-existing, pinned by `revocation_surface_reexported` /
+    // `revocation_cache_reexported` above). Binding the methods' exact
+    // signatures here proves these three signatures are stable and
+    // public through the facade (and would catch an accidental rename,
+    // removal, or signature change — e.g. a `VerificationPolicy`-taking
+    // overload of `with_revocation_policy`) — matching this file's
+    // existing fn-pointer-binding idiom. N2: binding only these three
+    // fn pointers cannot, by itself, detect a FOURTH method added to the
+    // public surface; that is not a claim this test makes.
+    use acdp::client::{CrossRegistryResolver, RevocationCache, RevocationPolicy};
+
+    let _with_policy: fn(CrossRegistryResolver, RevocationPolicy) -> CrossRegistryResolver =
+        CrossRegistryResolver::with_revocation_policy;
+    let _with_cache: fn(CrossRegistryResolver, RevocationCache) -> CrossRegistryResolver =
+        CrossRegistryResolver::with_revocation_cache;
+    let _read_back: fn(&CrossRegistryResolver) -> &RevocationPolicy =
+        CrossRegistryResolver::revocation_policy;
+
+    // A resolver with no revocation policy injected carries the inert
+    // default (issue #260 AC7) — asserted here too, at the facade level.
+    let resolver = CrossRegistryResolver::new();
+    assert_eq!(resolver.revocation_policy(), &RevocationPolicy::default());
 }
 
 #[cfg(feature = "server")]

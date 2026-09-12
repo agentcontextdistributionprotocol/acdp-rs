@@ -19,7 +19,10 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use crate::{ReceiptPolicy, RegistryClient, VerificationPolicy, VerifiedContext};
+use crate::{
+    ReceiptPolicy, RegistryClient, RevocationCache, RevocationPolicy, VerificationPolicy,
+    VerifiedContext,
+};
 use acdp_did::WebResolver;
 use acdp_primitives::error::AcdpError;
 use acdp_safe_http::SsrfPolicy;
@@ -71,6 +74,18 @@ impl Default for ResolverOptions {
 ///
 /// The [`SsrfPolicy`] is consulted on every URL the resolver constructs
 /// (RFC-ACDP-0006 §7.1, §7.2).
+///
+/// # Revocation discovery (issue #260)
+///
+/// [`Self::with_revocation_policy`] injects a [`RevocationPolicy`] into
+/// every node this resolver verifies, closing the LIM-1 gap recorded in
+/// `crate::verified`'s `RevocationPolicy` rustdoc: before this, neither a
+/// caller-supplied `known` set nor `discover` could reach a
+/// cross-registry walk at all. [`Self::with_revocation_cache`] additionally
+/// shares one [`RevocationCache`] handle across every per-authority
+/// client the resolver builds (or is seeded with) — see
+/// [`Self::walk_derived_from`]'s doc for the walk-scoped default this
+/// replaces.
 pub struct CrossRegistryResolver {
     did_resolver: WebResolver,
     options: ResolverOptions,
@@ -86,6 +101,19 @@ pub struct CrossRegistryResolver {
     /// that used the resolver-wide `capabilities_ttl` for every entry,
     /// ignoring the registry's own cache hint (BUG-09).
     caps_cache: Mutex<HashMap<String, (CapabilitiesDocument, Instant, Duration)>>,
+    /// Injected via [`Self::with_revocation_policy`]. Default
+    /// [`RevocationPolicy::default`] (empty `known`, `discover: None`) is
+    /// inert, so a resolver built without calling this setter behaves
+    /// byte-identically to before this field existed (issue #260 AC7).
+    /// Deliberately `RevocationPolicy`, never `VerificationPolicy` — see
+    /// [`Self::with_revocation_policy`]'s doc for why `receipts` is the
+    /// one field this injection point can never carry.
+    revocation_policy: RevocationPolicy,
+    /// Injected via [`Self::with_revocation_cache`]. `None` (the default)
+    /// means [`Self::walk_derived_from`] creates a fresh, walk-scoped
+    /// cache for each call instead of reusing one across walks — see
+    /// that method's doc.
+    revocation_cache: Option<RevocationCache>,
 }
 
 impl Default for CrossRegistryResolver {
@@ -105,6 +133,8 @@ impl CrossRegistryResolver {
             ssrf_policy: SsrfPolicy::default(),
             client_cache: Mutex::new(HashMap::new()),
             caps_cache: Mutex::new(HashMap::new()),
+            revocation_policy: RevocationPolicy::default(),
+            revocation_cache: None,
         }
     }
 
@@ -134,6 +164,56 @@ impl CrossRegistryResolver {
     /// Borrow the active options. Useful for tests + telemetry.
     pub fn options(&self) -> &ResolverOptions {
         &self.options
+    }
+
+    /// Inject a [`RevocationPolicy`] into every node this resolver
+    /// verifies (issue #260, closing LIM-1). Default
+    /// [`RevocationPolicy::default`] (empty `known`, `discover: None`) is
+    /// inert — this method is the opt-in.
+    ///
+    /// Deliberately `RevocationPolicy`, never `VerificationPolicy`: this
+    /// resolver derives [`VerificationPolicy::receipts`] per node from
+    /// that node's upstream-advertised capabilities (`Require` iff the
+    /// upstream claims `acdp-registry-receipts`) — a capability-dependent
+    /// escalation a caller cannot express statically, since a walk can
+    /// visit authorities it does not know in advance. Accepting a full
+    /// `VerificationPolicy` here would have no coherent semantics:
+    /// honoring it verbatim would let a caller unknowingly strip
+    /// `Require` on a receipts-capable upstream (a downgrade primitive),
+    /// while silently overriding it would violate the "uniform policy"
+    /// contract every other policy-taking entry point upholds. `known`
+    /// travels with this policy, so a caller can enforce a
+    /// pre-discovered revocation set across a whole walk without
+    /// enabling live discovery at all.
+    ///
+    /// Not consulted by [`Self::resolve`]/[`Self::walk_derived_from`]'s
+    /// safety limits ([`ResolverOptions`]) — see that struct's doc for
+    /// why revocation configuration does not live there either.
+    pub fn with_revocation_policy(mut self, policy: RevocationPolicy) -> Self {
+        self.revocation_policy = policy;
+        self
+    }
+
+    /// Inject a [`RevocationCache`] to share across every per-authority
+    /// client this resolver builds or is seeded with (issue #260),
+    /// instead of the fresh, walk-scoped cache
+    /// [`Self::walk_derived_from`] otherwise creates for each call. Use
+    /// this when discovery should stay warm ACROSS separate walks
+    /// against a long-lived resolver, at the cost of cached absence
+    /// (a freshness marker) potentially outliving any single walk — see
+    /// [`Self::walk_derived_from`]'s doc for the default this replaces
+    /// and the exposure it carries. This cache's effective
+    /// `RevocationDiscovery::freshness` is always the caller's own
+    /// (MATERIAL-3, fresh-Opus whole-wave review) — `walk_derived_from`
+    /// never derives a freshness value for a caller-supplied cache.
+    pub fn with_revocation_cache(mut self, cache: RevocationCache) -> Self {
+        self.revocation_cache = Some(cache);
+        self
+    }
+
+    /// Borrow the active revocation policy. Useful for tests + telemetry.
+    pub fn revocation_policy(&self) -> &RevocationPolicy {
+        &self.revocation_policy
     }
 
     /// Override the [`WebResolver`] used for DID document lookups.
@@ -184,7 +264,48 @@ impl CrossRegistryResolver {
     /// `fetch_with_policy`, which refuses a served body whose `ctx_id`
     /// is not the one requested. The [`SsrfPolicy`] is checked first so
     /// a hostile authority cannot drive an internal-network request.
+    ///
+    /// Applies [`Self::revocation_policy`] (issue #260). If a
+    /// [`RevocationCache`] was injected via [`Self::with_revocation_cache`],
+    /// it is attached to the per-authority client used here,
+    /// fill-if-absent: a client that already carries its own cache (e.g.
+    /// via [`Self::seed_client`]) keeps it. Called directly, outside a
+    /// [`Self::walk_derived_from`] call, there is no walk-scoped cache to
+    /// fall back on — a bare `resolve()` gets seeding/suppression only
+    /// when [`Self::with_revocation_cache`] was called explicitly, and in
+    /// that case the caller's own `RevocationDiscovery::freshness` governs
+    /// unmodified (never the derived-from-`total_timeout` value
+    /// [`Self::walk_derived_from`] applies to its own walk-scoped cache —
+    /// see that method's doc). It is also bounded only by
+    /// `RevocationDiscovery::total_timeout` (`crate::RevocationDiscovery`)
+    /// when `discover` is set — [`ResolverOptions::total_timeout`] wraps
+    /// [`Self::walk_derived_from`], not this method.
     pub async fn resolve(&self, ctx_id: &CtxId) -> Result<VerifiedContext, AcdpError> {
+        self.resolve_inner(ctx_id, self.revocation_cache.as_ref(), None)
+            .await
+    }
+
+    /// Shared implementation behind [`Self::resolve`] and the per-node
+    /// calls [`Self::walk_derived_from_inner`] makes. `cache` is either
+    /// the resolver-wide handle ([`Self::with_revocation_cache`]) or a
+    /// fresh, walk-scoped one built once per [`Self::walk_derived_from`]
+    /// call — see that method's doc.
+    ///
+    /// `walk_scoped_freshness`, when `Some`, overrides
+    /// `self.revocation_policy.discover`'s `freshness` for this call only
+    /// (MATERIAL-3, fresh-Opus whole-wave review). It is `Some` ONLY when
+    /// `walk_derived_from` built its own, resolver-constructed walk-scoped
+    /// cache (i.e. the caller did not supply one via
+    /// [`Self::with_revocation_cache`]) — never for a caller-supplied
+    /// cache, and never for a bare [`Self::resolve`] call, both of which
+    /// pass `None` and so leave the caller's own `freshness` (including
+    /// `Duration::ZERO`) untouched.
+    async fn resolve_inner(
+        &self,
+        ctx_id: &CtxId,
+        cache: Option<&RevocationCache>,
+        walk_scoped_freshness: Option<Duration>,
+    ) -> Result<VerifiedContext, AcdpError> {
         let parsed = CtxId::parse(ctx_id.as_str())?;
         let authority = parsed.authority().to_string();
         self.check_allowlist(&authority)?;
@@ -197,6 +318,22 @@ impl CrossRegistryResolver {
 
         // Cached client (and capabilities) per authority.
         let registry = self.client_for(&authority, &base).await?;
+        // Issue #260: fill-if-absent. A client returned by `client_for`
+        // (built, cached, or seeded via `Self::seed_client`) that carries
+        // no `RevocationCache` of its own gets this call's `cache`
+        // attached; one that already carries a cache (a caller-seeded
+        // client wiring its own) keeps it unchanged. Precedence:
+        // explicit-on-client > explicit-on-resolver/walk > none. This is
+        // what makes vantage binding fall out for free: each authority's
+        // client is attached (or already carries) a cache independently,
+        // matching `RevocationCache`'s own per-origin scoping
+        // (RFC-ACDP-0014 §6).
+        let registry = match cache {
+            Some(cache) if registry.revocation_cache().is_none() => {
+                registry.with_revocation_cache(cache.clone())
+            }
+            _ => registry,
+        };
         let caps = self.capabilities_for(&authority, &registry).await?;
 
         // Step 3a: capabilities.registry_did MUST be `did:web:<authority>`.
@@ -235,14 +372,38 @@ impl CrossRegistryResolver {
         // not a degraded mode — so the policy escalates to `Require` for
         // such upstreams. Receipt-less upstreams proceed under the
         // v0.1.0 trust model (receipt verified only if one is present).
-        let policy = if caps.claims_profile(acdp_types::profile::Profile::RegistryReceipts) {
-            VerificationPolicy {
-                receipts: ReceiptPolicy::Require,
-                ..VerificationPolicy::default()
+        //
+        // Issue #260: `revocations` is injected from `self.revocation_policy`
+        // — never a caller-supplied `VerificationPolicy` (no injection
+        // point accepts one; see `Self::with_revocation_policy`'s doc for
+        // why `receipts`, derived per-node just below, is the one field
+        // that stays off-limits).
+        //
+        // MATERIAL-3: when this node's cache is the resolver's own
+        // walk-scoped one (`walk_scoped_freshness: Some(..)`), override
+        // `discover.freshness` to the value `walk_derived_from` derived
+        // from `ResolverOptions::total_timeout`, regardless of whatever
+        // `freshness` the caller's `RevocationPolicy` otherwise carries.
+        // This is safe specifically because the walk-scoped cache dies
+        // with this call: no marker minted under the derived freshness
+        // can outlive a window `total_timeout` does not already bound.
+        // A caller-supplied cache (`walk_scoped_freshness: None`) is
+        // untouched — its own `freshness` (including `Duration::ZERO`)
+        // governs, because that handle may outlive this walk and its
+        // staleness exposure is the caller's to choose.
+        let mut revocations = self.revocation_policy.clone();
+        if let Some(freshness) = walk_scoped_freshness {
+            if let Some(discovery) = revocations.discover.as_mut() {
+                discovery.freshness = freshness;
             }
-        } else {
-            VerificationPolicy::default()
+        }
+        let mut policy = VerificationPolicy {
+            revocations,
+            ..VerificationPolicy::default()
         };
+        if caps.claims_profile(acdp_types::profile::Profile::RegistryReceipts) {
+            policy.receipts = ReceiptPolicy::Require;
+        }
         VerifiedContext::fetch_with_policy(&registry, &self.did_resolver, &parsed, &policy).await
     }
 
@@ -252,9 +413,77 @@ impl CrossRegistryResolver {
     /// and a wall-clock `total_timeout`. Returns each verified ancestor
     /// (excluding the root). Breadth-first; closer ancestors are returned
     /// first.
+    ///
+    /// # Revocation discovery is walk-scoped by default (issue #260)
+    ///
+    /// When [`Self::revocation_policy`] has `discover` set and no
+    /// [`RevocationCache`] was injected via [`Self::with_revocation_cache`],
+    /// this call creates a **fresh cache for this call only** and shares
+    /// it across every node the walk visits — so discovery for a given
+    /// `(authority, trust class)` runs at most once per walk regardless
+    /// of `max_nodes`, rather than once per node, **on default
+    /// configuration**. No cached absence outlives the call.
+    ///
+    /// The effective marker freshness differs by cache origin
+    /// (MATERIAL-3, fresh-Opus whole-wave review):
+    ///
+    /// - **This resolver-built, walk-scoped cache:** the effective
+    ///   `RevocationDiscovery::freshness` for every node in this walk is
+    ///   derived from [`ResolverOptions::total_timeout`], overriding
+    ///   whatever `freshness` [`Self::revocation_policy`] otherwise
+    ///   carries (including the type default `Duration::ZERO`). This is
+    ///   what makes the "runs at most once per walk" guarantee above
+    ///   hold on genuine defaults, with no caller action required. It is
+    ///   safe because the cache — and so any marker minted into it —
+    ///   cannot outlive this call, and this call's own duration is
+    ///   already bounded by `total_timeout`.
+    /// - **A caller-supplied cache** ([`Self::with_revocation_cache`]):
+    ///   the caller's own `RevocationDiscovery::freshness` governs,
+    ///   unmodified. In particular `Duration::ZERO` (the type default)
+    ///   suppresses nothing — discovery still runs once per node. This
+    ///   handle may outlive any single walk (that is the point of
+    ///   supplying one explicitly), so its staleness exposure is the
+    ///   caller's to choose, never derived for it.
+    ///
+    /// A caller who explicitly wants discovery to stay warm ACROSS
+    /// separate walks (at the cost of a marker that can outlive any one
+    /// of them, governed by their own `freshness`) opts in via
+    /// [`Self::with_revocation_cache`], which is then reused here
+    /// instead of a fresh per-call cache.
+    ///
+    /// **The 30 s / 30 s default collision.** `RevocationDiscovery`'s
+    /// `total_timeout` defaults to 30 s, matching
+    /// [`ResolverOptions::total_timeout`]'s own default — but the two are
+    /// nested: this method wraps the whole walk in
+    /// `ResolverOptions::total_timeout`, and revocation discovery for
+    /// EACH node re-applies its own `total_timeout` inside that. On an
+    /// all-defaults configuration, one slow-but-not-yet-failed node's
+    /// discovery can consume the entire walk's budget. This fails
+    /// closed (the walk simply times out), so it is safe, but it is
+    /// surprising — set `discovery.total_timeout` well below
+    /// `ResolverOptions::total_timeout`, or raise the latter, if you
+    /// enable discovery here. The walk-scoped cache substantially
+    /// mitigates this in practice, since a repeat node at the same
+    /// authority/class no longer re-runs discovery at all.
     pub async fn walk_derived_from(&self, body: &Body) -> Result<Vec<VerifiedContext>, AcdpError> {
         let total_timeout = self.options.total_timeout;
-        let fut = self.walk_derived_from_inner(body);
+        // Issue #260: walk-scoped by default. `self.revocation_cache` is
+        // the caller's explicit opt-in to cross-walk sharing
+        // (`Self::with_revocation_cache`); absent that, build one fresh
+        // `RevocationCache` here, alive only for this call, and thread it
+        // into every node this walk resolves.
+        //
+        // MATERIAL-3: `walk_scoped_freshness` is `Some(total_timeout)`
+        // ONLY when this call built its own cache (no caller-supplied
+        // one) — that `Some` is what tells `resolve_inner` to override
+        // this walk's effective `RevocationDiscovery::freshness`. A
+        // caller-supplied cache gets `None` here, leaving its own
+        // `freshness` (governed entirely by the caller) untouched.
+        let (walk_cache, walk_scoped_freshness) = match &self.revocation_cache {
+            Some(cache) => (cache.clone(), None),
+            None => (RevocationCache::default(), Some(total_timeout)),
+        };
+        let fut = self.walk_derived_from_inner(body, &walk_cache, walk_scoped_freshness);
         match tokio::time::timeout(total_timeout, fut).await {
             Ok(res) => res,
             Err(_) => Err(AcdpError::CrossRegistryResolutionFailed(format!(
@@ -267,6 +496,8 @@ impl CrossRegistryResolver {
     async fn walk_derived_from_inner(
         &self,
         body: &Body,
+        cache: &RevocationCache,
+        walk_scoped_freshness: Option<Duration>,
     ) -> Result<Vec<VerifiedContext>, AcdpError> {
         let mut seen: HashSet<String> = HashSet::new();
         seen.insert(body.ctx_id.0.clone());
@@ -303,7 +534,9 @@ impl CrossRegistryResolver {
                     self.options.max_nodes, next.0
                 )));
             }
-            let verified = self.resolve(&next).await?;
+            let verified = self
+                .resolve_inner(&next, Some(cache), walk_scoped_freshness)
+                .await?;
             let parents = &verified.body().derived_from;
             if parents.len() > self.options.max_fanout {
                 return Err(AcdpError::CrossRegistryResolutionFailed(format!(

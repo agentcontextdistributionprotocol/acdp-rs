@@ -139,6 +139,44 @@ pub enum AcdpError {
     #[error("search truncated: {0}")]
     SearchTruncated(String),
 
+    /// Locally detected (issue #258): RFC-ACDP-0014 §8 revocation
+    /// auto-discovery (`RevocationDiscovery::max_requests` /
+    /// `RevocationDiscovery::max_bytes` in `acdp-client`) exhausted its
+    /// caller-configured request-count or cumulative-byte budget before
+    /// both trust-class lookups finished. Not a wire code — RFC-ACDP-0014
+    /// §10 ("No new wire error code") forbids one, and this is
+    /// client-side only, the same rationale as
+    /// [`AcdpError::SearchTruncated`]. Permanent for the same request
+    /// shape — never added to [`AcdpError::is_transient`] — exhausting a
+    /// budget is closer to `SearchTruncated` ("we did not see
+    /// everything") than to a transport error, and carries the same
+    /// attacker-inducible-downgrade warning: a hostile registry that
+    /// learns a caller's budget can pad harmless-looking traffic to
+    /// exhaust it before a real revocation is found.
+    ///
+    /// The two budgets are combined across BOTH lookups
+    /// (`find_revocations` and, when opted in,
+    /// `find_registry_attested_revocations`), not one ceiling each —
+    /// enabling the registry-attested trust class does not double the
+    /// allowance. The request count is enforced exactly: the slot is
+    /// reserved *before* the request is issued, so a request is never
+    /// issued once the budget is reserved out, and — unlike the byte
+    /// count below — a 503, a parse failure, or a `PayloadTooLarge` on
+    /// an already-reserved request still consumes its slot. The byte
+    /// count is enforced on a check-before-issue basis using the running
+    /// total from completed requests, so up to TWO in-flight requests
+    /// (one per concurrently-running trust-class lookup) can push the
+    /// total over `max_bytes` before the NEXT request observes the
+    /// overrun. Counts registry traffic only (`acdp-client`'s
+    /// `RegistryClient::{capabilities, retrieve, lineage, search}`) —
+    /// DID-document fetches issued via `WebResolver` are not counted.
+    /// Only the byte count is scoped to successfully-parsed response
+    /// bodies: the capped error-envelope read on a non-success response
+    /// is never charged to `max_bytes`, but IS charged to `max_requests`
+    /// (the slot was already reserved before the response arrived).
+    #[error("revocation discovery budget exceeded: {0}")]
+    RevocationDiscoveryBudgetExceeded(String),
+
     /// Locally detected: RFC-ACDP-0014 §8 revocation auto-discovery
     /// (`RevocationPolicy::discover` in `acdp-client`) failed under
     /// `DiscoveryFailurePolicy::FailClosed`. Not a wire code — the same
@@ -703,5 +741,10 @@ mod tests {
         // transport hiccup — retrying the identical query reproduces the
         // same truncation.
         assert!(!AcdpError::SearchTruncated("x".into()).is_transient());
+        // Issue #258: exhausting a caller-configured discovery request/byte
+        // budget is a client-local safety-limit signal, like
+        // `SearchTruncated` above — never transient, and deliberately NOT
+        // added to the `matches!` list in `is_transient`.
+        assert!(!AcdpError::RevocationDiscoveryBudgetExceeded("x".into()).is_transient());
     }
 }

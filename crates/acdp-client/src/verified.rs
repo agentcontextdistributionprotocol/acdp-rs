@@ -1,7 +1,7 @@
 //! VerifiedContext: retrieve + verify in one call.
 
 use super::data_ref::{fetch_and_verify_data_ref, DataRefFetcher};
-use super::registry::RegistryClient;
+use super::registry::{DiscoveryBudget, RegistryClient};
 use acdp_did::WebResolver;
 use acdp_primitives::error::AcdpError;
 use acdp_types::{body::FullContext, primitives::CtxId};
@@ -124,9 +124,33 @@ impl Default for VerificationPolicy {
 /// is permanent, cache accordingly). [`Self::discover`] (RFC-ACDP-0014
 /// §8) is the opt-in complement: when set, `verify_retrieved` itself
 /// runs those same two lookups and unions their result with `known`
-/// (see [`RevocationDiscovery`]). When `known` is empty AND `discover`
-/// is `None`, the phase is inert and verification behaves exactly as
-/// before RFC-ACDP-0014.
+/// (see [`RevocationDiscovery`]). When `known` is empty, `discover` is
+/// `None`, AND no [`crate::RevocationCache`] is attached to the client,
+/// the phase is inert and verification behaves exactly as before
+/// RFC-ACDP-0014.
+///
+/// Issue #257 gives `discover`'s own caching a first-class home:
+/// [`crate::RevocationCache`], attached to the [`crate::RegistryClient`]
+/// passed to `verify_retrieved` via
+/// [`crate::RegistryClient::with_revocation_cache`], persists exactly the
+/// "own indefinite cache" a caller would otherwise have to hand-roll
+/// around `known` — verified revocations discovered on one call are
+/// unioned into every later call against the same client, unconditionally
+/// and indefinitely, independent of [`RevocationDiscovery::freshness`], and
+/// **regardless of whether that later call itself sets `discover`** —
+/// attaching a cache is itself the opt-in (MATERIAL-3, fresh-Opus review
+/// of Phase 2): a call made with `discover: None` still seeds
+/// producer-signed facts from the cache (never registry-attested ones —
+/// see below), which is what extends this anti-rollback protection to
+/// [`VerifiedContext::fetch`]/[`VerifiedContext::fetch_current`] (LIM-2),
+/// the two entry points that can never set `discover` at all. A
+/// registry-attested fact, by contrast, is additionally scoped to the
+/// vantage that minted it (BLOCKER-1, RFC-ACDP-0014 §6): reading it back
+/// through a client talking to a different authority never applies it,
+/// even under [`RevocationDiscovery::include_registry_attested`]. See
+/// that field's doc and `crate::revocation_cache` for the full model,
+/// including the separate, opt-in, TTL-bounded marker that can additionally
+/// skip a repeat lookup.
 ///
 /// When the body's signing key matches a supplied revocation, §7
 /// applies: a receipt-attested publish time strictly before the
@@ -150,16 +174,26 @@ impl Default for VerificationPolicy {
 /// rather than the call returning `Err` — that method never
 /// short-circuits on a policy-phase failure by design.
 ///
-/// "Uniformly" has two carve-outs, both structural rather than a policy
-/// choice: [`VerifiedContext::fetch`] and
+/// "Uniformly" has one remaining carve-out, structural rather than a
+/// policy choice: [`VerifiedContext::fetch`] and
 /// [`VerifiedContext::fetch_current`] hardcode
 /// [`VerificationPolicy::default`] and so can never carry a non-empty
 /// `known` or a `discover`; callers wanting either use the
-/// `_with_policy` forms instead. And
-/// [`crate::CrossRegistryResolver`] builds its own internal policy with
-/// no injection point, so neither `known` nor `discover` can reach a
-/// cross-registry walk at all. Both are recorded as known limitations
-/// (issue #248 LIM-1/LIM-2) rather than silently true.
+/// `_with_policy` forms instead. This is recorded as a known limitation
+/// (issue #248 LIM-2) rather than silently true. Phase 2's cache still
+/// extends anti-rollback protection to these two entry points — see
+/// [`Self::discover`]'s doc — but they can never *configure* discovery
+/// themselves.
+///
+/// **Issue #260 closed the sibling limitation, LIM-1.**
+/// [`crate::CrossRegistryResolver::with_revocation_policy`] now injects a
+/// [`RevocationPolicy`] into every node a cross-registry walk verifies,
+/// and [`crate::CrossRegistryResolver::with_revocation_cache`] shares one
+/// [`crate::RevocationCache`] across the walk (walk-scoped by default —
+/// see that method's doc). The resolver derives `receipts` itself, per
+/// node, from that node's advertised capabilities, so it takes a
+/// [`RevocationPolicy`], never a caller-supplied [`VerificationPolicy`] —
+/// see `CrossRegistryResolver::with_revocation_policy`'s doc for why.
 ///
 /// Only put revocations here that you have verified (strict body
 /// pipeline + the §5 not-self-signed rule) and, per §6, that you have
@@ -273,14 +307,46 @@ impl RevocationPolicy {
 /// can still serve gigabytes of legitimate-looking traffic inside the
 /// window — the 1 MB cap applies per request, not in aggregate, and
 /// verified revocations accumulate in a `Vec` for the call's duration.
-/// There is no request-count or byte budget in this version, and no
-/// cache: every call re-discovers from scratch. A caller verifying
-/// many contexts against the same producer should discover once
-/// itself and pass the results via [`RevocationPolicy::known`] instead
-/// of setting `discover` on every call — the same hoisting guidance
-/// `crate::revocation`'s `find_registry_attested_revocations` doc
-/// already gives callers of that function directly (see its "Cost
-/// note for callers verifying many contexts").
+/// [`Self::max_requests`] and [`Self::max_bytes`] (issue #258) close
+/// that gap: set either (or both) to bound the two lookups **combined**
+/// — enabling [`Self::include_registry_attested`] does not double the
+/// ceiling — checked **before** each request is issued, so a would-be
+/// request that would exceed the budget is never sent. Exhaustion
+/// raises `AcdpError::RevocationDiscoveryBudgetExceeded` through the
+/// same [`Self::on_failure`] path as `AcdpError::SearchTruncated` — it
+/// is permanent for the same request shape and is never transient.
+/// Both knobs bound **registry** traffic only: DID-document fetches
+/// issued via `WebResolver` are not counted. [`Self::max_bytes`] counts
+/// only **successfully-parsed response bodies** — an error-envelope
+/// read on a non-success response is not charged. [`Self::max_requests`]
+/// has no such exemption: the request slot is reserved *before* the
+/// request is issued, so a 503, a parse failure, or a `PayloadTooLarge`
+/// still consumes it. Leaving both `None` (as both
+/// [`Self::producer_signed_only`] and [`Self::all_trust_classes`] do)
+/// preserves pre-#258 behavior exactly: unbounded requests and bytes,
+/// bounded only by [`Self::total_timeout`].
+///
+/// Issue #257 adds an opt-in cache ([`crate::RevocationCache`], attached
+/// to the [`crate::RegistryClient`] passed in via
+/// [`crate::RegistryClient::with_revocation_cache`]) — but attaching one
+/// does NOT, by itself, turn "re-discovers from scratch" into "sometimes
+/// skips discovery." It is two independent things: verified revocations
+/// ("facts") are always unioned into classification, indefinitely,
+/// regardless of [`Self::freshness`] — a caller verifying many contexts
+/// against the same producer benefits from this immediately, with zero
+/// extra configuration, simply by attaching a cache and reusing the
+/// client. Whether a repeat lookup is skipped entirely (saving requests)
+/// is governed separately by [`Self::freshness`], which defaults to
+/// `Duration::ZERO` — i.e. off. See [`Self::freshness`]'s own doc and
+/// `crate::revocation_cache` for the full model. Without a cache attached
+/// at all, this crate behaves exactly as before #257: every call
+/// re-discovers from scratch, budgeted or not. A caller that does not
+/// want to manage a `RevocationCache` can still discover once itself and
+/// pass the results via [`RevocationPolicy::known`] instead of setting
+/// `discover` on every call — the same hoisting guidance
+/// `crate::revocation`'s `find_registry_attested_revocations` doc already
+/// gives callers of that function directly (see its "Cost note for
+/// callers verifying many contexts").
 ///
 /// # Reentrancy
 ///
@@ -336,11 +402,18 @@ pub struct RevocationDiscovery {
     /// **attacker-inducible security downgrade**, since a hostile
     /// producer or registry can pad the result set specifically to
     /// exhaust the page cap and hide a real revocation from discovery.
-    /// A 503 is an ordinary availability blip. Under
-    /// [`DiscoveryFailurePolicy::ProceedWithKnown`] both are treated the
-    /// same way (proceed on [`RevocationPolicy::known`] alone, record
-    /// the failure) — choose `ProceedWithKnown` knowing it also waives
-    /// truncation, not just transient unavailability.
+    /// A 503 is an ordinary availability blip. **A third case is
+    /// attacker-inducible the same way `SearchTruncated` is (issue
+    /// #258):** `AcdpError::RevocationDiscoveryBudgetExceeded`, raised
+    /// when [`Self::max_requests`] or [`Self::max_bytes`] is exhausted —
+    /// a hostile registry that learns a caller's budget can pad
+    /// harmless-looking traffic specifically to exhaust it before a
+    /// real revocation is found, just as padding the result set exhausts
+    /// `MAX_SEARCH_PAGES`. Under [`DiscoveryFailurePolicy::ProceedWithKnown`]
+    /// all three are treated the same way (proceed on
+    /// [`RevocationPolicy::known`] alone, record the failure) — choose
+    /// `ProceedWithKnown` knowing it also waives truncation and budget
+    /// exhaustion, not just transient unavailability.
     pub on_failure: DiscoveryFailurePolicy,
     /// Wall-clock budget for the whole discovery step (both searches,
     /// if [`Self::include_registry_attested`] is set). An **availability**
@@ -361,6 +434,92 @@ pub struct RevocationDiscovery {
     /// but here it sits on the core verify path whenever discovery is
     /// configured, not just on an explicit cross-registry walk.
     pub total_timeout: Duration,
+    /// Issue #258: cap on the total number of registry requests the
+    /// discovery step may issue, **combined across both lookups** (the
+    /// producer-signed search always, plus the registry-attested search
+    /// when [`Self::include_registry_attested`] is set) — not a ceiling
+    /// per lookup, so turning on the second trust class does not double
+    /// the allowance. `None` (the default from both named constructors)
+    /// is unbounded, matching every version before #258. Checked
+    /// **before** each request is issued (`RegistryClient::capabilities`,
+    /// `::retrieve`, `::lineage`, `::search`); exceeding it raises
+    /// `AcdpError::RevocationDiscoveryBudgetExceeded` through
+    /// [`Self::on_failure`], the same path `AcdpError::SearchTruncated`
+    /// already takes. Counts registry requests only — DID-document
+    /// fetches via `WebResolver` are not counted.
+    pub max_requests: Option<std::num::NonZeroUsize>,
+    /// Issue #258: cap on the cumulative bytes of *successfully-parsed*
+    /// response bodies the discovery step may read, **combined across
+    /// both lookups**, same combination rule as [`Self::max_requests`].
+    /// `None` (the default from both named constructors) is unbounded,
+    /// matching every version before #258. Checked **before** each
+    /// request is issued, using the running total from requests that
+    /// already completed — the size of an in-flight request cannot be
+    /// known (and therefore reserved) in advance, so **up to two**
+    /// requests can push the total past `max_bytes` before the next
+    /// check observes the overrun: the two trust-class lookups run
+    /// concurrently under `tokio::try_join!`, and both can pass a
+    /// not-yet-updated check before either's response is recorded — see
+    /// [`Self::max_requests`]'s doc for the same race on the request
+    /// count, where it is closed by an atomic reservation; there is no
+    /// equivalent reservation for bytes, since a response's size is not
+    /// known until after it is read. Counts a non-success response's
+    /// error-envelope read *not at all* — only bytes read on the
+    /// success path are charged.
+    ///
+    /// `Some(0)` is representable (unlike [`Self::max_requests`], which
+    /// is guarded by `NonZeroUsize`) and is not special-cased: it trips
+    /// the `>=` check on the very first request of either lookup,
+    /// before that request is ever issued, so discovery fails
+    /// immediately with zero registry traffic. This is a deliberate
+    /// consequence of keeping this field a plain `u64` (matching the
+    /// wave plan's chosen types) rather than a reason to reach for
+    /// `NonZeroU64`.
+    pub max_bytes: Option<u64>,
+    /// Issue #257: how long a discovery-freshness marker stays valid on
+    /// a [`crate::RevocationCache`] attached to the [`crate::RegistryClient`]
+    /// passed to `verify_retrieved` (via
+    /// [`crate::RegistryClient::with_revocation_cache`]). A marker records
+    /// "vantage V completed a full, untruncated discovery for this
+    /// producer/trust-class at time T"; while one is within `freshness` of
+    /// T, that lookup is skipped entirely (zero registry requests) rather
+    /// than merely supplemented.
+    ///
+    /// Default `Duration::ZERO` from both named constructors — markers
+    /// never suppress a lookup unless a caller explicitly raises this
+    /// above zero. This is the safe default per RFC-ACDP-0014 §8's own
+    /// warning ("absence of search results is not evidence of absence"): a
+    /// cached *absence* is not licensed the way a cached, verified
+    /// revocation is (§7:114 licenses only the latter, indefinitely). No
+    /// cache attached makes this field inert regardless of its value.
+    ///
+    /// Distinct from — and orthogonal to — caching verified revocations
+    /// themselves ("facts"), which a [`crate::RevocationCache`] does
+    /// **unconditionally** and **indefinitely** whenever one is attached,
+    /// independent of this field: facts are always unioned into
+    /// classification (never gated behind `freshness`), because a
+    /// revocation is monotone (more revocations ⇒ an earlier effective
+    /// boundary ⇒ strictly more fail-closed verdicts), so seeding from
+    /// them can only tighten a verdict, never loosen one. `freshness`
+    /// governs only whether a lookup that would otherwise re-confirm "no
+    /// NEW revocation" is skipped. See `crate::revocation_cache` for the
+    /// full two-object model.
+    ///
+    /// That "unconditionally" is exact for a producer-signed fact (§8:
+    /// self-contained, applies at any vantage) but is scoped for a
+    /// registry-attested one (§6): the cache additionally filters those to
+    /// the vantage that minted them, so attaching one cache to clients for
+    /// two different registries does not let registry A's attestation
+    /// apply to a context served by registry B.
+    ///
+    /// A recommended ceiling, not enforced: RFC-ACDP-0006 §4.2 caps
+    /// `WebResolver`'s own DID-document cache TTL at 3600 s, and that is a
+    /// reasonable order-of-magnitude anchor for this field too — this
+    /// crate already accepts bounded key-material staleness at that
+    /// order. Left unenforced deliberately: a hard cap on a knob whose
+    /// safe default is `ZERO` would add a failure mode without adding
+    /// safety.
+    pub freshness: Duration,
 }
 
 impl RevocationDiscovery {
@@ -376,6 +535,9 @@ impl RevocationDiscovery {
             include_registry_attested: false,
             on_failure: DiscoveryFailurePolicy::FailClosed,
             total_timeout: Duration::from_secs(30),
+            max_requests: None,
+            max_bytes: None,
+            freshness: Duration::ZERO,
         }
     }
 
@@ -390,6 +552,9 @@ impl RevocationDiscovery {
             include_registry_attested: true,
             on_failure: DiscoveryFailurePolicy::FailClosed,
             total_timeout: Duration::from_secs(30),
+            max_requests: None,
+            max_bytes: None,
+            freshness: Duration::ZERO,
         }
     }
 }
@@ -969,21 +1134,98 @@ impl VerifiedContext {
         // through" — an attacker-inducible security downgrade, since a
         // hostile producer/registry can pad the result set specifically
         // to exhaust `MAX_SEARCH_PAGES` — whereas a 503 is an ordinary
-        // availability blip. `ProceedWithKnown` treats both the same
-        // way (proceed on `known` alone, record the failure); naming
-        // the asymmetry here is so that choice is made with open eyes.
-        let (discovered, revocation_discovery) = match &policy.revocations.discover {
-            None => (Vec::new(), None),
+        // availability blip. `RevocationDiscoveryBudgetExceeded` (issue
+        // #258, `max_requests`/`max_bytes`) is a THIRD case in the same
+        // attacker-inducible bucket as truncation: a hostile registry
+        // that learns a caller's budget can pad harmless-looking traffic
+        // to exhaust it before a real revocation is found.
+        // `ProceedWithKnown` treats all three the same way (proceed on
+        // `known` alone, record the failure); naming the asymmetry here
+        // is so that choice is made with open eyes.
+        // Issue #257 (D-A / B1): `seeded_facts` is read from whatever
+        // `RevocationCache` is attached to `client` — BEFORE any of the
+        // discovery attempt below runs — and threaded through every arm
+        // below UNCHANGED, including the failure arms that reset
+        // `discovered` to `Vec::new()`. This is the load-bearing placement:
+        // facts are a verified, permanent record (RFC-ACDP-0014 §7:114)
+        // and MUST survive a 503, a `SearchTruncated`, a budget
+        // exhaustion, or a `total_timeout` trip on THIS call — exactly the
+        // failure modes an attacker can induce to try to make a client
+        // "forget" a revocation it already saw. Computing this once, up
+        // front, and never touching it again inside the match is what
+        // makes that survival structural rather than a discipline: there
+        // is no code path below that can zero it out the way `discovered`
+        // legitimately is on failure.
+        let (discovered, revocation_discovery, seeded_facts) = match &policy.revocations.discover {
+            // MATERIAL-3 (fresh-Opus review of Phase 2): attaching a
+            // `RevocationCache` IS the opt-in for anti-rollback, independent
+            // of whether `discover` itself is configured — seed producer-
+            // signed facts here too, not only in the `Some` arm below. This
+            // is what extends anti-rollback protection to
+            // `VerifiedContext::fetch`/`fetch_current` (LIM-2), which
+            // hardcode `VerificationPolicy::default()` and so can NEVER
+            // set `discover` at all — without this, those two entry points
+            // would get zero benefit from an attached cache. Seeding is
+            // monotone (facts can only tighten a verdict, never loosen
+            // one), so doing it unconditionally is safe. With `discover:
+            // None` there is no `include_registry_attested` to consult, so
+            // seed producer-signed facts ONLY: registry-attested requires
+            // the explicit opt-in `RevocationDiscovery::include_registry_attested`
+            // carries (D6), and BLOCKER-1's origin filter would need this
+            // call's serving vantage regardless, so staying conservative
+            // here costs nothing.
+            None => {
+                let agent_id = &ctx.body.agent_id;
+                let vantage = client.authority();
+                let seeded_facts = client
+                    .revocation_cache()
+                    .map(|(cache, _freshness)| {
+                        cache.facts_for(agent_id.as_str(), false, vantage.as_deref())
+                    })
+                    .unwrap_or_default();
+                (Vec::new(), None, seeded_facts)
+            }
             Some(discovery) => {
                 let agent_id = &ctx.body.agent_id;
                 let include_attested = discovery.include_registry_attested;
+                // BLOCKER-1: pass this call's own vantage through so
+                // `facts_for` can filter registry-attested facts to
+                // `origin == current vantage` (RFC-ACDP-0014 §6) —
+                // producer-signed facts are unaffected either way (§8).
+                let vantage = client.authority();
+                let seeded_facts = client
+                    .revocation_cache()
+                    .map(|(cache, _freshness)| {
+                        cache.facts_for(agent_id.as_str(), include_attested, vantage.as_deref())
+                    })
+                    .unwrap_or_default();
+                // Issue #258 (D-B): a combined request/byte budget is
+                // enforced inside `RegistryClient`'s request methods, on
+                // a client clone created HERE and handed to BOTH lookups
+                // below — never on `client` itself, so a caller sharing
+                // that original client across concurrent work never has
+                // unrelated traffic charged to this discovery's budget.
+                // One `DiscoveryBudget` per call means one combined
+                // ceiling: enabling `include_registry_attested` cannot
+                // silently double it, since both `try_join!` arms below
+                // draw down the same counters. Issue #257: the SAME clone
+                // additionally carries `client`'s attached
+                // `RevocationCache` (if any, unchanged by
+                // `with_discovery_budget`) with `freshness` overridden from
+                // this call's `discovery.freshness` — never a
+                // caller-facing knob, only ever set here from the
+                // extracted `discovery` value (spine-lock safe).
+                let budget = DiscoveryBudget::new(discovery.max_requests, discovery.max_bytes);
+                let client = client
+                    .with_discovery_budget(budget)
+                    .with_revocation_freshness(discovery.freshness);
                 let discovery_fut = async {
                     tokio::try_join!(
-                        super::revocation::find_revocations(client, resolver, agent_id),
+                        super::revocation::find_revocations(&client, resolver, agent_id),
                         async {
                             if include_attested {
                                 super::revocation::find_registry_attested_revocations(
-                                    client, resolver, agent_id,
+                                    &client, resolver, agent_id,
                                 )
                                 .await
                             } else {
@@ -1004,7 +1246,7 @@ impl VerifiedContext {
                         };
                         let mut merged = producer_signed;
                         merged.extend(registry_attested);
-                        (merged, Some(Ok(outcome)))
+                        (merged, Some(Ok(outcome)), seeded_facts)
                     }
                     Ok(Err(e)) => {
                         let wrapped = AcdpError::RevocationDiscoveryFailed {
@@ -1013,7 +1255,7 @@ impl VerifiedContext {
                         match discovery.on_failure {
                             DiscoveryFailurePolicy::FailClosed => return Err(wrapped),
                             DiscoveryFailurePolicy::ProceedWithKnown => {
-                                (Vec::new(), Some(Err(wrapped)))
+                                (Vec::new(), Some(Err(wrapped)), seeded_facts)
                             }
                         }
                     }
@@ -1027,7 +1269,7 @@ impl VerifiedContext {
                         match discovery.on_failure {
                             DiscoveryFailurePolicy::FailClosed => return Err(wrapped),
                             DiscoveryFailurePolicy::ProceedWithKnown => {
-                                (Vec::new(), Some(Err(wrapped)))
+                                (Vec::new(), Some(Err(wrapped)), seeded_facts)
                             }
                         }
                     }
@@ -1044,19 +1286,28 @@ impl VerifiedContext {
         // 5), so `verified_receipt.created_at` genuinely places THIS
         // key's signature in time.
         //
-        // `effective` is the union of `policy.revocations.known` and
+        // `effective` is the union of `policy.revocations.known`,
+        // `seeded_facts` (issue #257 — the attached `RevocationCache`'s
+        // permanent record for this producer, ALWAYS unioned in
+        // regardless of whether this call's discovery attempt above
+        // succeeded, failed, or was never configured at all), and
         // whatever `discovered` above (empty when `discover` is `None`,
         // or when discovery failed under `ProceedWithKnown`) —
         // deliberately WITHOUT deduplication: `effective_boundary` is a
         // `filter().map().min()` fold, so duplicate entries are inert
         // and two sources disagreeing resolves to the earliest
         // boundary, the fail-closed direction §4 mandates. Dedup is
-        // unavailable anyway — `KeyRevocation` is not `Hash`.
+        // unavailable anyway — `KeyRevocation` is not `Hash`. (The cache
+        // itself still dedups on insert — see
+        // `RevocationCache::record_success` — so `seeded_facts` alone
+        // does not grow unboundedly across repeated calls; this `chain`
+        // is simply not where that bound lives.)
         let effective: Vec<acdp_types::revocation::KeyRevocation> = policy
             .revocations
             .known
             .iter()
             .cloned()
+            .chain(seeded_facts)
             .chain(discovered)
             .collect();
         let revocation_verdict = if effective.is_empty() {
@@ -1905,11 +2156,17 @@ mod tests {
         assert!(!producer_only.include_registry_attested);
         assert_eq!(producer_only.on_failure, DiscoveryFailurePolicy::FailClosed);
         assert_eq!(producer_only.total_timeout, Duration::from_secs(30));
+        assert_eq!(
+            producer_only.freshness,
+            Duration::ZERO,
+            "issue #257: freshness defaults to ZERO (off) from both named constructors"
+        );
 
         let all = RevocationDiscovery::all_trust_classes();
         assert!(all.include_registry_attested);
         assert_eq!(all.on_failure, DiscoveryFailurePolicy::FailClosed);
         assert_eq!(all.total_timeout, Duration::from_secs(30));
+        assert_eq!(all.freshness, Duration::ZERO);
     }
 
     /// issue #248 Phase 2, acceptance criterion 3 (continued) — D6:

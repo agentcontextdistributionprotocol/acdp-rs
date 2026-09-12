@@ -190,19 +190,26 @@ cost/availability default, not a claim that registry-attested
 revocations matter less.
 
 **`on_failure`: `FailClosed` vs `ProceedWithKnown`.** When discovery
-itself fails — a transport error, or the search-safety-cap error
-`AcdpError::SearchTruncated` — `DiscoveryFailurePolicy::FailClosed`
-(the default) fails verification. `ProceedWithKnown` instead proceeds
-using `known` alone and records the failure, retrievable via both
+itself fails — a transport error, the search-safety-cap error
+`AcdpError::SearchTruncated`, or (issue #258) the budget error
+`AcdpError::RevocationDiscoveryBudgetExceeded` covered below —
+`DiscoveryFailurePolicy::FailClosed` (the default) fails verification.
+`ProceedWithKnown` instead proceeds using `known` alone and records the
+failure, retrievable via both
 `VerifiedContext::revocation_discovery_failure()` and
 `VerificationReport::revocation_discovery`. Choose `ProceedWithKnown`
-with open eyes: `SearchTruncated` and an ordinary transport error (e.g.
-a 503) both take this same path, but they are **not** equivalent.
-`SearchTruncated` means "this producer has more revocations than we
-will page through" — a hostile producer or registry can pad the search
-result set specifically to exhaust the page cap, hiding a real
-revocation from discovery — an attacker-inducible security downgrade,
-not merely a transient blip like a 503.
+with open eyes: a transport error (e.g. a 503) is an ordinary
+availability blip, but `SearchTruncated` and
+`RevocationDiscoveryBudgetExceeded` are **not** equivalent to it, even
+though all three take this same path. `SearchTruncated` means "this
+producer has more revocations than we will page through" — a hostile
+producer or registry can pad the search result set specifically to
+exhaust the page cap, hiding a real revocation from discovery — an
+attacker-inducible security downgrade. `RevocationDiscoveryBudgetExceeded`
+is attacker-inducible the same way: a hostile registry that learns a
+caller's `max_requests`/`max_bytes` budget can pad harmless-looking
+traffic specifically to exhaust it before a real revocation is found.
+`ProceedWithKnown` waives all three, not just transient unavailability.
 
 **`total_timeout` requires a Tokio time driver.** Discovery wraps both
 searches in a single `tokio::time::timeout(discover.total_timeout, ..)`,
@@ -214,20 +221,253 @@ unless `.enable_time()` / `.enable_all()` is called). Calling any
 from a runtime without the time driver **panics**, it does not return
 `Err`.
 
+**Bounding request count and bytes (issue #258).** `total_timeout` bounds
+wall clock only — a hostile-but-fast registry can still drive a large
+number of requests and a large volume of parsed bytes well inside the
+timeout. `RevocationDiscovery::max_requests` (an `Option<NonZeroUsize>`)
+and `RevocationDiscovery::max_bytes` (an `Option<u64>`) close that gap:
+
+```rust,no_run
+# #[cfg(feature = "client")]
+# fn build_budgeted_discovery() -> acdp::client::RevocationDiscovery {
+use acdp::client::RevocationDiscovery;
+use std::num::NonZeroUsize;
+
+let mut discovery = RevocationDiscovery::producer_signed_only();
+discovery.max_requests = Some(NonZeroUsize::new(200).unwrap());
+discovery.max_bytes = Some(10 * 1024 * 1024); // 10 MB
+# discovery
+# }
+```
+
+Both default to `None` (unbounded) from both named constructors, so
+adding either knob is opt-in and changes nothing for an existing caller.
+When set, the two knobs bound the **combined** total across both trust-
+class searches — enabling `include_registry_attested` does not double
+the ceiling — and are checked **before** each request is issued, so a
+request that would exceed the budget is never sent. Exhaustion raises
+`AcdpError::RevocationDiscoveryBudgetExceeded`, wrapped the same way a
+`SearchTruncated` failure is (`AcdpError::RevocationDiscoveryFailed`,
+dispatched through `on_failure` exactly like the case above) and is
+**never** transient.
+
+Two honesty caveats:
+
+- **Registry traffic only.** The budget counts requests issued through
+  `RegistryClient` (`capabilities`, `retrieve`, `lineage`, `search`).
+  DID-document fetches issued via `WebResolver` during discovery are
+  not counted — they are LRU-cached (1000 entries) but unbounded in
+  count.
+- **Successfully-parsed bodies only — for `max_bytes`.** The byte
+  budget counts bytes read from a *successful* response. A non-success
+  response's small error-envelope read (capped at 64 KB) is never
+  charged, and the size of an in-flight request cannot be reserved in
+  advance — since the two trust-class lookups run concurrently, **up
+  to two** requests can push the running total past `max_bytes` before
+  the *next* check observes the overrun. `max_requests` has no such
+  exemption: its slot is reserved *before* the request is issued, so a
+  503, a parse failure, or a `PayloadTooLarge` still consumes it.
+
+Without a `RevocationCache` attached, every call still re-discovers from
+scratch, budgeted or not — see the next section for the opt-in cache.
+
+### Caching discovered revocations (issue #257)
+
+`RegistryClient::with_revocation_cache` attaches a `RevocationCache` —
+`RevocationCache::new()`, cheap to `Clone` (an `Arc` handle) — to a client.
+Reuse the returned client across many `VerifiedContext::fetch*` calls
+against the same producer(s) to amortize discovery.
+
+**The cache is two objects, and the difference matters.** Read this before
+reaching for the `freshness` knob:
+
+- **Facts** — verified `KeyRevocation`s discovery finds. RFC-ACDP-0014
+  §7:114 licenses caching these *indefinitely* ("the statement is
+  permanent"), and they are **always** unioned into classification —
+  never used to replace or subset a discovery result, and **never gated
+  behind `freshness`**. A revocation is monotone (more revocations ⇒ an
+  earlier effective compromise boundary ⇒ strictly more fail-closed
+  verdicts), so seeding from cached facts can only *tighten* a verdict,
+  never loosen one. This is what makes the fact store an **anti-rollback
+  security control**, not a performance feature: a registry that serves a
+  revocation on one call and hides it on the next (or simply goes offline)
+  cannot make an already-warmed client forget it. Attaching a cache is
+  itself the opt-in for this protection — a call made with
+  `RevocationPolicy::discover: None` still seeds cached **producer-signed**
+  facts (never registry-attested ones — see below), which is what extends
+  anti-rollback to `VerifiedContext::fetch`/`fetch_current`, the two entry
+  points that can never set `discover` at all.
+- **Freshness markers** — "vantage V completed a full, untruncated
+  discovery for this producer/trust-class at time T." This is a cached
+  *absence*, which §7:114 does **not** license and which §8 warns about
+  directly ("a malicious registry can hide a revocation … absence of
+  search results is not evidence of absence"). A marker is bounded by
+  `RevocationDiscovery::freshness` (a `Duration`), per vantage
+  (`RegistryClient::authority()`), per trust class, and minted **only**
+  when discovery completes fully and successfully — a transport error, a
+  `SearchTruncated`, a budget exhaustion, or a `total_timeout` trip never
+  mints one, so a transient blip can never turn into a silent
+  window-long downgrade. A candidate that fails RFC-ACDP-0014 §5
+  verification (bad signature, wrong scope, self-signed) is simply
+  dropped from the result and does **not** prevent a marker from being
+  minted — "completes fully and successfully" describes the *lookup*
+  reaching its natural end within its page/lineage/budget caps, not every
+  candidate it examined turning out to be valid. This grants no new
+  power to a hostile vantage: the marker is per-vantage already, and that
+  vantage already controls what it serves.
+
+**`freshness` defaults to `Duration::ZERO` (off) from both
+`producer_signed_only()` and `all_trust_classes()`.** Attaching a cache at
+the default changes nothing observable except anti-rollback — **the
+default cache saves zero requests.** Set `freshness` above zero (a
+recommended ceiling: 3600 s, matching `WebResolver`'s own DID-document
+cache TTL cap) to additionally let a fresh marker skip a repeat lookup
+entirely:
+
+```rust,no_run
+# #[cfg(feature = "client")]
+# fn build_cached_client(client: &acdp::client::RegistryClient) -> acdp::client::RegistryClient {
+use acdp::client::RevocationCache;
+
+let cache = RevocationCache::new();
+client.with_revocation_cache(cache)
+# }
+```
+
+```rust,no_run
+# #[cfg(feature = "client")]
+# fn build_discovery_with_freshness() -> acdp::client::RevocationDiscovery {
+use acdp::client::RevocationDiscovery;
+use std::time::Duration;
+
+let mut discovery = RevocationDiscovery::producer_signed_only();
+discovery.freshness = Duration::from_secs(300); // opt in to skipping repeat lookups
+# discovery
+# }
+```
+
+A caller sharing one cache across producers or across a whole
+`CrossRegistryResolver` walk shares that cache's exposure too — but two
+independent filters bound it:
+
+- **Trust class.** A registry-attested fact is read back filtered to the
+  classes the CURRENT call's discovery configuration opted into
+  (`producer_signed_only()` never applies a cached registry-attested
+  fact, even one warmed by an earlier `all_trust_classes()` call against
+  the same producer).
+- **Origin (RFC-ACDP-0014 §6).** A registry-attested fact is *additionally*
+  tagged with the vantage (`RegistryClient::authority()`) that minted it
+  and is applied only when reading through a client talking to that SAME
+  authority — never merely because its `trust_class` matches. §6 licenses
+  a registry-attested claim only "for contexts served by or receipted by
+  that same registry"; storing `trust_class` alone answers a different
+  question ("did this caller opt into the class") than "was this claim
+  made by the registry now serving this context," so both are tracked. A
+  caller sharing one cache across clients for two *different* registries
+  never has registry A's attestation apply to a context served by
+  registry B.
+
+A **producer-signed** fact, once verified, is unconditionally
+self-contained (RFC-ACDP-0014 §5/§8) and applies regardless of which
+registry served it — it is filtered by neither trust class (once opted
+into `known`/discovery at all) nor origin.
+
+Facts are deduplicated on insert and capped per producer; once the cap is
+reached an entry stops accepting new facts and drops its markers,
+degrading to plain pass-through rather than false completeness. The cache
+itself is capacity-bounded (oldest-is-not-tracked; a plain
+capacity-triggered eviction, since losing an entry can only cost a future
+re-discovery, never safety).
+
 **Where discovery is, and is not, reachable.** All five
 policy-taking entry points — `fetch_with_policy`,
 `fetch_current_with_policy`, `fetch_report`, `fetch_report_diagnose`,
 and `fetch_report_with_fetcher` — honor `discover` through the shared
-verification pipeline. Two paths structurally cannot carry it:
+verification pipeline. `CrossRegistryResolver` (issue #260) now does
+too: `CrossRegistryResolver::with_revocation_policy` injects a
+`RevocationPolicy` into every node the resolver verifies, and
+`CrossRegistryResolver::with_revocation_cache` shares one
+`RevocationCache` across the walk. One path still structurally cannot
+carry it:
 
 - `fetch` and `fetch_current` hardcode `VerificationPolicy::default()`
   and take no policy argument at all; use the `_with_policy` forms if
-  you need discovery.
-- `CrossRegistryResolver` has no policy injection point (it builds its
-  own internal policy for the lineage walk), so cross-registry
-  `derived_from` resolution never discovers revocations. This is a
-  known limitation, not an oversight — see the issue #248 plan's
-  LIM-1/LIM-2.
+  you need discovery. This is a known limitation, not an oversight —
+  see the issue #248 plan's LIM-2. (LIM-1, the `CrossRegistryResolver`
+  gap, was closed by issue #260.)
+
+**`CrossRegistryResolver` and revocation discovery (issue #260).**
+`with_revocation_policy` takes a `RevocationPolicy`, never a full
+`VerificationPolicy` — the resolver derives `receipts` itself, per
+node, from that node's own advertised capabilities (`Require` iff the
+upstream claims `acdp-registry-receipts`), a capability-dependent
+escalation a caller cannot express statically for a walk whose
+authorities are not known in advance. `known` still travels with the
+policy, so a caller can enforce a pre-discovered revocation set across
+a whole walk without enabling live discovery at all.
+
+```rust,no_run
+# #[cfg(feature = "client")]
+# fn build_resolver() -> acdp::client::CrossRegistryResolver {
+use acdp::client::{CrossRegistryResolver, RevocationDiscovery, RevocationPolicy};
+
+CrossRegistryResolver::new().with_revocation_policy(
+    RevocationPolicy::new(vec![]).with_discovery(RevocationDiscovery::producer_signed_only()),
+)
+# }
+```
+
+**The cache is walk-scoped by default.** Unless
+`with_revocation_cache` is called, `CrossRegistryResolver` creates a
+FRESH `RevocationCache` for each `walk_derived_from` call and shares it
+across every node that walk visits — so discovery for a given
+`(authority, trust class)` runs at most once per walk, not once per
+node, regardless of `max_nodes`, **on genuine default configuration**.
+For this resolver-built cache, the effective `RevocationDiscovery::freshness`
+is derived internally from `ResolverOptions::total_timeout` — a caller
+using `RevocationDiscovery::producer_signed_only()`/`all_trust_classes()`
+completely untouched still gets suppression, with no `freshness` knob to
+set. This is safe because no cached absence outlives the call, and the
+call's own duration is already bounded by `total_timeout`.
+
+A **caller-supplied** cache (`with_revocation_cache`) does not get this
+derived value: its own `freshness` governs unmodified, so
+`Duration::ZERO` (the type default) still suppresses nothing there —
+merely sharing a cache object is not, on its own, what skips a lookup
+for that path (the same rule as the direct, non-resolver path above). A
+caller who wants discovery to stay warm ACROSS separate walks opts in
+explicitly via `with_revocation_cache` and picks that cache's own
+`freshness` (and so its staleness exposure) themselves.
+
+Two caveats:
+
+- **The 30s / 30s default collision.** `RevocationDiscovery::total_timeout`
+  and `ResolverOptions::total_timeout` both default to 30s, but they
+  nest: a discovery-enabled walk on all defaults can have its entire
+  walk budget consumed by one node's discovery. This fails closed (the
+  walk simply times out), so it is safe, but surprising — set
+  `discovery.total_timeout` well below `ResolverOptions::total_timeout`,
+  or raise the latter, when enabling discovery here. The walk-scoped
+  cache substantially mitigates this by collapsing repeat discoveries.
+- **A bare `resolve()` call, outside `walk_derived_from`, is bounded
+  only by the discovery timeout** — `ResolverOptions::total_timeout`
+  wraps `walk_derived_from`, not `resolve` on its own — and gets the
+  walk-scoped cache's benefit only if `with_revocation_cache` was
+  called explicitly.
+
+`CrossRegistryResolver` does not add its own request/byte budget on top
+of this — issue #258's `RevocationDiscovery::max_requests`/`max_bytes`
+already bound the per-node discovery cost; a duplicate resolver-level
+knob would be redundant *per node*. Composed across a walk, though, that
+per-node bound is not the whole story: `DiscoveryBudget` is enforced once
+per `verify_retrieved` call, i.e. once per node the walk visits. Under
+the default `DiscoveryFailurePolicy::FailClosed`, the first node to
+exhaust its budget aborts the whole walk, so the aggregate cost stays
+bounded by one node's budget. Under `ProceedWithKnown`, a budget
+exhaustion at one node no longer stops the walk — so the effective
+walk-wide ceiling becomes `max_requests` (or `max_bytes`) **times**
+`ResolverOptions::max_nodes`, since every node can independently spend up
+to its own budget before falling back to `known`.
 
 ### Diagnostics: fetch_report
 
@@ -337,6 +577,14 @@ Use `.with_allowlist([...])` to restrict which authorities the resolver will
 contact, and `.seed_client(authority, client)` to pre-wire a configured client
 (e.g. with a custom CA) for a known authority. Every URL the resolver builds is
 checked against its `SsrfPolicy` — see [Security](security.md).
+
+`.with_revocation_policy(...)` and `.with_revocation_cache(...)` (issue #260)
+let the resolver carry RFC-ACDP-0014 revocation discovery into every node it
+verifies — see "Caching discovered revocations" above for the full model,
+including the walk-scoped cache default and the 30s/30s timeout caveat.
+`seed_client` is fill-if-absent for the cache too: a seeded client with no
+`RevocationCache` of its own is given the resolver's (or the current walk's);
+one that already carries its own keeps it.
 
 ## Publishing from the client
 

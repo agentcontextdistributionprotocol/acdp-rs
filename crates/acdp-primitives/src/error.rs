@@ -273,6 +273,18 @@ pub enum AcdpError {
     #[error("unsupported algorithm: {0}")]
     UnsupportedAlgorithm(String),
 
+    /// Wire code: `unsupported_media_type` — the request carried a body whose
+    /// `Content-Type` is outside the registry's accept-set (RFC-ACDP-0007 §4.1,
+    /// §5; HTTP 415). Added on the 0.5.0 line.
+    ///
+    /// Distinct from [`AcdpError::SchemaViolation`] on purpose: the body is
+    /// rejected *unparsed*, so no structural claim about it is made. A registry
+    /// answering `schema_violation` here would be asserting a validation that
+    /// never ran — and that code is pinned to HTTP 400. Registries advertising
+    /// `acdp_version` below 0.5.0 MUST NOT emit this code.
+    #[error("unsupported media type: {0}")]
+    UnsupportedMediaType(String),
+
     /// Wire code: `not_implemented` — endpoint or feature not supported by
     /// this registry.
     #[error("not implemented: {0}")]
@@ -480,6 +492,7 @@ impl AcdpError {
             "key_resolution_unreachable" => AcdpError::KeyResolutionUnreachable(msg),
             "key_not_authorized" => AcdpError::KeyNotAuthorized(msg),
             "unsupported_algorithm" => AcdpError::UnsupportedAlgorithm(msg),
+            "unsupported_media_type" => AcdpError::UnsupportedMediaType(msg),
             "not_implemented" => AcdpError::NotImplemented(msg),
             "cursor_expired" => AcdpError::CursorExpired,
             "invalid_cursor" => AcdpError::InvalidCursor(msg),
@@ -550,8 +563,8 @@ mod tests {
     }
 
     #[test]
-    fn all_25_wire_codes_round_trip() {
-        // Test-coverage matrix entry: "All 25 error codes parse from WireError".
+    fn all_26_wire_codes_round_trip() {
+        // Test-coverage matrix entry: "All 26 error codes parse from WireError".
         // Every code enumerated by acdp-error.schema.json's enum MUST map to a
         // typed AcdpError variant (or, for `superseded_target` with details,
         // produce the right SupersessionReason).
@@ -598,6 +611,9 @@ mod tests {
             ("not_implemented", |e| {
                 matches!(e, AcdpError::NotImplemented(_))
             }),
+            ("unsupported_media_type", |e| {
+                matches!(e, AcdpError::UnsupportedMediaType(_))
+            }),
             ("cursor_expired", |e| matches!(e, AcdpError::CursorExpired)),
             ("invalid_cursor", |e| {
                 matches!(e, AcdpError::InvalidCursor(_))
@@ -627,12 +643,19 @@ mod tests {
                 matches!(e, AcdpError::RegistryInternal(_))
             }),
         ];
-        // Schema enumerates exactly 25 codes (RFC-ACDP-0007 §5 + the
+        // Schema enumerates exactly 26 codes (RFC-ACDP-0007 §5 + the
         // RFC-ACDP-0010 `invalid_receipt` addition + the 0.3.0 codes:
         // `invalid_log_proof` (RFC-0012), `immutable_field` and
         // `invalid_lifecycle_transition` (RFC-0013) + the 0.4.0 code
-        // `invalid_witness_cosignature` (RFC-0015)).
-        assert_eq!(cases.len(), 25);
+        // `invalid_witness_cosignature` (RFC-0015) + the 0.5.0 code
+        // `unsupported_media_type` (RFC-0007 §4.1, spec #68)).
+        //
+        // This count is hand-maintained and therefore only catches a code this
+        // repo forgot to *add*. The forcing function that catches the spec
+        // growing underneath us is `wire_error_codes_cover_the_spec_enum` in
+        // `tests/conformance.rs`, which reads the enum out of
+        // `acdp-error.schema.json` itself.
+        assert_eq!(cases.len(), 26);
         for (code, expected) in cases {
             let err = AcdpError::from_wire_error(wire(code, "msg", None));
             assert!(
@@ -718,6 +741,9 @@ mod tests {
         assert!(!AcdpError::InvalidLogProof("x".into()).is_transient());
         // RFC-ACDP-0015: a bad witness cosignature will not verify on retry.
         assert!(!AcdpError::InvalidWitnessCosignature("x".into()).is_transient());
+        // RFC-ACDP-0007 §4.1: retrying with the same Content-Type gets the
+        // same 415. The fix is a different request, not a later one.
+        assert!(!AcdpError::UnsupportedMediaType("x".into()).is_transient());
         assert!(!AcdpError::ImmutableField("x".into()).is_transient());
         assert!(!AcdpError::InvalidLifecycleTransition("x".into()).is_transient());
         // Issue #189: context substitution is locally detected and permanent;

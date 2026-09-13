@@ -1022,13 +1022,93 @@ fn error_example_deserializes() {
     let Some(root) = spec_root() else {
         return;
     };
-    let path = root.join("examples/error/invalid-signature.json");
+    let dir = root.join("examples/error");
+    if fixture_missing(&dir) {
+        return;
+    }
+    // Scan the whole directory rather than naming one file. The named-file
+    // form silently ignored every error example the spec added after it was
+    // written — `unsupported-media-type.json` (spec #68) landed with zero
+    // coverage here and the suite stayed green.
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&dir).expect("examples/error readable") {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let v = read_json(&path);
+        let wire: WireError =
+            serde_json::from_value(v).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        // An example carrying a code this library has not typed yet would
+        // deserialize fine as a WireError and tell us nothing, so assert the
+        // typed mapping too.
+        let err = acdp::AcdpError::from_wire_error(wire);
+        assert!(
+            !matches!(err, acdp::AcdpError::Registry(_)),
+            "{}: error code fell through to the untyped AcdpError::Registry \
+             catch-all — add the variant and a from_wire_error arm \
+             (CLAUDE.md, \"Adding a new wire error code\")",
+            path.display()
+        );
+        checked += 1;
+    }
+    assert!(checked > 0, "no error examples found in {}", dir.display());
+}
+
+/// The forcing function for RFC-ACDP-0007 §5 drift: every code in the spec's
+/// own `acdp-error.schema.json` enum MUST map to a typed [`acdp::AcdpError`]
+/// variant. `acdp-primitives`' `all_26_wire_codes_round_trip` pins the same
+/// property against a hand-written list, so it only catches a code we forgot
+/// to wire up — it cannot notice the spec growing a 27th. This one reads the
+/// enum out of the pinned spec, so a pin bump that adopts a new code fails
+/// here until the three-edit rule is followed.
+#[test]
+fn wire_error_codes_cover_the_spec_enum() {
+    let Some(root) = spec_root() else {
+        return;
+    };
+    let path = root.join("schemas/json/acdp-error.schema.json");
     if fixture_missing(&path) {
         return;
     }
-    let v = read_json(&path);
-    let _: WireError =
-        serde_json::from_value(v).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let schema = read_json(&path);
+    let codes = schema
+        .pointer("/properties/error/properties/code/enum")
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| {
+            panic!(
+                "{} missing /properties/error/properties/code/enum",
+                path.display()
+            )
+        });
+    assert!(
+        codes.len() >= 26,
+        "{}: expected >=26 wire codes, found {} — the enum only ever grows",
+        path.display(),
+        codes.len()
+    );
+    let mut untyped: Vec<String> = Vec::new();
+    for code in codes {
+        let code = code.as_str().expect("enum member is a string");
+        let wire: WireError = serde_json::from_value(serde_json::json!({
+            "error": { "code": code, "message": "conformance probe" }
+        }))
+        .expect("probe envelope is well-formed");
+        if matches!(
+            acdp::AcdpError::from_wire_error(wire),
+            acdp::AcdpError::Registry(_)
+        ) {
+            untyped.push(code.to_string());
+        }
+    }
+    assert!(
+        untyped.is_empty(),
+        "wire codes in {} with no typed AcdpError variant: {} — follow the \
+         three-edit rule in CLAUDE.md (variant + from_wire_error arm + extend \
+         all_N_wire_codes_round_trip), and revisit is_transient",
+        path.display(),
+        untyped.join(", ")
+    );
 }
 
 #[test]

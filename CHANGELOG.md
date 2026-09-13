@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.2](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.13.1...acdp-v0.13.2) - 2026-09-13
+
+### Added
+
+- *(primitives)* type the unsupported_media_type wire code ([#268](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/268))
+
+### Other
+
+- close out the #240/#252/#249 assumption and record this pass
+- *(decisions)* record the #268/#252/#259/#265/#249/#264 wrap-up decisions
+
 ### Added
 
 - *(primitives)* type the `unsupported_media_type` wire code (415) as

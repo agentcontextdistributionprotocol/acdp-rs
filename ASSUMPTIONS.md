@@ -443,7 +443,9 @@
   maturin one is lower-severity (an open semver range on a single build tool, not the
   publishable artifact's own dependency graph) but has the same "re-resolves silently"
   shape.
-- **Status:** UNCONFIRMED — **but now evidenced. See acdp-rs#240 (filed 2026-09-10 during the
+- **Status:** RESOLVED (2026-09-13) — both halves shipped; see the closing update at the
+  end of this entry. The text below is preserved as written while this was still open:
+  **evidenced. See acdp-rs#240 (filed 2026-09-10 during the
   issues-224-226-229-231-234 wave).** The deferred `npm install` → `npm ci` change is no longer
   hypothetical: the unpinned `"@napi-rs/cli": "^3.8.6"` caret range combined with a gitignored
   `bindings/acdp-node/package-lock.json` (`.gitignore:32`) caused CI to resolve a newer napi-rs
@@ -476,6 +478,32 @@
   committed source that a guard diffs, so a bump there is far likelier to fail loudly than to
   silently alter a checked-in artifact. Lower severity, same shape. `pytest` is unpinned on the
   same two lines (`bindings.yml:79`, `:315`) and should be handled together with it.
+
+- **Update (2026-09-13, close-out): RESOLVED — both halves shipped, entry closed.** Item 2
+  (maturin) landed as **#252**: `bindings.yml:79` and `:331` now install
+  `'maturin==1.15.0' 'pytest==8.4.2'`, and each is followed by an
+  `importlib.metadata.version(...)` assertion (`:90`, `:336`) so a silently-resolved
+  different version fails the job rather than running under it. The `pytest` half named in
+  the paragraph above was handled in the same change, as that paragraph asked. The single
+  pin had to be `8.4.2`, not the newest: the matrix was silently resolving **two pytest
+  majors** (9.1.1 on 3.11/3.13, 8.4.2 on 3.9, since pytest 9 requires >=3.10 and
+  `pyproject.toml` declares `requires-python = ">=3.9"`), so a uniform pin meant downgrading
+  two legs rather than dropping the 3.9 leg — a support change, not a CI tweak.
+- The `npm install` → `npm ci` switch this entry deferred — the one whose "own blast radius"
+  reasoning is spelled out above — landed as **#249**. The blocker was exactly what the
+  2026-09-10 update predicted: `package.json`'s self-referential `optionalDependencies` on
+  its own four platform packages had no matching publish, so `npm ci` died with
+  `EUSAGE / Missing: ... from lock file`. Removing that block was verified safe for
+  publishing against installed `@napi-rs/cli@3.8.6`, whose
+  `resolveRootOptionalDependencies` **writes** an entry per `napi.triples` target rather
+  than merely updating pre-existing ones — so the published artifact still carries its
+  platform deps. `bindings.yml:130`, `:348` and `:418` now run `npm ci`; the PR
+  self-validated, since its own CI was the first run of the new command.
+  `bindings-release.yml:184` deliberately stays on `npm install`, documented in place at
+  `:170`: that step stamps the version *before* installing, so the manifest and the
+  committed lockfile do not agree at that moment by construction.
+- **Nothing in this entry remains open.** Both named gaps have a merged fix and a
+  `DECISIONS.md` record; the register entry outlived them by a day.
 
 ## `Swatinem/rust-cache` runs before the `--locked` gate in three workflows
 - **Plan:** plans/issues-196-199-215-216-followups.md (Phase 2, #196a)

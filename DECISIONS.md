@@ -544,3 +544,78 @@ including reintroducing the malformed duplicate `### Added` fixed on #266's bran
 the same working clone with no isolation; one switched the branch out from under the other
 mid-task. No work was lost (the affected agent had already pushed), but that was luck. Later
 agents used `isolation: "worktree"`. **Concurrent agents must not share a working tree.**
+
+## #268 adopted, spec pin `d1f06d0` → `108ff76`, and the #240/#252/#249 close-out (2026-09-13)
+
+Settled by Opus under the standing delegation. This pass started as doc-and-pin hygiene and
+grew one real code change, for a reason worth recording.
+
+**1. The scope changed mid-pass because the spec moved, and taking the new SHA was the right
+call rather than the convenient one.** The pass was planned against spec `8555ec7`, where
+`git diff d1f06d0..8555ec7 -- schemas examples rfcs` is **empty** — a provably inert adopt.
+Between planning and execution the spec merged `108ff76` ("unsupported_media_type (415) on the
+0.5.0 line, plus an error-code sync guard", spec #68), which **adopts spec#67 and unblocks
+acdp-rs#268** — the repo's only open issue, recorded a day earlier as blocked pending exactly
+this. Pinning to `8555ec7` would have meant deliberately adopting a SHA that was current for
+three days and leaving the code that supersedes it on the floor. Pinning to `108ff76` without
+the variant would have adopted a wire code this library types as an opaque catch-all. So the
+variant landed with the pin.
+
+**2. #268's three-edit rule, executed as CLAUDE.md specifies.** `AcdpError::UnsupportedMediaType`
++ the `from_wire_error` arm + `all_25_wire_codes_round_trip` → `all_26_...` with its count and
+citation updated. `is_transient` was revisited and **deliberately left alone**: retrying with the
+same `Content-Type` returns the same 415, so it is permanent — pinned by a new negative assertion
+rather than left implicit. Additive on a `#[non_exhaustive]` enum, so downstream `match` arms keep
+compiling; per `release_commits = "^(feat|fix|perf)"` this **does** now open a release train
+(0.13.2, patch — additive under 0.x), which the hygiene-only version would not have.
+
+**3. The suite was green at `108ff76` *before* the variant existed — that is the finding.**
+Running conformance against a clean extract of the new SHA passed 66/66 with `unsupported_media_type`
+completely untyped. `error_example_deserializes` read **one hard-coded filename**
+(`examples/error/invalid-signature.json`), so the spec's new error example was exercised by
+nothing; and `all_25_wire_codes_round_trip` pins a hand-written list, which can only catch a code
+*we* forgot, never the spec growing one. `CLAUDE.md`'s claim that conformance drives "every
+`examples/**/*.json`" is simply false — the tests name individual paths.
+
+Two mechanisms close it, and both were mutation-proved by deleting the `from_wire_error` arm:
+`error_example_deserializes` now scans the directory and asserts each code maps off the
+`AcdpError::Registry` catch-all (red, naming the file); `wire_error_codes_cover_the_spec_enum`
+reads the enum out of the pinned `acdp-error.schema.json` itself (red, naming the code and the
+three-edit rule). The second is the one that generalizes: a future pin bump adopting a 27th code
+now fails until it is typed. Restored byte-identical after probing.
+
+**4. `bb09c43` is inert for this repo — checked, not assumed.** It rewrote
+`acdp-registry-core.self_test_only` from a decorated string to a bare fixture stem and moved
+`acdp-registry-federated.self_test_only_added` to `behavioral_requirements`. This repo's only
+consumer of that file, `tests/conformance.rs`'s
+`all_conformance_fixtures_are_bucketed_into_known_families`, reads **`fixture_families` and
+nothing else**. A runner doing `self_test_only.includes(id)` was the beneficiary; we are not one.
+
+**5. No bump PR was dispatched, and that was correct, not a broken automation.** `acdp-rs` *is*
+in the spec's `notify-spec-consumers.yml` matrix, but that workflow only added `registries/**` to
+its path filter **in `8555ec7` itself** — the commit *after* the one that changed `registries/`.
+`bdb15f0` touched only `README.md`, also outside the filter. Recorded because "pin is stale, no PR
+opened" reads like a broken dispatch until you check the ordering.
+
+**6. The #240/#252/#249 register entry was closed a day late, not left open on purpose.**
+`ASSUMPTIONS.md`'s binding-toolchain entry still read `UNCONFIRMED` although **both** halves had
+shipped: maturin/pytest pinned and version-asserted (#252), and `npm install` → `npm ci` (#249).
+The historical narrative is **preserved as written** and framed as such rather than rewritten —
+the two surviving in-body `UNCONFIRMED` mentions sit inside that preserved text, governed by the
+entry's `RESOLVED` status line above them. Amending a register in place to make a grep look tidy
+would destroy the record of what was believed when.
+
+**7. `CLAUDE.md` understates the crate and cannot be fixed by a PR.** It describes coverage
+through RFC-ACDP-0008/0010 and never mentions **RFC-ACDP-0011 through 0016**, though all are
+implemented — 0016 (typed external anchors, the open 0.5.0 Draft line) has
+`crates/acdp-types/src/anchor.rs`, `tests/anchors.rs`, and anc-004's executed content-hash golden
+vector in `tests/conformance.rs`. It also mis-describes how conformance consumes `examples/`
+(see item 3). The file is gitignored (`.gitignore:65`), so it was corrected in the working tree
+only and is **not** in this PR — noted here because this is the only durable place it can be.
+
+**8. The local toolchain is broken, independently of this change.** Command Line Tools ship
+`MacOSX27.0.sdk` while the `ld`/`tapi` executables are 26.6, so every link fails with
+`tapi error: malformed file ... unknown architecture arm64e.x1`. Worked around for this pass with
+`SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk`; **no repo config was changed**,
+since this is a machine-level mismatch and CI's Linux runners are unaffected. A CLT update is the
+real fix.

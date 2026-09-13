@@ -11,15 +11,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- *(primitives)* type the unsupported_media_type wire code ([#268](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/268))
-
-### Other
-
-- close out the #240/#252/#249 assumption and record this pass
-- *(decisions)* record the #268/#252/#259/#265/#249/#264 wrap-up decisions
-
-### Added
-
 - *(primitives)* type the `unsupported_media_type` wire code (415) as
   `AcdpError::UnsupportedMediaType`
   ([#268](https://github.com/agentcontextdistributionprotocol/acdp-rs/issues/268))
@@ -46,6 +37,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `wire_error_codes_cover_the_spec_enum` reads the enum out of the pinned
   `acdp-error.schema.json` directly, so a future pin bump that adopts a 27th code
   fails until the three-edit rule is followed rather than passing silently.
+
+### Other
+
+- close out the #240/#252/#249 assumption and record this pass
+- *(decisions)* record the #268/#252/#259/#265/#249/#264 wrap-up decisions
 
 ## [0.13.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.13.0...acdp-v0.13.1) - 2026-09-12
 

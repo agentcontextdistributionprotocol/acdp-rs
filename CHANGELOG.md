@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- *(primitives)* type the `unsupported_media_type` wire code (415) as
+  `AcdpError::UnsupportedMediaType`
+  ([#268](https://github.com/agentcontextdistributionprotocol/acdp-rs/issues/268))
+
+  RFC-ACDP-0007 §4.1/§5 gained the code on the 0.5.0 line (spec #68), growing
+  `acdp-error.schema.json`'s closed enum from 25 to 26. Until now the code
+  deserialized into the untyped `AcdpError::Registry` catch-all. It is
+  deliberately **not** in `is_transient`: retrying a request with the same
+  `Content-Type` gets the same 415.
+
+  Additive on a `#[non_exhaustive]` enum, so matching downstream code keeps
+  compiling.
+
+### Changed
+
+- *(ci)* adopt spec `108ff76` (was `d1f06d0`), which brings in
+  `err-002-unsupported-media-type` and `examples/error/unsupported-media-type.json`
+
+### Fixed
+
+- *(test)* `error_example_deserializes` checked one hard-coded filename, so every
+  error example the spec added after it was written went unexercised — it now
+  scans `examples/error/` and asserts each code maps to a typed variant. A new
+  `wire_error_codes_cover_the_spec_enum` reads the enum out of the pinned
+  `acdp-error.schema.json` directly, so a future pin bump that adopts a 27th code
+  fails until the three-edit rule is followed rather than passing silently.
+
 ## [0.13.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.13.0...acdp-v0.13.1) - 2026-09-12
 
 ### Added

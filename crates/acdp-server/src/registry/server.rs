@@ -675,7 +675,6 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
     /// against — this method trusts the caller completely for verification;
     /// it does not re-verify the signature itself, only recomputes the
     /// fingerprint of the key the caller names.
-    #[doc(hidden)]
     pub fn publish_pinned_verified_in_tenant_with_outcome(
         &self,
         req: &PublishRequest,
@@ -2740,10 +2739,17 @@ mod tests {
     // consuming registry's own idem-001..004 chain looks like it covers this
     // and does not: it builds its harness with the playground enabled and no
     // pinned keys, so every publish in that chain takes the one branch that
-    // re-queries `idempotency_lookup` by hand. The three branches that go
-    // through `commit_via_store` — did:key, pinned, and production did:web —
-    // had no replay coverage at all, upstream or down, which is precisely why
-    // flattening the outcome here went unnoticed.
+    // re-queries `idempotency_lookup` by hand.
+    //
+    // Stated precisely, because a looser earlier version of this comment was
+    // simply false: what was missing on the three branches that go through
+    // `commit_via_store` is coverage of the insert/replay DISTINCTION, not
+    // replay coverage as such. `receiptless_idempotent_replay_survives_enabling_receipts`
+    // predates this work and does drive a did:key replay — and it, not
+    // anything added here, is what first caught a delegate that dropped the
+    // receipt. What nothing asserted was WHICH of the two a publish was, which
+    // is the only thing a front-end can use to choose 201 over 200, and that is
+    // why flattening the outcome went unnoticed.
 
     /// Caps that advertise `did:key` AND idempotency. `supports_idempotency_key`
     /// is the gate `commit_via_store` reads before it passes a key to the store
@@ -2751,11 +2757,12 @@ mod tests {
     /// the same key is a second INSERT and no replay is reachable.
     ///
     /// Measured, because the first version of this note claimed the opposite
-    /// and was wrong: dropping `supports_idempotency_key = true` from the two
-    /// helpers below makes these tests FAIL (117 passed, 3 failed, on
-    /// `a same-key same-hash retry is a replay`), it does not make them pass
-    /// vacuously. The cap is load-bearing for reachability, and its absence is
-    /// loud rather than silent.
+    /// and was wrong: dropping `supports_idempotency_key = true` — from here
+    /// and from the inline `caps()` in the pinned test — makes these tests
+    /// FAIL (117 passed, 3 failed), it does not make them pass vacuously.
+    /// Three distinct tests fail with three distinct messages, not one
+    /// assertion three times. The cap is load-bearing for reachability, and
+    /// its absence is loud rather than silent.
     fn caps_idempotent_did_key() -> CapabilitiesDocument {
         let mut c = caps();
         c.supported_did_methods.push("did:key".into());

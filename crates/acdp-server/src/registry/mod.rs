@@ -11,5 +11,7 @@ pub use log::MerkleLog;
 pub use rate_limit::{NoopRateLimiter, RateLimiter};
 pub use safe_http::{SsrfPolicy, MAX_CONTEXT_BYTES, MAX_METADATA_BYTES, MAX_REDIRECTS};
 pub use server::RegistryServer;
-pub use store::{IdempotencyRecord, InMemoryStore, LifecycleCommitOutcome, RegistryStore};
+pub use store::{
+    IdempotencyRecord, InMemoryStore, LifecycleCommitOutcome, PublishCommitOutcome, RegistryStore,
+};
 pub use validator::{assign_identifiers, PublishValidator, ValidatedPublish};

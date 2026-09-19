@@ -448,6 +448,7 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
         // `supersedes` (or the same `Idempotency-Key`) can no longer
         // both succeed.
         self.commit_via_store(req, idempotency_key, tenant, fingerprint)
+            .map(|o| o.into_response())
     }
 
     /// **RFC-conformant publish for `did:key` producers — no resolver.**
@@ -516,6 +517,7 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
         };
 
         self.commit_via_store(req, idempotency_key, tenant, fingerprint)
+            .map(|o| o.into_response())
     }
 
     /// **NOT RFC-conformant.** Skips DID resolution and signature
@@ -591,6 +593,7 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
         let validator = PublishValidator::for_authority(&self.caps, &self.authority);
         let _validated = validator.validate_post_schema(req, raw_bytes)?;
         self.commit_via_store(req, idempotency_key, tenant, None)
+            .map(|o| o.into_response())
     }
 
     /// **Publish already verified by the caller against an
@@ -666,6 +669,7 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
         }
 
         self.commit_via_store(req, idempotency_key, tenant, fingerprint)
+            .map(|o| o.into_response())
     }
 
     /// Rate-limit gate shared by every publish path (RFC-ACDP-0008 §4.3).
@@ -689,16 +693,25 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
     }
 
     /// Drive `RegistryStore::commit_publish` from a validated request.
-    /// Unwraps `PublishCommitOutcome::Inserted` and `IdempotentReplay`
-    /// to the same `PublishResponse` for the caller (the distinction
-    /// only matters internally for logging/tracing).
+    ///
+    /// Returns the `PublishCommitOutcome` **whole**. It used to unwrap both
+    /// variants to the same `PublishResponse` here, on the grounds that the
+    /// distinction "only matters internally for logging/tracing" — that was
+    /// wrong. A registry front-end needs it to answer `201 Created` on a
+    /// fresh publish and `200 OK` on an idempotent replay, and flattening it
+    /// at this layer made that undecidable for every caller: three of the
+    /// four publish paths in `acdp-registry-rs` had no way to tell a replay
+    /// from an insert and would have answered `201` to both.
+    ///
+    /// Callers that genuinely do not care unwrap with
+    /// [`PublishCommitOutcome::into_response`].
     fn commit_via_store(
         &self,
         req: &PublishRequest,
         idempotency_key: Option<&str>,
         tenant: Option<&str>,
         producer_key_fingerprint: Option<String>,
-    ) -> Result<PublishResponse, AcdpError> {
+    ) -> Result<crate::registry::store::PublishCommitOutcome, AcdpError> {
         let idempotency = if self.caps.supports_idempotency_key {
             idempotency_key.map(|key| crate::registry::store::PendingIdempotencyCommit {
                 key,
@@ -770,7 +783,9 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
                 receipt_minter: minter.as_deref(),
                 predecessor_admission,
             })?;
-        let (response, replayed) = match outcome {
+        // Borrow rather than move: the tracing fields and the RFC-ACDP-0010
+        // §7 check below both only read, and `outcome` is returned whole.
+        let (response, replayed) = match &outcome {
             crate::registry::store::PublishCommitOutcome::Inserted(r) => (r, false),
             crate::registry::store::PublishCommitOutcome::IdempotentReplay(r) => (r, true),
         };
@@ -803,7 +818,7 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
                     .into(),
             ));
         }
-        Ok(response)
+        Ok(outcome)
     }
 
     /// `GET /contexts/{ctx_id}`.

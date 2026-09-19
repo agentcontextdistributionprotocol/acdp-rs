@@ -369,8 +369,13 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
     /// Like [`Self::publish_verified`] but binds the publish to a tenant so a
     /// multi-tenant store persists `tenant_id` atomically with the context row
     /// (rather than via a separate, non-transactional stamping UPDATE that a
-    /// crash could leave stranded in the default bucket). `tenant = None` is
-    /// identical to [`Self::publish_verified`].
+    /// crash could leave stranded in the default bucket).
+    ///
+    /// `tenant = None` behaves identically to [`Self::publish_verified`] —
+    /// but note this method returns the commit OUTCOME, not a bare
+    /// `PublishResponse`, so it is not a drop-in for it. The bare-response
+    /// equivalent is [`Self::publish_verified_in_tenant`].
+    ///
     /// Which entry points have an outcome twin, and why the rest do not:
     /// the three `*_in_tenant` publish forms do (this one, `did_key`, and
     /// `pinned`), because those are the paths a registry front-end answers a
@@ -505,8 +510,13 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
     /// Like [`Self::publish_verified_did_key`] but binds the publish to a
     /// tenant so a multi-tenant store persists `tenant_id` atomically with
     /// the context row — the same contract as
-    /// [`Self::publish_verified_in_tenant`]. `tenant = None` is identical
-    /// to [`Self::publish_verified_did_key`].
+    /// [`Self::publish_verified_in_tenant`].
+    ///
+    /// `tenant = None` behaves identically to
+    /// [`Self::publish_verified_did_key`] — but note this method returns the
+    /// commit OUTCOME, not a bare `PublishResponse`, so it is not a drop-in
+    /// for it. The bare-response equivalent is
+    /// [`Self::publish_verified_did_key_in_tenant`].
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(
@@ -724,10 +734,17 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
     /// otherwise identical. This form is a one-line delegate to it, so the two
     /// cannot drift.
     ///
+    /// `#[doc(hidden)]`, as it was before the twin was split out — splitting a
+    /// method must not quietly publish a deliberately hidden one. Its twin is
+    /// NOT hidden, and that asymmetry is deliberate: a registry front-end has
+    /// to call the twin to answer `201` vs `200` correctly, so it needs to be
+    /// discoverable in rustdoc and tracked by `cargo semver-checks`.
+    ///
     /// Answering `POST /contexts` needs the twin: RFC-ACDP-0003 requires
     /// `201 Created` + `Location` on a fresh publish and `200 OK` on a same-hash
     /// retry (idem-002 says NOT 201), and this signature cannot express which
     /// one happened.
+    #[doc(hidden)]
     pub fn publish_pinned_verified_in_tenant(
         &self,
         req: &PublishRequest,
@@ -2731,8 +2748,14 @@ mod tests {
     /// Caps that advertise `did:key` AND idempotency. `supports_idempotency_key`
     /// is the gate `commit_via_store` reads before it passes a key to the store
     /// at all — with the default `false` from [`caps`], a second publish with
-    /// the same key is a second INSERT and no replay can ever be observed. A
-    /// replay test built on the default caps would pass for the wrong reason.
+    /// the same key is a second INSERT and no replay is reachable.
+    ///
+    /// Measured, because the first version of this note claimed the opposite
+    /// and was wrong: dropping `supports_idempotency_key = true` from the two
+    /// helpers below makes these tests FAIL (117 passed, 3 failed, on
+    /// `a same-key same-hash retry is a replay`), it does not make them pass
+    /// vacuously. The cap is load-bearing for reachability, and its absence is
+    /// loud rather than silent.
     fn caps_idempotent_did_key() -> CapabilitiesDocument {
         let mut c = caps();
         c.supported_did_methods.push("did:key".into());
@@ -2851,16 +2874,35 @@ mod tests {
     /// so full equality is meaningful.
     #[test]
     fn bare_entry_point_matches_its_outcome_twin() {
-        let server = RegistryServer::new(
-            InMemoryStore::new(),
-            caps_idempotent_did_key(),
-            "registry.example.com",
-        );
+        // A receipt signer is attached DELIBERATELY. Without one,
+        // `registry_receipt` is `None` on both sides and the "receipt
+        // included" half of the assertion below is unbacked — a delegate that
+        // dropped the receipt would sail through. With one, `minted_expected`
+        // is true (it is `minter.is_some()`, and the minter needs both a
+        // signer and a producer fingerprint), so the insert carries a real
+        // receipt and the replay must return it verbatim.
+        let mut c = caps_idempotent_did_key();
+        c.acdp_version = "0.2.0".into();
+        let server = RegistryServer::new(InMemoryStore::new(), c, "registry.example.com")
+            .with_receipt_signer(
+                acdp_types::receipt::ReceiptSigner::new(
+                    SigningKey::from_bytes(&[0x21u8; 32]),
+                    "did:web:registry.example.com",
+                    "did:web:registry.example.com#receipt-key-1",
+                )
+                .unwrap(),
+            )
+            .unwrap();
         let req = did_key_request();
 
         let inserted = server
             .publish_verified_did_key_in_tenant_with_outcome(&req, Some("k-a"), None)
             .unwrap();
+        assert!(
+            inserted.response().registry_receipt.is_some(),
+            "fixture precondition: the insert must actually mint a receipt, or \
+             the receipt half of this test proves nothing"
+        );
         assert!(!inserted.is_replay());
         let via_twin = inserted.into_response();
 

@@ -334,7 +334,8 @@ impl PublishCommitOutcome {
     /// The response either way, discarding the insert/replay distinction.
     ///
     /// This is what every `publish_*` entry point that predates
-    /// [`RegistryServer::publish_verified_in_tenant_with_outcome`] returns,
+    /// [`crate::registry::server::RegistryServer::publish_verified_in_tenant_with_outcome`]
+    /// returns,
     /// and the reason the distinction was invisible to callers: a registry
     /// front-end answering `POST /contexts` needs it to choose between
     /// `201 Created` + `Location` on a fresh publish and `200 OK` on an

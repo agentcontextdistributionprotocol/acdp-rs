@@ -371,6 +371,15 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
     /// (rather than via a separate, non-transactional stamping UPDATE that a
     /// crash could leave stranded in the default bucket). `tenant = None` is
     /// identical to [`Self::publish_verified`].
+    /// Which entry points have an outcome twin, and why the rest do not:
+    /// the three `*_in_tenant` publish forms do (this one, `did_key`, and
+    /// `pinned`), because those are the paths a registry front-end answers a
+    /// real `POST /contexts` through. The non-tenant forms do not — each is a
+    /// `(…, None)` delegate to its `_in_tenant` twin, so a caller wanting the
+    /// outcome passes `tenant = None`. `publish_unverified_in_tenant_for_tests`
+    /// does not either, deliberately: it skips DID resolution and signature
+    /// verification, is not an RFC-conformant publish path, and no registry
+    /// serves production traffic through it.
     #[cfg(feature = "client")]
     pub async fn publish_verified_in_tenant_with_outcome(
         &self,

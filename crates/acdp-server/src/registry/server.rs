@@ -369,16 +369,30 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
     /// Like [`Self::publish_verified`] but binds the publish to a tenant so a
     /// multi-tenant store persists `tenant_id` atomically with the context row
     /// (rather than via a separate, non-transactional stamping UPDATE that a
-    /// crash could leave stranded in the default bucket). `tenant = None` is
-    /// identical to [`Self::publish_verified`].
+    /// crash could leave stranded in the default bucket).
+    ///
+    /// `tenant = None` behaves identically to [`Self::publish_verified`] —
+    /// but note this method returns the commit OUTCOME, not a bare
+    /// `PublishResponse`, so it is not a drop-in for it. The bare-response
+    /// equivalent is [`Self::publish_verified_in_tenant`].
+    ///
+    /// Which entry points have an outcome twin, and why the rest do not:
+    /// the three `*_in_tenant` publish forms do (this one, `did_key`, and
+    /// `pinned`), because those are the paths a registry front-end answers a
+    /// real `POST /contexts` through. The non-tenant forms do not — each is a
+    /// `(…, None)` delegate to its `_in_tenant` twin, so a caller wanting the
+    /// outcome passes `tenant = None`. `publish_unverified_in_tenant_for_tests`
+    /// does not either, deliberately: it skips DID resolution and signature
+    /// verification, is not an RFC-conformant publish path, and no registry
+    /// serves production traffic through it.
     #[cfg(feature = "client")]
-    pub async fn publish_verified_in_tenant(
+    pub async fn publish_verified_in_tenant_with_outcome(
         &self,
         req: &PublishRequest,
         idempotency_key: Option<&str>,
         resolver: &acdp_did::WebResolver,
         tenant: Option<&str>,
-    ) -> Result<PublishResponse, AcdpError> {
+    ) -> Result<crate::registry::store::PublishCommitOutcome, AcdpError> {
         // Rate-limit gate runs before any expensive work — RFC-ACDP-0008 §4.3.
         self.check_publish_rate_limit(&req.agent_id)?;
 
@@ -450,6 +464,28 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
         self.commit_via_store(req, idempotency_key, tenant, fingerprint)
     }
 
+    /// [`Self::publish_verified_in_tenant_with_outcome`] with the insert/replay
+    /// distinction discarded — see that method for the full contract, which is
+    /// otherwise identical. This form is a one-line delegate to it, so the two
+    /// cannot drift.
+    ///
+    /// Answering `POST /contexts` needs the twin: RFC-ACDP-0003 requires
+    /// `201 Created` + `Location` on a fresh publish and `200 OK` on a same-hash
+    /// retry (idem-002 says NOT 201), and this signature cannot express which
+    /// one happened.
+    #[cfg(feature = "client")]
+    pub async fn publish_verified_in_tenant(
+        &self,
+        req: &PublishRequest,
+        idempotency_key: Option<&str>,
+        resolver: &acdp_did::WebResolver,
+        tenant: Option<&str>,
+    ) -> Result<PublishResponse, AcdpError> {
+        self.publish_verified_in_tenant_with_outcome(req, idempotency_key, resolver, tenant)
+            .await
+            .map(|o| o.into_response())
+    }
+
     /// **RFC-conformant publish for `did:key` producers — no resolver.**
     ///
     /// Runs the same RFC-ACDP-0003 §2.1 pipeline as
@@ -474,8 +510,13 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
     /// Like [`Self::publish_verified_did_key`] but binds the publish to a
     /// tenant so a multi-tenant store persists `tenant_id` atomically with
     /// the context row — the same contract as
-    /// [`Self::publish_verified_in_tenant`]. `tenant = None` is identical
-    /// to [`Self::publish_verified_did_key`].
+    /// [`Self::publish_verified_in_tenant`].
+    ///
+    /// `tenant = None` behaves identically to
+    /// [`Self::publish_verified_did_key`] — but note this method returns the
+    /// commit OUTCOME, not a bare `PublishResponse`, so it is not a drop-in
+    /// for it. The bare-response equivalent is
+    /// [`Self::publish_verified_did_key_in_tenant`].
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(
@@ -489,12 +530,12 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
             err(Display)
         )
     )]
-    pub fn publish_verified_did_key_in_tenant(
+    pub fn publish_verified_did_key_in_tenant_with_outcome(
         &self,
         req: &PublishRequest,
         idempotency_key: Option<&str>,
         tenant: Option<&str>,
-    ) -> Result<PublishResponse, AcdpError> {
+    ) -> Result<crate::registry::store::PublishCommitOutcome, AcdpError> {
         self.check_publish_rate_limit(&req.agent_id)?;
 
         let raw_bytes = serde_json::to_vec(req)?.len();
@@ -516,6 +557,25 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
         };
 
         self.commit_via_store(req, idempotency_key, tenant, fingerprint)
+    }
+
+    /// [`Self::publish_verified_did_key_in_tenant_with_outcome`] with the insert/replay
+    /// distinction discarded — see that method for the full contract, which is
+    /// otherwise identical. This form is a one-line delegate to it, so the two
+    /// cannot drift.
+    ///
+    /// Answering `POST /contexts` needs the twin: RFC-ACDP-0003 requires
+    /// `201 Created` + `Location` on a fresh publish and `200 OK` on a same-hash
+    /// retry (idem-002 says NOT 201), and this signature cannot express which
+    /// one happened.
+    pub fn publish_verified_did_key_in_tenant(
+        &self,
+        req: &PublishRequest,
+        idempotency_key: Option<&str>,
+        tenant: Option<&str>,
+    ) -> Result<PublishResponse, AcdpError> {
+        self.publish_verified_did_key_in_tenant_with_outcome(req, idempotency_key, tenant)
+            .map(|o| o.into_response())
     }
 
     /// **NOT RFC-conformant.** Skips DID resolution and signature
@@ -591,6 +651,7 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
         let validator = PublishValidator::for_authority(&self.caps, &self.authority);
         let _validated = validator.validate_post_schema(req, raw_bytes)?;
         self.commit_via_store(req, idempotency_key, tenant, None)
+            .map(|o| o.into_response())
     }
 
     /// **Publish already verified by the caller against an
@@ -614,15 +675,14 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
     /// against — this method trusts the caller completely for verification;
     /// it does not re-verify the signature itself, only recomputes the
     /// fingerprint of the key the caller names.
-    #[doc(hidden)]
-    pub fn publish_pinned_verified_in_tenant(
+    pub fn publish_pinned_verified_in_tenant_with_outcome(
         &self,
         req: &PublishRequest,
         idempotency_key: Option<&str>,
         tenant: Option<&str>,
         verified_public_key_b64: &str,
         verified_algorithm: &str,
-    ) -> Result<PublishResponse, AcdpError> {
+    ) -> Result<crate::registry::store::PublishCommitOutcome, AcdpError> {
         self.check_publish_rate_limit(&req.agent_id)?;
 
         let raw_bytes = serde_json::to_vec(req)?.len();
@@ -668,6 +728,40 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
         self.commit_via_store(req, idempotency_key, tenant, fingerprint)
     }
 
+    /// [`Self::publish_pinned_verified_in_tenant_with_outcome`] with the insert/replay
+    /// distinction discarded — see that method for the full contract, which is
+    /// otherwise identical. This form is a one-line delegate to it, so the two
+    /// cannot drift.
+    ///
+    /// `#[doc(hidden)]`, as it was before the twin was split out — splitting a
+    /// method must not quietly publish a deliberately hidden one. Its twin is
+    /// NOT hidden, and that asymmetry is deliberate: a registry front-end has
+    /// to call the twin to answer `201` vs `200` correctly, so it needs to be
+    /// discoverable in rustdoc and tracked by `cargo semver-checks`.
+    ///
+    /// Answering `POST /contexts` needs the twin: RFC-ACDP-0003 requires
+    /// `201 Created` + `Location` on a fresh publish and `200 OK` on a same-hash
+    /// retry (idem-002 says NOT 201), and this signature cannot express which
+    /// one happened.
+    #[doc(hidden)]
+    pub fn publish_pinned_verified_in_tenant(
+        &self,
+        req: &PublishRequest,
+        idempotency_key: Option<&str>,
+        tenant: Option<&str>,
+        verified_public_key_b64: &str,
+        verified_algorithm: &str,
+    ) -> Result<PublishResponse, AcdpError> {
+        self.publish_pinned_verified_in_tenant_with_outcome(
+            req,
+            idempotency_key,
+            tenant,
+            verified_public_key_b64,
+            verified_algorithm,
+        )
+        .map(|o| o.into_response())
+    }
+
     /// Rate-limit gate shared by every publish path (RFC-ACDP-0008 §4.3).
     /// Under the `tracing` feature a rejection emits a structured warn
     /// event so operators can see limiter hits per agent.
@@ -689,16 +783,25 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
     }
 
     /// Drive `RegistryStore::commit_publish` from a validated request.
-    /// Unwraps `PublishCommitOutcome::Inserted` and `IdempotentReplay`
-    /// to the same `PublishResponse` for the caller (the distinction
-    /// only matters internally for logging/tracing).
+    ///
+    /// Returns the `PublishCommitOutcome` **whole**. It used to unwrap both
+    /// variants to the same `PublishResponse` here, on the grounds that the
+    /// distinction "only matters internally for logging/tracing" — that was
+    /// wrong. A registry front-end needs it to answer `201 Created` on a
+    /// fresh publish and `200 OK` on an idempotent replay, and flattening it
+    /// at this layer made that undecidable for every caller: three of the
+    /// four publish paths in `acdp-registry-rs` had no way to tell a replay
+    /// from an insert and would have answered `201` to both.
+    ///
+    /// Callers that genuinely do not care unwrap with
+    /// [`PublishCommitOutcome::into_response`].
     fn commit_via_store(
         &self,
         req: &PublishRequest,
         idempotency_key: Option<&str>,
         tenant: Option<&str>,
         producer_key_fingerprint: Option<String>,
-    ) -> Result<PublishResponse, AcdpError> {
+    ) -> Result<crate::registry::store::PublishCommitOutcome, AcdpError> {
         let idempotency = if self.caps.supports_idempotency_key {
             idempotency_key.map(|key| crate::registry::store::PendingIdempotencyCommit {
                 key,
@@ -770,7 +873,9 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
                 receipt_minter: minter.as_deref(),
                 predecessor_admission,
             })?;
-        let (response, replayed) = match outcome {
+        // Borrow rather than move: the tracing fields and the RFC-ACDP-0010
+        // §7 check below both only read, and `outcome` is returned whole.
+        let (response, replayed) = match &outcome {
             crate::registry::store::PublishCommitOutcome::Inserted(r) => (r, false),
             crate::registry::store::PublishCommitOutcome::IdempotentReplay(r) => (r, true),
         };
@@ -803,7 +908,7 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
                     .into(),
             ));
         }
-        Ok(response)
+        Ok(outcome)
     }
 
     /// `GET /contexts/{ctx_id}`.
@@ -1331,7 +1436,7 @@ fn fingerprint_pinned_key(public_key_b64: &str, algorithm: &str) -> Result<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::store::InMemoryStore;
+    use crate::registry::store::{InMemoryStore, PublishCommitOutcome};
     use acdp_crypto::SigningKey;
     use acdp_producer::Producer;
     use acdp_types::capabilities::Limits;
@@ -2625,6 +2730,202 @@ mod tests {
         assert!(
             matches!(err, AcdpError::KeyResolution(_)),
             "did:web on the offline path must be refused, got {err:?}"
+        );
+    }
+
+    // ── the insert/replay distinction, per entry point ───────────────────
+    //
+    // These are the tests that did not exist anywhere before U-564. The
+    // consuming registry's own idem-001..004 chain looks like it covers this
+    // and does not: it builds its harness with the playground enabled and no
+    // pinned keys, so every publish in that chain takes the one branch that
+    // re-queries `idempotency_lookup` by hand.
+    //
+    // Stated precisely, because a looser earlier version of this comment was
+    // simply false: what was missing on the three branches that go through
+    // `commit_via_store` is coverage of the insert/replay DISTINCTION, not
+    // replay coverage as such. `receiptless_idempotent_replay_survives_enabling_receipts`
+    // predates this work and does drive a did:key replay — and it, not
+    // anything added here, is what first caught a delegate that dropped the
+    // receipt. What nothing asserted was WHICH of the two a publish was, which
+    // is the only thing a front-end can use to choose 201 over 200, and that is
+    // why flattening the outcome went unnoticed.
+
+    /// Caps that advertise `did:key` AND idempotency. `supports_idempotency_key`
+    /// is the gate `commit_via_store` reads before it passes a key to the store
+    /// at all — with the default `false` from [`caps`], a second publish with
+    /// the same key is a second INSERT and no replay is reachable.
+    ///
+    /// Measured, because the first version of this note claimed the opposite
+    /// and was wrong: dropping `supports_idempotency_key = true` — from here
+    /// and from the inline `caps()` in the pinned test — makes these tests
+    /// FAIL (117 passed, 3 failed), it does not make them pass vacuously.
+    /// Three distinct tests fail with three distinct messages, not one
+    /// assertion three times. The cap is load-bearing for reachability, and
+    /// its absence is loud rather than silent.
+    fn caps_idempotent_did_key() -> CapabilitiesDocument {
+        let mut c = caps();
+        c.supported_did_methods.push("did:key".into());
+        c.supports_idempotency_key = true;
+        c.limits.idempotency_key_ttl_seconds = Some(86_400);
+        c
+    }
+
+    /// did:key branch: first publish inserts, the same request with the same
+    /// `Idempotency-Key` replays.
+    ///
+    /// A registry front-end reads exactly this to choose `201 Created` +
+    /// `Location` vs `200 OK`; RFC-ACDP-0003's idem-002 requires 200 on the
+    /// second call and says explicitly NOT 201.
+    #[test]
+    fn did_key_publish_reports_inserted_then_idempotent_replay() {
+        let server = RegistryServer::new(
+            InMemoryStore::new(),
+            caps_idempotent_did_key(),
+            "registry.example.com",
+        );
+        let req = did_key_request();
+
+        let first = server
+            .publish_verified_did_key_in_tenant_with_outcome(&req, Some("k-did-key"), None)
+            .expect("first publish must succeed");
+        assert!(
+            !first.is_replay(),
+            "a first publish is an insert, not a replay"
+        );
+        assert!(matches!(first, PublishCommitOutcome::Inserted(_)));
+
+        let second = server
+            .publish_verified_did_key_in_tenant_with_outcome(&req, Some("k-did-key"), None)
+            .expect("same-hash retry with the same key must succeed");
+        assert!(
+            second.is_replay(),
+            "a same-key same-hash retry is a replay — answering 201 here violates idem-002"
+        );
+        assert!(matches!(second, PublishCommitOutcome::IdempotentReplay(_)));
+
+        // idem-002 also requires the replay to return the ORIGINAL response,
+        // so assert identity rather than merely "it replayed".
+        assert_eq!(
+            first.response().ctx_id,
+            second.response().ctx_id,
+            "a replay must return the original response verbatim"
+        );
+    }
+
+    /// Pinned branch: same property, reached through a different entry point.
+    ///
+    /// Worth its own test rather than trusting that it shares
+    /// `commit_via_store` with the did:key path: what is under test is each
+    /// PUBLIC entry point's contract, and a delegate that dropped the outcome
+    /// would be invisible to a test of the other one.
+    #[test]
+    fn pinned_publish_reports_inserted_then_idempotent_replay() {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+
+        let key = SigningKey::from_bytes(&[4u8; 32]);
+        let pub_b64 = STANDARD.encode(key.verifying_key_bytes());
+        let did = "did:web:agents.example.com:pinned-idem";
+        let p = Producer::new(key, AgentDid::new(did), format!("{did}#key-1"));
+        let req = p
+            .publish_request()
+            .title("pinned publish, idempotent retry")
+            .context_type(ContextType::DataSnapshot)
+            .visibility(Visibility::Public)
+            .build()
+            .unwrap();
+
+        let mut c = caps();
+        c.supports_idempotency_key = true;
+        c.limits.idempotency_key_ttl_seconds = Some(86_400);
+        let server = RegistryServer::new(InMemoryStore::new(), c, "registry.example.com");
+
+        let first = server
+            .publish_pinned_verified_in_tenant_with_outcome(
+                &req,
+                Some("k-pinned"),
+                None,
+                &pub_b64,
+                "ed25519",
+            )
+            .expect("first pinned publish must succeed");
+        assert!(!first.is_replay(), "a first publish is an insert");
+
+        let second = server
+            .publish_pinned_verified_in_tenant_with_outcome(
+                &req,
+                Some("k-pinned"),
+                None,
+                &pub_b64,
+                "ed25519",
+            )
+            .expect("pinned same-hash retry must succeed");
+        assert!(
+            second.is_replay(),
+            "a same-key same-hash pinned retry is a replay"
+        );
+        assert_eq!(first.response().ctx_id, second.response().ctx_id);
+    }
+
+    /// The bare-response entry points must keep returning exactly what they
+    /// returned before U-564 — they are now one-line delegates, and this pins
+    /// that the delegation is lossless rather than assuming it.
+    ///
+    /// Compared across a REPLAY, on one server, deliberately. Two independent
+    /// inserts can never be compared field-for-field: the store assigns a
+    /// fresh `ctx_id` per insert and `lineage_id` is derived from it, so an
+    /// insert-vs-insert test can only assert the handful of fields the request
+    /// determines — which is exactly the kind of weakened assertion that
+    /// passes while the interesting field differs. Replaying the first publish
+    /// through the bare entry point makes the two responses the SAME record,
+    /// so full equality is meaningful.
+    #[test]
+    fn bare_entry_point_matches_its_outcome_twin() {
+        // A receipt signer is attached DELIBERATELY. Without one,
+        // `registry_receipt` is `None` on both sides and the "receipt
+        // included" half of the assertion below is unbacked — a delegate that
+        // dropped the receipt would sail through. With one, `minted_expected`
+        // is true (it is `minter.is_some()`, and the minter needs both a
+        // signer and a producer fingerprint), so the insert carries a real
+        // receipt and the replay must return it verbatim.
+        let mut c = caps_idempotent_did_key();
+        c.acdp_version = "0.2.0".into();
+        let server = RegistryServer::new(InMemoryStore::new(), c, "registry.example.com")
+            .with_receipt_signer(
+                acdp_types::receipt::ReceiptSigner::new(
+                    SigningKey::from_bytes(&[0x21u8; 32]),
+                    "did:web:registry.example.com",
+                    "did:web:registry.example.com#receipt-key-1",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let req = did_key_request();
+
+        let inserted = server
+            .publish_verified_did_key_in_tenant_with_outcome(&req, Some("k-a"), None)
+            .unwrap();
+        assert!(
+            inserted.response().registry_receipt.is_some(),
+            "fixture precondition: the insert must actually mint a receipt, or \
+             the receipt half of this test proves nothing"
+        );
+        assert!(!inserted.is_replay());
+        let via_twin = inserted.into_response();
+
+        let via_bare = server
+            .publish_verified_did_key_in_tenant(&req, Some("k-a"), None)
+            .unwrap();
+
+        // `PublishResponse` has no `PartialEq`, and comparing a chosen subset
+        // of fields is how a delegate that drops one goes unnoticed. Compare
+        // the serialized form instead: it is the whole wire surface, which is
+        // also the surface this contract is actually about.
+        assert_eq!(
+            serde_json::to_value(&via_twin).unwrap(),
+            serde_json::to_value(&via_bare).unwrap(),
+            "the bare entry point must return the replayed record verbatim — \
+             it is a delegate to the twin and must lose nothing, receipt included"
         );
     }
 }

@@ -330,6 +330,38 @@ pub enum PublishCommitOutcome {
     IdempotentReplay(PublishResponse),
 }
 
+impl PublishCommitOutcome {
+    /// The response either way, discarding the insert/replay distinction.
+    ///
+    /// This is what every `publish_*` entry point that predates
+    /// [`crate::registry::server::RegistryServer::publish_verified_in_tenant_with_outcome`]
+    /// returns,
+    /// and the reason the distinction was invisible to callers: a registry
+    /// front-end answering `POST /contexts` needs it to choose between
+    /// `201 Created` + `Location` on a fresh publish and `200 OK` on an
+    /// idempotent replay (RFC-ACDP-0003 idem-002, which requires 200 and
+    /// explicitly NOT 201). Prefer the `*_with_outcome` entry points when
+    /// that choice is yours to make.
+    pub fn into_response(self) -> PublishResponse {
+        match self {
+            Self::Inserted(r) | Self::IdempotentReplay(r) => r,
+        }
+    }
+
+    /// Borrow the response without consuming the outcome.
+    pub fn response(&self) -> &PublishResponse {
+        match self {
+            Self::Inserted(r) | Self::IdempotentReplay(r) => r,
+        }
+    }
+
+    /// `true` when this publish was served from a prior record rather than
+    /// newly persisted — i.e. the caller must answer `200`, not `201`.
+    pub fn is_replay(&self) -> bool {
+        matches!(self, Self::IdempotentReplay(_))
+    }
+}
+
 /// Cached publish response keyed by `(agent_id, idempotency_key)`
 /// (RFC-ACDP-0003 §6).
 #[derive(Debug, Clone)]
@@ -1612,5 +1644,65 @@ mod tests {
 
         // Ignore unused imports under different feature combinations
         let _: Option<DataPeriod> = ctx.body.data_period.clone();
+    }
+}
+
+#[cfg(test)]
+mod publish_commit_outcome_tests {
+    use super::*;
+    use acdp_types::publish::PublishResponse;
+    use acdp_types::Status;
+
+    fn response(version: u32) -> PublishResponse {
+        PublishResponse {
+            registry_receipt: None,
+            ctx_id: acdp_types::CtxId(
+                "acdp://registry.example.com/12345678-1234-4321-8123-000000000099".into(),
+            ),
+            lineage_id: acdp_types::LineageId(
+                "lin:sha256:9999999999999999999999999999999999999999999999999999999999999999"
+                    .into(),
+            ),
+            version,
+            created_at: chrono::Utc::now(),
+            status: Status::Active,
+        }
+    }
+
+    /// `is_replay` is the whole point of this type surviving past
+    /// `commit_via_store`, so it is asserted on BOTH variants rather than
+    /// only on the interesting one: a `matches!` that had been written
+    /// against the wrong variant passes a one-sided test.
+    #[test]
+    fn is_replay_discriminates_both_ways() {
+        assert!(
+            !PublishCommitOutcome::Inserted(response(1)).is_replay(),
+            "a fresh insert must not report as a replay — a registry reading \
+             this answers 200 instead of 201 Created"
+        );
+        assert!(
+            PublishCommitOutcome::IdempotentReplay(response(1)).is_replay(),
+            "a replay must report as one — a registry reading this answers \
+             201 Created to a retry, which idem-002 forbids explicitly"
+        );
+    }
+
+    /// Both variants must yield their OWN response, not a fixed arm. An
+    /// `into_response` mistakenly written as `Self::Inserted(r) => r, _ =>
+    /// <the other one>` is caught by varying `version` per variant rather
+    /// than reusing one value — the field is read, so the assertion cannot
+    /// pass on a response the test never built.
+    #[test]
+    fn into_response_and_response_yield_the_carried_value_on_both_variants() {
+        let inserted = PublishCommitOutcome::Inserted(response(1));
+        let replayed = PublishCommitOutcome::IdempotentReplay(response(7));
+
+        assert_eq!(inserted.response().version, 1);
+        assert_eq!(replayed.response().version, 7);
+
+        // `response()` borrows, so the outcome is still usable afterwards —
+        // that is the property the registry needs (inspect, then consume).
+        assert_eq!(inserted.into_response().version, 1);
+        assert_eq!(replayed.into_response().version, 7);
     }
 }

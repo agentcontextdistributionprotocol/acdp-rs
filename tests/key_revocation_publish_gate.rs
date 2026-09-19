@@ -32,7 +32,7 @@ use acdp::crypto::{fingerprint_ed25519, SigningKey};
 use acdp::did::WebResolver;
 use acdp::error::{AcdpError, SupersessionReason};
 use acdp::producer::Producer;
-use acdp::registry::{InMemoryStore, RegistryServer};
+use acdp::registry::{InMemoryStore, PublishCommitOutcome, RegistryServer};
 use acdp::types::capabilities::Limits;
 use acdp::types::{
     AgentDid, CapabilitiesDocument, ContextType, CtxId, PublishRequest, Status, Visibility,
@@ -737,5 +737,110 @@ fn revocation_superseded_by_non_revocation_rejected_under_malformed_acdp_version
     assert!(
         matches!(err, AcdpError::SchemaViolation(_)),
         "expected SchemaViolation (arm 3), got {err:?}"
+    );
+}
+
+// ── did:web insert-vs-replay (U-564) ─────────────────────────────────────────
+//
+// The production `did:web` path had NO test on this file's
+// `publish_verified_in_tenant` family at all before U-564 — not merely no
+// replay test. That matters because it is the branch a real registry serves
+// on, and because `commit_via_store` used to flatten
+// `PublishCommitOutcome::{Inserted, IdempotentReplay}` into one
+// `PublishResponse`, making `201 Created` vs `200 OK` undecidable for the
+// front-end. RFC-ACDP-0003's idem-002 requires 200 on a same-hash retry and
+// says explicitly NOT 201.
+//
+// Deliberately sited in this file rather than in `acdp-server`'s unit tests:
+// this is a test target of the root `acdp` FACADE package, so it compiles
+// against `acdp::registry::…` — the re-export path a downstream registry
+// actually consumes — rather than the crate-internal one. If the facade ever
+// stopped re-exporting the type or the methods, a unit test inside
+// `acdp-server` would still pass and every consumer would still be broken.
+
+/// First publish inserts; the same request with the same `Idempotency-Key`
+/// replays. Asserted through the outcome-preserving entry point, on the
+/// did:web path, over a live TLS resolver harness.
+#[tokio::test]
+async fn did_web_publish_reports_inserted_then_idempotent_replay() {
+    let signing_key = SigningKey::from_bytes(&[3u8; 32]);
+    let (_tls, resolver) = start_producer_harness(&signing_key.verifying_key_bytes()).await;
+
+    let req = analysis_request(signing_key, "key-1");
+    let server =
+        RegistryServer::try_new(InMemoryStore::new(), caps_at("0.3.0"), REGISTRY_AUTHORITY)
+            .expect("server");
+
+    let first = server
+        .publish_verified_in_tenant_with_outcome(&req, Some("k-did-web"), &resolver, None)
+        .await
+        .expect("first did:web publish must succeed");
+    assert!(
+        !first.is_replay(),
+        "a first publish is an insert, not a replay — a registry reading this \
+         answers 200 where idem-001 requires 201 Created"
+    );
+    assert!(matches!(first, PublishCommitOutcome::Inserted(_)));
+
+    let second = server
+        .publish_verified_in_tenant_with_outcome(&req, Some("k-did-web"), &resolver, None)
+        .await
+        .expect("same-hash retry with the same key must succeed");
+    assert!(
+        second.is_replay(),
+        "a same-key same-hash did:web retry is a replay — answering 201 here \
+         violates idem-002, which says 200 OK and NOT 201"
+    );
+    assert!(matches!(second, PublishCommitOutcome::IdempotentReplay(_)));
+
+    // idem-002 also requires the replay to return the ORIGINAL response, so
+    // assert identity rather than merely that it replayed.
+    assert_eq!(
+        first.response().ctx_id,
+        second.response().ctx_id,
+        "a replay must return the original response verbatim"
+    );
+}
+
+/// The bare `publish_verified` must keep returning exactly what it returned
+/// before U-564 — it is now a delegate two levels down
+/// (`publish_verified` → `publish_verified_in_tenant` →
+/// `publish_verified_in_tenant_with_outcome`), and this pins that the
+/// delegation is lossless on the did:web path rather than assuming it.
+///
+/// Compared across a replay on one server, not across two inserts: the store
+/// assigns a fresh `ctx_id` per insert and derives `lineage_id` from it, so an
+/// insert-vs-insert comparison could only check the few request-determined
+/// fields — the weakened assertion that passes while the interesting field
+/// differs.
+#[tokio::test]
+async fn did_web_bare_entry_point_matches_its_outcome_twin() {
+    let signing_key = SigningKey::from_bytes(&[3u8; 32]);
+    let (_tls, resolver) = start_producer_harness(&signing_key.verifying_key_bytes()).await;
+
+    let req = analysis_request(signing_key, "key-1");
+    let server =
+        RegistryServer::try_new(InMemoryStore::new(), caps_at("0.3.0"), REGISTRY_AUTHORITY)
+            .expect("server");
+
+    let via_twin = server
+        .publish_verified_in_tenant_with_outcome(&req, Some("k-same"), &resolver, None)
+        .await
+        .expect("insert")
+        .into_response();
+
+    let via_bare = server
+        .publish_verified(&req, Some("k-same"), &resolver)
+        .await
+        .expect("replay through the bare entry point");
+
+    // `PublishResponse` has no `PartialEq`, and hand-picking a subset of
+    // fields is how a delegate that drops one goes unnoticed. Compare the
+    // serialized form: it is the whole wire surface, which is what this
+    // contract is about.
+    assert_eq!(
+        serde_json::to_value(&via_twin).unwrap(),
+        serde_json::to_value(&via_bare).unwrap(),
+        "the bare did:web entry point must return the replayed record verbatim"
     );
 }

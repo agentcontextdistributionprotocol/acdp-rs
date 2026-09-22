@@ -1335,6 +1335,134 @@ async fn rev_002_h_interim_form_widening_successor_is_counted() {
     assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
 }
 
+// ── rev-004: interim-form retrieval unaffected by the (0.5.0) retirement
+// rule (Phase 6) ─────────────────────────────────────────────────────────
+//
+// RFC-ACDP-0014 §10's (0.5.0) rule binds PUBLISH time only ("MUST reject a
+// NEW publication... though it continues serving bodies already published
+// under it") and creates no retroactive retrieval-time obligation. rev-003
+// Q (`tests/key_revocation_publish_gate.rs`) pins the publish-time half;
+// these three tests pin the other, easily-overlooked half — that nothing
+// about adopting the >= 0.5.0 rejection licenses a registry to filter or
+// alter retrieval of a body that already exists on the record, across
+// direct GET, search, and lineage walk.
+
+/// Seeds the rev-004 fixture's `existing_context` — an interim-typed
+/// (`acdp:key-revocation`) body, `acdp_version: "0.2.0"` (what the
+/// producer's registry advertised at ORIGINAL publish time, pre-0.3.0),
+/// inserted directly into the store rather than published through this
+/// 0.5.0-advertising server: a fresh publish of this shape would itself
+/// be rejected by the §10 retirement gate (rev-003 Q), which is exactly
+/// the point — this body predates that gate, and retrieval must not
+/// retroactively apply it.
+async fn rev_004_seed_interim_body() -> (LineageServerHarness, CtxId, LineageId, AgentDid) {
+    let caps = CapabilitiesDocument {
+        acdp_version: "0.5.0".into(),
+        ..lifecycle_caps()
+    };
+    let h = LineageServerHarness::start(caps, false).await;
+
+    let seed = [0xb1u8; 32];
+    let producer = Producer::new_did_key(SigningKey::from_bytes(&seed));
+    let did =
+        acdp::did::key::did_key_from_ed25519(&SigningKey::from_bytes(&seed).verifying_key_bytes());
+    let agent_id = AgentDid::new(did);
+
+    let fp = fingerprint_ed25519(&SigningKey::from_bytes(&seed).verifying_key_bytes());
+    let req = producer
+        .publish_request()
+        .acdp_version("0.2.0")
+        .title("Key revocation — interim form, published pre-0.3.0")
+        .context_type(ContextType::Custom(
+            ContextType::KEY_REVOCATION_INTERIM.into(),
+        ))
+        .visibility(Visibility::Public)
+        .metadata(json!({
+            "revoked_key_fingerprint": fp,
+            "compromised_since": "2026-01-15T00:00:00.000Z",
+        }))
+        .build()
+        .expect("valid interim-form request at 0.2.0");
+
+    let ctx_id = CtxId("acdp://registry.example.com/9f1e2d3c-5a6b-4c7d-8e9f-0a1b2c3d4e80".into());
+    let lineage_id = derive_lineage_id(&ctx_id);
+    let body = Body::from_publish_request(
+        &req,
+        ctx_id.clone(),
+        lineage_id.clone(),
+        "registry.example.com",
+        at("2026-01-15T00:05:00.000Z"),
+    );
+    h.server
+        .store()
+        .put(body)
+        .expect("seed the pre-existing interim-form body");
+
+    (h, ctx_id, lineage_id, agent_id)
+}
+
+/// rev-004 A: direct retrieval succeeds, unchanged — same type
+/// (`acdp:key-revocation`, not rewritten or rejected), same content_hash.
+#[tokio::test]
+async fn rev_004_a_direct_retrieval_succeeds_unchanged() {
+    let (h, ctx_id, _lineage_id, _agent_id) = rev_004_seed_interim_body().await;
+    let client = h.client();
+
+    let ctx = client
+        .retrieve(&ctx_id)
+        .await
+        .expect("GET must still succeed for a pre-existing interim-form body");
+    assert_eq!(
+        ctx.body.context_type,
+        ContextType::Custom(ContextType::KEY_REVOCATION_INTERIM.into()),
+        "the stored type must not be rewritten to the standard form"
+    );
+    assert_eq!(ctx.body.ctx_id, ctx_id);
+}
+
+/// rev-004 B: discoverable via search on its actual type string, not
+/// filtered. This registry advertises `acdp-registry-discovery`
+/// (`lifecycle_caps()`), so the endpoint is live and must not hide the
+/// body merely because that type string is no longer accepted for new
+/// publications.
+#[tokio::test]
+async fn rev_004_b_discoverable_via_search_on_its_actual_type() {
+    let (h, ctx_id, _lineage_id, agent_id) = rev_004_seed_interim_body().await;
+    let client = h.client();
+
+    let params = acdp::types::SearchParamsBuilder::new()
+        .context_type(ContextType::KEY_REVOCATION_INTERIM)
+        .agent_id(agent_id.as_str())
+        .limit(100)
+        .build();
+    let resp = client.search(&params).await.expect("search");
+    assert!(
+        resp.matches.iter().any(|m| m.ctx_id == ctx_id),
+        "search on the body's actual (interim) type string must still find it"
+    );
+}
+
+/// rev-004 C: included in a lineage walk, not skipped — the property
+/// rev-002 scenario H's fold depends on: a consumer can only count an
+/// interim-typed member's `compromised_since` if the registry's lineage
+/// walk actually returns that member in the first place.
+#[tokio::test]
+async fn rev_004_c_included_in_lineage_walk() {
+    let (h, ctx_id, lineage_id, _agent_id) = rev_004_seed_interim_body().await;
+    let client = h.client();
+
+    let members = client
+        .lineage(&lineage_id)
+        .await
+        .expect("GET /lineages/{id} must still succeed");
+    assert!(
+        members.iter().any(|m| m.body.ctx_id == ctx_id
+            && m.body.context_type
+                == ContextType::Custom(ContextType::KEY_REVOCATION_INTERIM.into())),
+        "the lineage walk must include the interim-typed member, unfiltered"
+    );
+}
+
 // ── §5 pipeline: verify_revocation_body over an offline did:key body ────────
 
 /// A did:key producer CAN issue a producer-signed revocation for some

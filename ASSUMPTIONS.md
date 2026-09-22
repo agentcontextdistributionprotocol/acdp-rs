@@ -806,3 +806,29 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   and still pass, so no coverage was lost even if this correction turns out to have been overly
   cautious.
 - **Status:** UNCONFIRMED
+
+## Phase 6 (issues-273-279-284-285-rfc0014-wave) — scoped down from "18 new tests" to the gaps a two-layer analysis actually found
+- **Plan:** plans/issues-273-279-284-285-rfc0014-wave.md, Phase 6
+- **Assumed:** the plan's acceptance criteria could be read as wanting a new test for every one
+  of rev-003's 18 scenario letters (A-R) plus rev-004's 3, and explicitly warns against assuming
+  any of them is "already covered" without checking.
+- **Chose:** checked, per-scenario, against BOTH `crates/acdp-server/src/registry/validator.rs`'s
+  own unit test module (thorough pre-existing coverage for A-M/Q, confirmed by reading each
+  relevant test's body) and `tests/key_revocation_publish_gate.rs`'s facade-level tests
+  (thorough for I/J and Arm 3 at 0.3.0/0.2.0, absent entirely for the 0.5.0 boundary) — then
+  added exactly what survived that check: 3 validator-unit tests (N, P, R) + 4 facade tests
+  (O, P, Q, R at 0.5.0) + 3 retrieval tests (rev-004 A/B/C, zero prior coverage anywhere).
+  Deliberately did not add facade-level duplicates for A-M/Q, reasoning that the fixture's own
+  text states those add no new normative requirement over 0.3.0 and this file's pre-existing
+  self-revocation/Arm-3 tests already establish facade-level propagation for that class of rule.
+- **Alternatives:** write all 18+3 as fresh tests regardless of existing coverage (rejected —
+  the plan itself explicitly warns against assuming a fixture being new means the underlying
+  obligation is untested, and 13+ near-duplicate facade tests of already-exhaustively-unit-tested
+  shape rules would be low-signal bulk, not "genuinely missing" coverage); rely on validator.rs's
+  unit coverage alone and skip the facade layer entirely for 0.5.0 (rejected — this file's own
+  stated principle, used to justify Phase 6's original I/J facade tests, applies equally to the
+  brand-new 0.5.0 logic Phase 4 of this same wave introduced).
+- **Blast radius if wrong:** low — if this judgment under-covers, the gap is at the facade
+  layer only (logic itself remains validator-unit-tested either way), and is straightforward to
+  close later with more facade tests; nothing here weakens an existing assertion.
+- **Status:** UNCONFIRMED

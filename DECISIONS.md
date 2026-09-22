@@ -619,3 +619,105 @@ only and is **not** in this PR — noted here because this is the only durable p
 `SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk`; **no repo config was changed**,
 since this is a machine-level mismatch and CI's Linux runners are unaffected. A CLT update is the
 real fix.
+
+## 2026-09-22 — issues-273-279-284-285-rfc0014-wave: /reconcile (8 entries)
+
+All 8 phases implemented and merged to `main` (PRs #288, #289, #290, #291, #287, #292);
+only Phase 7's final acceptance criterion (merging the regenerated release PR and
+verifying crates.io/PyPI/npm publication) remains, deliberately held per explicit
+instruction. Ran three parallel fresh-Opus analysis passes (low blast radius throughout —
+no genuine one-way door among these 8, so none needed Fable or a stop for confirmation)
+against every `UNCONFIRMED` entry tagged to this plan. 7 CONFIRMED as-is, 1 CHANGED and
+applied.
+
+**1. Phase 1 — `verified.rs` embedded-hash gate widening. CONFIRMED.** Independently
+cross-referenced against `RFC-ACDP-0002-context-body.md:294-296` in the spec checkout:
+Check 8's obligation is scoped to `embedded.content_hash`; checking the root hash too is
+an explicitly-permitted MAY, never forbidden. Both call sites (`verified.rs:1467,1605`)
+match `data_ref.rs:240`'s already-fixed condition. Optional, non-blocking follow-up noted
+(not applied): no test exercises the *embedded-only* case through
+`VerifiedContext::fetch_report` specifically — `tls_conformance.rs`'s existing test only
+covers the root-hash-present case, which the old (buggy) gate already handled correctly.
+
+**2. Phase 1 — cargo-semver-checks environment mismatch, fell back to manual review.
+CONFIRMED.** Re-ran `cargo semver-checks -p acdp-types` with the now-updated tool
+(0.45.0 → 0.50.0, fixed earlier this session for an unrelated reason) — it runs cleanly
+and independently confirms the exact breaking classification (`constructible_struct_adds_field`
+on `EmbeddedContent.content_hash`) the manual review reached. Tooling and manual reasoning
+now agree.
+
+**3. Phase 2 — pub-009 assertion widened beyond the plan's named files. CONFIRMED.**
+`tests/conformance.rs`'s `did_web_enforcement_fixtures` now asserts `KeyResolution`
+(not the old `SchemaViolation`), matching RFC-ACDP-0001 §5.11.1 step 1's MUST-level
+requirement (confirmed against the actual spec text, not paraphrase) and passing under
+`ACDP_REQUIRE_CONFORMANCE=1` against the real `pub-009` fixture.
+
+**4. Phase 4 — Arm 3's error-code gate needs opposite fail-closed polarity from §10's
+rejection gate. CONFIRMED**, with real scrutiny applied (this is security-relevant
+fail-closed logic, not rubber-stamped). Independently confirmed the spec text
+(`registries/error-codes.md:60`) matches the claimed MUST-NOT verbatim, confirmed the
+regression test (`revocation_superseded_by_non_revocation_rejected_under_malformed_acdp_version`)
+still pins the correct polarity, and reasoned through *why* the asymmetry is structurally
+correct rather than a coincidental patch: the two functions answer genuinely different
+questions ("does the stricter rule apply?" vs. "may I assert an unverified >= 0.5.0
+claim?"), each with its own safe default under uncertainty. Two optional, non-blocking
+suggestions were raised and one applied now (see item 9); the other — extracting the
+duplicated `major > 0 || minor >= N` arithmetic into one shared parser with per-call-site
+defaults — was **not** applied: it's cosmetic de-duplication with no behavior change, and
+the existing doc comments already carry the main risk-mitigation (explicitly
+cross-referencing the polarity split for future readers), so the abstraction isn't earning
+its keep yet.
+
+**5. Phase 4 — added direct unit-test coverage beyond the plan's Tests field.
+CONFIRMED.** All six named tests exist, are substantive, and pass. Confirmed "test
+immediately rather than deferring to Phase 6" was the right call in retrospect: Phase 6
+landed later, in a separate PR, so deferring would have left security-relevant branching
+logic (a fail-closed gate governing whether a compromised key can escape a revocation
+lineage) untested in `main` for an indeterminate stretch. Noted, not fixed: 3-4 of these
+six now have near-identical-named Phase 6 facade-level twins — intentional two-layer
+coverage (unit pins the logic, facade pins that `RegistryServer`'s plumbing actually wires
+it through), per this file's own stated testing-pyramid rationale, not accidental
+duplication.
+
+**6. Phase 5 — rev-002 E/F/G/H tests. CONFIRMED.** The two pre-existing tests are
+untouched; all four new tests drive a real `classify_under_revocation` verdict (not just
+discovery), using fixture-sourced timestamps. Minor bookkeeping note (not a code issue):
+the phase's own running test-count arithmetic in `PROGRESS.md` has an off-by-one baseline
+(97, not 96) — doesn't affect any scenario-coverage claim, not worth correcting a closed
+narrative entry for.
+
+**7. Phase 6 — scoped down from "18 new tests" to the gaps a two-layer analysis actually
+found. CONFIRMED.** Verified counts against the actual merged diff (exactly 3+4+3 new
+tests, matching the claim) and independently re-checked 8 of the 13 skipped rev-003
+scenario letters against the pinned spec fixture directly — all 8 have an exact
+pre-existing match (same rejection shape, same asserted error code/status). The gap
+analysis holds under independent scrutiny, not just self-report.
+
+**8. Phase 8 — added a `recomputed_hash()` accessor not named in the plan's public API
+list. CHANGED, applied this pass.** The dead-code-lint claim was independently reproduced
+(a fresh `rustc -D warnings` repro plus rebuilding the real crate). But the fix itself was
+not the best available one: `Proven::request().content_hash` (one of the plan's original
+3 named accessors, `PublishRequest.content_hash` being `pub`) already exposes the
+identical value, since `Proven` always borrows `req` — so the field genuinely has no
+legitimate external consumer, and ASSUMPTIONS.md's stated reason for keeping a public
+getter ("a caller holding only a `Proven` has no other way to learn the hash") does not
+hold. Replaced `pub fn recomputed_hash()` with a `debug_assert_eq!` inside
+`commit_proven` that actively checks the same invariant the field exists to prove, instead
+of exposing a public getter that duplicates existing surface. `Proven`'s public API is now
+exactly the plan's originally-named 3 accessors (`agent_id`, `key_fingerprint`,
+`request`). Applied now rather than deferred: this crate has not released `Proven` yet
+(still under `## [Unreleased]`), so the change is genuinely costless today and would need
+a deprecation cycle after the next release.
+
+**9. Applied alongside item 8:** a direct malformed-`acdp_version` test for
+`key_revocation_retirement_gate_applies` (Entry 4's other optional suggestion) —
+previously only proven by code-inspection/structural-identity with the well-tested
+`key_revocation_gate_applies`, now has its own
+`interim_form_retirement_gate_fails_closed_on_malformed_acdp_version` test.
+
+**Disposition:** all 9 items decided by Opus (fresh independent analysis per entry,
+none escalated — no genuine one-way door among them). 7 confirmed as-is, 2 applied as
+small, safe, low-blast-radius fixes (both re-verified: full workspace suite green,
+`--no-default-features` green, fmt/clippy clean on both feature sets, acdp-server lib
+133 → 134 tests). No code follow-up needed before the next `/ship`. ASSUMPTIONS.md
+entries for all 8 original items marked `CONFIRMED (2026-09-22)`.

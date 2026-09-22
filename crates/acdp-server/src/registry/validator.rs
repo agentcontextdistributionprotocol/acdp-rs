@@ -1372,6 +1372,30 @@ mod tests {
         );
     }
 
+    // §10's own gate must independently fail closed on a malformed
+    // `acdp_version`, matching §4's `key_revocation_gate_applies` — this
+    // was previously only inferred from the two functions sharing an
+    // identical well-formedness check (`is_well_formed_version`), never
+    // exercised directly against `key_revocation_retirement_gate_applies`.
+    #[test]
+    fn interim_form_retirement_gate_fails_closed_on_malformed_acdp_version() {
+        let mut caps = test_caps_v050();
+        caps.acdp_version = "not-a-version".into();
+        let v = PublishValidator::new(&caps);
+        let req = build_revocation_request_with_type(
+            REVOCATION_PRODUCER_DID,
+            valid_revocation_metadata(),
+            "0.5.0",
+            ContextType::Custom(ContextType::KEY_REVOCATION_INTERIM.into()),
+        );
+        let raw_len = serde_json::to_vec(&req).unwrap().len();
+        let err = v.validate_post_schema(&req, raw_len).unwrap_err();
+        assert!(
+            matches!(err, AcdpError::SchemaViolation(_)),
+            "a malformed acdp_version must fail closed toward retiring the interim form, got {err:?}"
+        );
+    }
+
     // §10, the other half of acceptance criterion 4: the interim form is
     // rejected unconditionally regardless of whether the publish carries a
     // `supersedes` target — unlike Arm 3, this is a flat retirement of the

@@ -99,6 +99,14 @@ pub struct RegistryServer<S: RegistryStore, L: RateLimiter = NoopRateLimiter> {
 pub struct Proven<'a> {
     req: &'a PublishRequest,
     fingerprint: Option<String>,
+    /// The `content_hash` recomputed over `req`'s `ProducerContent` during
+    /// proving (RFC-ACDP-0003 §2.1 step 4) — not exposed publicly, since
+    /// it is provably always equal to `req.content_hash` by the time a
+    /// `Proven` exists (a mismatch fails `prove_publish_identity*` with
+    /// [`AcdpError::HashMismatch`] first, and `req` — with its own `pub
+    /// content_hash` — is already reachable via [`Self::request`]).
+    /// [`RegistryServer::commit_proven`] asserts that invariant against it
+    /// in debug builds.
     recomputed_hash: ContentHash,
     authority: String,
 }
@@ -123,17 +131,6 @@ impl<'a> Proven<'a> {
     /// used to decide whether fingerprinting was worth its cost.
     pub fn key_fingerprint(&self) -> Option<&str> {
         self.fingerprint.as_deref()
-    }
-
-    /// The `content_hash` recomputed over `req`'s `ProducerContent` during
-    /// proving (RFC-ACDP-0003 §2.1 step 4) — guaranteed equal to
-    /// `req.content_hash`, since a mismatch would have already failed
-    /// `prove_publish_identity*` with [`AcdpError::HashMismatch`] before a
-    /// `Proven` could be produced. Exposed so a caller that only holds a
-    /// `Proven` (not the original request) doesn't need to re-derive or
-    /// re-trust an echoed value.
-    pub fn recomputed_hash(&self) -> &ContentHash {
-        &self.recomputed_hash
     }
 }
 
@@ -1070,6 +1067,12 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
                 proven.authority, self.authority
             )));
         }
+        debug_assert_eq!(
+            proven.recomputed_hash, proven.req.content_hash,
+            "Proven's recomputed_hash must always equal its request's content_hash by \
+             construction — prove_publish_identity* fails closed with HashMismatch before \
+             a Proven can exist otherwise"
+        );
         self.commit_via_store(proven.req, idempotency_key, tenant, proven.fingerprint)
     }
 
@@ -2914,8 +2917,9 @@ mod tests {
             .expect("prove must succeed for a validly signed did:key request");
         assert_eq!(proven.agent_id(), &req.agent_id);
         assert_eq!(proven.request().content_hash, req.content_hash);
-        assert_eq!(proven.recomputed_hash(), &req.content_hash);
 
+        // `commit_proven` below debug_asserts recomputed_hash == request().content_hash
+        // internally — this round trip is what exercises that invariant.
         let outcome = server
             .commit_proven(proven, None, None)
             .expect("commit_proven must persist a proven publish");

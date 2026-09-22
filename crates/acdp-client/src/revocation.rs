@@ -424,8 +424,8 @@ struct DiscoveryParams<'a> {
 /// before. `on_drop` is called for every candidate `keep` rejects, with
 /// a [`DropSite`] naming which loop dropped it (the two forms differ
 /// in `tracing::warn!` payload shape — `trust_class`/computed `filter`
-/// vs `publisher`/`controller` — which a single `&dyn Fn(..) -> bool`
-/// predicate cannot carry).
+/// vs `publisher`/`controller` — which a single
+/// `&(dyn Fn(..) -> bool + Sync)` predicate cannot carry).
 ///
 /// Every other behavior — the transient-propagate/permanent-drop split
 /// (issue #248 Phase 1), `MAX_SEARCH_PAGES` being fresh per
@@ -454,8 +454,8 @@ async fn discover_revocations(
     client: &RegistryClient,
     resolver: &WebResolver,
     params: DiscoveryParams<'_>,
-    keep: &dyn Fn(&KeyRevocation) -> bool,
-    on_drop: &dyn Fn(&KeyRevocation, &CtxId, DropSite),
+    keep: &(dyn Fn(&KeyRevocation) -> bool + Sync),
+    on_drop: &(dyn Fn(&KeyRevocation, &CtxId, DropSite) + Sync),
 ) -> Result<Vec<KeyRevocation>, AcdpError> {
     let DiscoveryParams {
         search_agent_id,

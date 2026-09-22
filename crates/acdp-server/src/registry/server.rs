@@ -846,13 +846,17 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
         //
         // Captures `req` by reference (not `move`-owned data like
         // `receipt_minter` above) so it can call
-        // `check_revocation_supersession(prev, req)` — the closure's
-        // hidden lifetime is exactly `req`'s, which the store threads
-        // through the same call as `PublishCommit::req`, so the two
-        // `'a`-tied fields agree.
+        // `check_revocation_supersession(prev, req, acdp_version)` — the
+        // closure's hidden lifetime is exactly `req`'s, which the store
+        // threads through the same call as `PublishCommit::req`, so the
+        // two `'a`-tied fields agree. `acdp_version` is threaded through
+        // too (RFC-ACDP-0014 §10) so Arm 3 can pick its error code —
+        // `self.caps.acdp_version` outlives the closure via `self`.
         let admission_closure =
             if key_revocation_gate_applies(&self.caps.acdp_version) && req.supersedes.is_some() {
-                Some(move |prev: &Body| check_revocation_supersession(prev, req))
+                Some(move |prev: &Body| {
+                    check_revocation_supersession(prev, req, &self.caps.acdp_version)
+                })
             } else {
                 None
             };

@@ -36,6 +36,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   observes for a case that was previously rejected, even though the request is still rejected
   either way.
 
+- **[BREAKING] `acdp-server` registries advertising `acdp_version >= 0.5.0` now enforce
+  RFC-ACDP-0014 §4/§10's 0.5.0 registry amendments; `SupersessionReason` gained a new
+  variant and is now `#[non_exhaustive]`**.
+  A non-revocation context superseding a `key-revocation` (or interim `acdp:key-revocation`)
+  target is now rejected with `AcdpError::SupersededTarget { reason:
+  SupersessionReason::RevocationTypeMismatch, .. }` instead of `SchemaViolation`, on
+  registries advertising `acdp_version >= 0.5.0` (RFC-ACDP-0014 §4). Below 0.5.0 the
+  rejection is unchanged — still `SchemaViolation` — since weakening it there would be a
+  security regression with no conformance upside (nothing requires accepting the
+  supersession below 0.5.0). Additionally, a `>= 0.5.0` registry now rejects any *new*
+  publish typed as the interim `acdp:key-revocation` form outright, unconditionally,
+  regardless of `supersedes` (RFC-ACDP-0014 §10 — the interim form is retired at 0.5.0 in
+  favor of the standard `key-revocation` context_type). Below 0.5.0, the interim form is
+  still accepted and §4-validated exactly as before. `SupersessionReason` gained
+  `RevocationTypeMismatch` and is now `#[non_exhaustive]` (safe: its variants are unit-like,
+  so no external struct-literal construction site breaks; only external exhaustive `match`
+  arms need a wildcard now). A malformed `acdp_version` string fails closed toward
+  rejecting (matching the existing §4 gate's polarity) but never claims the new error code —
+  it still surfaces as `SchemaViolation`, since the new code is reserved for registries that
+  legitimately declare `>= 0.5.0`.
+
 ### Fixed
 
 - *(client)* restore `Send` on every public async entry point that discovers revocations

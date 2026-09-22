@@ -7,7 +7,7 @@ use acdp_primitives::error::AcdpError;
 use acdp_types::{
     body::Body,
     capabilities::CapabilitiesDocument,
-    primitives::{ContentHash, CtxId, LineageId},
+    primitives::{ContentHash, ContextType, CtxId, LineageId},
     publish::PublishRequest,
     revocation::KeyRevocation,
 };
@@ -213,6 +213,26 @@ impl<'a> PublishValidator<'a> {
             }
         }
 
+        // RFC-ACDP-0014 §10: a registry advertising acdp_version >= 0.5.0
+        // MUST reject any *new* publish typed as the interim
+        // `acdp:key-revocation` form outright — unconditionally, whatever
+        // `supersedes` carries or what its target's type is. The interim
+        // form is retired at 0.5.0 in favor of the standard
+        // `key-revocation` context_type; this check must run before the
+        // §4 gate below, since `is_key_revocation()` still treats the
+        // interim form as revocation-equivalent and would otherwise
+        // accept it.
+        if is_interim_key_revocation_form(&req.context_type)
+            && key_revocation_retirement_gate_applies(&self.caps.acdp_version)
+        {
+            return Err(AcdpError::SchemaViolation(format!(
+                "context_type '{}' (the interim key-revocation form) is retired for \
+                 registries advertising acdp_version >= 0.5.0 (RFC-ACDP-0014 §10); \
+                 publish using the standard 'key-revocation' context_type instead",
+                ContextType::KEY_REVOCATION_INTERIM
+            )));
+        }
+
         // RFC-ACDP-0014 §4 publish-time gate: registries advertising
         // acdp_version >= 0.3.0 MUST reject malformed key-revocation
         // bodies with schema_violation. See `key_revocation_gate_applies`
@@ -346,6 +366,70 @@ pub fn key_revocation_gate_applies(acdp_version: &str) -> bool {
     major > 0 || minor >= 3
 }
 
+/// True only for the *interim* `acdp:key-revocation` custom `context_type`
+/// — unlike [`ContextType::is_key_revocation`], this excludes the standard
+/// `ContextType::KeyRevocation` form. RFC-ACDP-0014 §10 retires only the
+/// interim spelling at 0.5.0, not the `key-revocation` type itself.
+fn is_interim_key_revocation_form(ct: &ContextType) -> bool {
+    matches!(ct, ContextType::Custom(s) if s == ContextType::KEY_REVOCATION_INTERIM)
+}
+
+/// RFC-ACDP-0014 §10 version gate (interim-form retirement), fail-closed
+/// on the same well-formedness rule as [`key_revocation_gate_applies`] —
+/// see that function's doc comment for why malformed input must turn the
+/// gate ON, never OFF. Threshold is `>= 0.5.0` instead of `>= 0.3.0`.
+///
+/// **Not** reused for §4 Arm 3's error-code selection — see
+/// [`advertises_0_5_0_or_higher`], which answers a related but distinct
+/// question with the opposite polarity on malformed input.
+fn key_revocation_retirement_gate_applies(acdp_version: &str) -> bool {
+    if !is_well_formed_version(acdp_version) {
+        return true;
+    }
+    let mut parts = acdp_version.split('.');
+    let major: u64 = match parts.next().and_then(|p| p.parse().ok()) {
+        Some(m) => m,
+        None => return true,
+    };
+    let minor: u64 = match parts.next().and_then(|p| p.parse().ok()) {
+        Some(m) => m,
+        None => return true,
+    };
+    major > 0 || minor >= 5
+}
+
+/// Strictly "is this a well-formed `acdp_version` string that parses to
+/// `>= 0.5.0`" — used only to gate Arm 3's error-code choice in
+/// [`check_revocation_supersession`], and deliberately does **not** fail
+/// closed toward `true` on malformed input the way
+/// [`key_revocation_retirement_gate_applies`] does.
+///
+/// The two functions answer different questions. §10's gate decides
+/// whether to *reject at all*, where fail-closed-toward-rejecting is the
+/// safe direction. This function instead decides which of two rejection
+/// codes to emit — Arm 3 rejects unconditionally either way — and
+/// `registries/error-codes.md` states `revocation_type_mismatch` "MUST
+/// NOT be emitted by implementations declaring `acdp_version < 0.5.0`". A
+/// malformed version string is not a legitimate `>= 0.5.0` declaration, so
+/// this returns `false` on malformed input (falling back to the
+/// long-established `schema_violation` code) rather than `true` — the
+/// conservative choice is the one that can't violate that MUST NOT.
+fn advertises_0_5_0_or_higher(acdp_version: &str) -> bool {
+    if !is_well_formed_version(acdp_version) {
+        return false;
+    }
+    let mut parts = acdp_version.split('.');
+    let major: u64 = match parts.next().and_then(|p| p.parse().ok()) {
+        Some(m) => m,
+        None => return false,
+    };
+    let minor: u64 = match parts.next().and_then(|p| p.parse().ok()) {
+        Some(m) => m,
+        None => return false,
+    };
+    major > 0 || minor >= 5
+}
+
 /// RFC-ACDP-0014 §4 `supersedes` row for `key-revocation` contexts.
 ///
 /// Verbatim (§4): "A revocation context MAY be superseded only by
@@ -395,6 +479,9 @@ pub fn key_revocation_gate_applies(acdp_version: &str) -> bool {
 ///   `true` for the registry's advertised `acdp_version` — pre-0.3.0
 ///   registries have no `key-revocation` vocabulary to enforce this
 ///   against.
+/// - `acdp_version` is the registry's own advertised version (i.e. the
+///   same string passed to [`key_revocation_gate_applies`] above) — used
+///   only to pick Arm 3's error code, per RFC-ACDP-0014 §10.
 ///
 /// Arms (see the Phase 5 plan for the full table):
 ///
@@ -406,10 +493,12 @@ pub fn key_revocation_gate_applies(acdp_version: &str) -> bool {
 /// class ⇒ `SchemaViolation`.
 ///
 /// **Arm 3** — `prev` key-revocation, `req` NOT a key-revocation ⇒
-/// `SchemaViolation` — the security payload: without this, the holder
-/// of a compromised key could re-point the lineage head away from the
-/// revocation with an ordinary body, since #207's §5 step 2
-/// not-self-signed check only fires for `is_key_revocation()` bodies.
+/// `SupersededTarget`/`RevocationTypeMismatch` at `acdp_version >= 0.5.0`,
+/// `SchemaViolation` below it (RFC-ACDP-0014 §10) — the security payload:
+/// without this, the holder of a compromised key could re-point the
+/// lineage head away from the revocation with an ordinary body, since
+/// #207's §5 step 2 not-self-signed check only fires for
+/// `is_key_revocation()` bodies.
 ///
 /// **Arm 4** — `prev` NOT a key-revocation ⇒ `Ok` unconditionally —
 /// out of scope for this §4 row; whatever `req` is, nothing here
@@ -431,7 +520,11 @@ pub fn key_revocation_gate_applies(acdp_version: &str) -> bool {
 /// change to `Body` that broke that equivalence would turn this arm
 /// into a live escape hatch — see the inline comment at the match arm
 /// below.
-pub fn check_revocation_supersession(prev: &Body, req: &PublishRequest) -> Result<(), AcdpError> {
+pub fn check_revocation_supersession(
+    prev: &Body,
+    req: &PublishRequest,
+    acdp_version: &str,
+) -> Result<(), AcdpError> {
     if !prev.context_type.is_key_revocation() {
         // Arm 4: whatever `prev` is, this §4 row does not constrain
         // its supersession.
@@ -441,6 +534,31 @@ pub fn check_revocation_supersession(prev: &Body, req: &PublishRequest) -> Resul
     if !req.context_type.is_key_revocation() {
         // Arm 3: the security payload. `prev` is a safety broadcast;
         // only another key-revocation may take over its lineage head.
+        //
+        // RFC-ACDP-0014 §10 (0.5.0 registry amendments): a registry
+        // advertising acdp_version >= 0.5.0 MUST reject this case with
+        // SupersededTarget/revocation_type_mismatch instead of the
+        // historical schema_violation. The rejection itself is
+        // deliberately unconditional on the version — only the wire
+        // code changes below 0.5.0 (see this plan's Open Questions for
+        // why weakening the rejection itself below 0.5.0 would be a
+        // security regression, not spec compliance). Uses
+        // `advertises_0_5_0_or_higher`, NOT the §10 gate above — a
+        // malformed `acdp_version` must still reject (fail-closed) but
+        // must NOT claim the new, more specific error code.
+        if advertises_0_5_0_or_higher(acdp_version) {
+            return Err(AcdpError::SupersededTarget {
+                reason: acdp_primitives::error::SupersessionReason::RevocationTypeMismatch,
+                message: format!(
+                    "ctx_id '{}' is a key-revocation context and MAY only be superseded by \
+                     another key-revocation context (RFC-ACDP-0014 §4); the incoming publish \
+                     from agent_id '{}' has type '{}'",
+                    prev.ctx_id,
+                    req.agent_id,
+                    context_type_label(&req.context_type),
+                ),
+            });
+        }
         return Err(AcdpError::SchemaViolation(format!(
             "ctx_id '{}' is a key-revocation context and MAY only be superseded by \
              another key-revocation context (RFC-ACDP-0014 §4); the incoming publish \
@@ -745,6 +863,13 @@ mod tests {
     fn test_caps_v020() -> CapabilitiesDocument {
         CapabilitiesDocument {
             acdp_version: "0.2.0".into(),
+            ..test_caps()
+        }
+    }
+
+    fn test_caps_v050() -> CapabilitiesDocument {
+        CapabilitiesDocument {
+            acdp_version: "0.5.0".into(),
             ..test_caps()
         }
     }
@@ -1203,6 +1328,87 @@ mod tests {
         assert!(matches!(err, AcdpError::SchemaViolation(_)));
     }
 
+    // ── Phase 4 (#279+RFC-0014-wave): RFC-ACDP-0014 §10 — interim-form
+    // retirement at acdp_version >= 0.5.0. ───────────────────────────────
+
+    // §10: a >= 0.5.0 registry rejects a *new* publish typed as the
+    // interim `acdp:key-revocation` form outright, even though the body
+    // is otherwise perfectly valid (same fixture that's accepted at 0.3.0
+    // above) and carries no `supersedes` at all (acceptance criterion 4).
+    #[test]
+    fn revocation_interim_custom_type_rejected_unconditionally_at_0_5_0() {
+        let caps = test_caps_v050();
+        let v = PublishValidator::new(&caps);
+        let req = build_revocation_request_with_type(
+            REVOCATION_PRODUCER_DID,
+            valid_revocation_metadata(),
+            "0.5.0",
+            ContextType::Custom(ContextType::KEY_REVOCATION_INTERIM.into()),
+        );
+        let raw_len = serde_json::to_vec(&req).unwrap().len();
+        let err = v.validate_post_schema(&req, raw_len).unwrap_err();
+        assert!(
+            matches!(err, AcdpError::SchemaViolation(_)),
+            "the interim form must be rejected unconditionally at >= 0.5.0, got {err:?}"
+        );
+    }
+
+    // §10, the other half of acceptance criterion 4: the interim form is
+    // rejected unconditionally regardless of whether the publish carries a
+    // `supersedes` target — unlike Arm 3, this is a flat retirement of the
+    // *type*, not a supersession rule, so it must reject even a v2
+    // interim-form publish superseding a v1 interim-form context.
+    #[test]
+    fn revocation_interim_custom_type_rejected_with_supersedes_at_0_5_0() {
+        let caps = test_caps_v050();
+        let v = PublishValidator::new(&caps);
+        let key = SigningKey::from_bytes(&[0u8; 32]);
+        let p = Producer::new(
+            key,
+            AgentDid::new(REVOCATION_PRODUCER_DID),
+            format!("{REVOCATION_PRODUCER_DID}#key-1"),
+        );
+        let target =
+            CtxId("acdp://registry.example.com/00000000-0000-4000-8000-000000000002".into());
+        let req = p
+            .supersede(target)
+            .version(2)
+            .title("Key revocation test (interim §10 type, v2 supersedes)")
+            .context_type(ContextType::Custom(
+                ContextType::KEY_REVOCATION_INTERIM.into(),
+            ))
+            .visibility(Visibility::Public)
+            .acdp_version("0.5.0")
+            .metadata(valid_revocation_metadata())
+            .build()
+            .unwrap();
+        let raw_len = serde_json::to_vec(&req).unwrap().len();
+        let err = v.validate_post_schema(&req, raw_len).unwrap_err();
+        assert!(
+            matches!(err, AcdpError::SchemaViolation(_)),
+            "the interim form must be rejected even when it carries a supersedes target, got {err:?}"
+        );
+    }
+
+    // §10 does not over-reject: the *standard* `key-revocation`
+    // context_type (not the interim custom spelling) must still be
+    // accepted at acdp_version >= 0.5.0 — only the interim spelling is
+    // retired (acceptance criterion 5, standard-form half).
+    #[test]
+    fn revocation_standard_type_still_accepted_at_0_5_0() {
+        let caps = test_caps_v050();
+        let v = PublishValidator::new(&caps);
+        let req = build_revocation_request(
+            REVOCATION_PRODUCER_DID,
+            valid_revocation_metadata(),
+            "0.5.0",
+        );
+        let raw_len = serde_json::to_vec(&req).unwrap().len();
+        v.validate_post_schema(&req, raw_len).expect(
+            "the standard key-revocation type is not retired by §10, only the interim spelling is",
+        );
+    }
+
     // ── Phase 5 (#216a): RFC-ACDP-0014 §4 `supersedes` rule —
     // `check_revocation_supersession`. Dead code until Phase 6 wires it
     // in; these tests exercise it directly. ─────────────────────────────
@@ -1238,7 +1444,7 @@ mod tests {
         meta["compromised_since"] = serde_json::json!("2026-04-01T00:00:00.000Z"); // earlier
         let req = build_revocation_request(REVOCATION_PRODUCER_DID, meta, "0.3.0");
 
-        check_revocation_supersession(&prev, &req)
+        check_revocation_supersession(&prev, &req, "0.3.0")
             .expect("same signer class supersession must be allowed regardless of T direction");
     }
 
@@ -1259,7 +1465,7 @@ mod tests {
         meta["revoked_key_controller"] = serde_json::json!(REVOCATION_PRODUCER_DID);
         let req = build_revocation_request(&registry_did, meta, "0.3.0"); // RegistryAttested
 
-        let err = check_revocation_supersession(&prev, &req).unwrap_err();
+        let err = check_revocation_supersession(&prev, &req, "0.3.0").unwrap_err();
         assert!(matches!(err, AcdpError::SchemaViolation(_)));
     }
 
@@ -1277,8 +1483,55 @@ mod tests {
         let prev = body_from_request(&prev_req);
         let req = test_request(); // ordinary DataSnapshot body
 
-        let err = check_revocation_supersession(&prev, &req).unwrap_err();
+        let err = check_revocation_supersession(&prev, &req, "0.3.0").unwrap_err();
         assert!(matches!(err, AcdpError::SchemaViolation(_)));
+    }
+
+    // Arm 3, RFC-ACDP-0014 §10: identical fixture to the test above, but at
+    // a registry advertising acdp_version >= 0.5.0 — the wire code changes
+    // to SupersededTarget/RevocationTypeMismatch, the rejection itself
+    // unchanged (Phase 4 acceptance criterion 2).
+    #[test]
+    fn revocation_superseded_by_non_revocation_rejected_as_revocation_type_mismatch_at_0_5_0() {
+        let prev_req = build_revocation_request(
+            REVOCATION_PRODUCER_DID,
+            valid_revocation_metadata(),
+            "0.3.0",
+        );
+        let prev = body_from_request(&prev_req);
+        let req = test_request(); // ordinary DataSnapshot body
+
+        let err = check_revocation_supersession(&prev, &req, "0.5.0").unwrap_err();
+        assert!(
+            matches!(
+                err,
+                AcdpError::SupersededTarget {
+                    reason: acdp_primitives::error::SupersessionReason::RevocationTypeMismatch,
+                    ..
+                }
+            ),
+            "expected SupersededTarget/RevocationTypeMismatch at acdp_version >= 0.5.0, got {err:?}"
+        );
+    }
+
+    // Same fixture again, one version short of the 0.5.0 boundary — pins
+    // the exact threshold (Phase 4 acceptance criterion 3: unchanged below
+    // 0.5.0).
+    #[test]
+    fn revocation_superseded_by_non_revocation_still_schema_violation_below_0_5_0() {
+        let prev_req = build_revocation_request(
+            REVOCATION_PRODUCER_DID,
+            valid_revocation_metadata(),
+            "0.3.0",
+        );
+        let prev = body_from_request(&prev_req);
+        let req = test_request(); // ordinary DataSnapshot body
+
+        let err = check_revocation_supersession(&prev, &req, "0.4.9").unwrap_err();
+        assert!(
+            matches!(err, AcdpError::SchemaViolation(_)),
+            "0.4.9 is below the 0.5.0 boundary; expected the unchanged SchemaViolation, got {err:?}"
+        );
     }
 
     // Arm 4: PREV NOT a key-revocation ⇒ allow unconditionally,
@@ -1295,7 +1548,7 @@ mod tests {
             "0.3.0",
         );
 
-        check_revocation_supersession(&prev, &req)
+        check_revocation_supersession(&prev, &req, "0.3.0")
             .expect("a non-revocation predecessor is out of scope for this §4 row");
     }
 
@@ -1325,7 +1578,7 @@ mod tests {
         meta["compromised_since"] = serde_json::json!("2026-06-01T00:00:00.000Z"); // later — narrows
         let req = build_revocation_request(REVOCATION_PRODUCER_DID, meta, "0.3.0");
 
-        check_revocation_supersession(&prev, &req).expect(
+        check_revocation_supersession(&prev, &req, "0.3.0").expect(
             "narrowing the compromise window (T moved later) is allowed at publish time; \
              this function enforces only type + signer class, not compromised_since \
              direction (RFC-ACDP-0014 §4:58)",
@@ -1365,7 +1618,7 @@ mod tests {
             "0.3.0",
         );
 
-        check_revocation_supersession(&prev, &req).expect(
+        check_revocation_supersession(&prev, &req, "0.3.0").expect(
             "arm 6b: a malformed predecessor skips the class comparison but a \
              well-formed key-revocation successor is still allowed",
         );
@@ -1401,7 +1654,7 @@ mod tests {
 
         let req = test_request(); // ordinary DataSnapshot body, not a key-revocation
 
-        let err = check_revocation_supersession(&prev, &req).unwrap_err();
+        let err = check_revocation_supersession(&prev, &req, "0.3.0").unwrap_err();
         assert!(
             matches!(err, AcdpError::SchemaViolation(_)),
             "arm 3's type rule must still reject a non-revocation successor even when the \
@@ -1448,7 +1701,7 @@ mod tests {
         v.check_revocation_controller(&req, &in_revocation)
             .expect("IN fixture must be a legitimately publishable revocation");
 
-        let err = check_revocation_supersession(&prev, &req).unwrap_err();
+        let err = check_revocation_supersession(&prev, &req, "0.3.0").unwrap_err();
         assert!(
             matches!(err, AcdpError::SchemaViolation(_)),
             "same agent_id on both sides must NOT be enough to allow this supersession — \
@@ -1478,7 +1731,7 @@ mod tests {
             "0.3.0",
         );
 
-        check_revocation_supersession(&prev, &req).expect(
+        check_revocation_supersession(&prev, &req, "0.3.0").expect(
             "cross-DID, same signer class (ProducerSigned) must be allowed — \
              RFC-ACDP-0014 §13 blesses cross-producer supersession; the criterion is \
              class, not DID",

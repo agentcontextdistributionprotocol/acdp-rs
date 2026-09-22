@@ -725,3 +725,58 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   behavior the phase's own acceptance criteria require; the test would fail loudly if the
   reasoning were wrong.
 - **Status:** UNCONFIRMED
+
+## Phase 4 (issues-273-279-284-285-rfc0014-wave) — Arm 3's error-code gate needs opposite fail-closed polarity from §10's rejection gate
+- **Plan:** plans/issues-273-279-284-285-rfc0014-wave.md, Phase 4
+- **Assumed:** the plan's approach section suggested one `>= 0.5.0` version-gate function,
+  reused for both the new §10 interim-form-retirement check and Arm 3's error-code
+  selection, both fail-closed the same way `key_revocation_gate_applies` already is
+  (malformed input → gate ON).
+- **Chose:** implemented it that way first, then ran the full test suite and hit a real,
+  pre-existing regression test failure:
+  `tests/key_revocation_publish_gate.rs::revocation_superseded_by_non_revocation_rejected_under_malformed_acdp_version`
+  expects `SchemaViolation` under a malformed `acdp_version`, but reusing one fail-closed
+  gate made Arm 3 emit the new `RevocationTypeMismatch` code instead. Realized the two
+  gates need opposite polarity: §10's rejection gate must fail closed toward TRUE
+  (malformed → reject, matching the existing security-conservative pattern), but Arm 3's
+  error-CODE gate must fail closed toward FALSE (malformed → do NOT claim the new code) —
+  `registries/error-codes.md` states `revocation_type_mismatch` "MUST NOT be emitted by
+  implementations declaring acdp_version < 0.5.0," and a malformed version string is not a
+  legitimate `>= 0.5.0` declaration either way, so claiming it would be the one thing that
+  could violate that MUST NOT. Split into two functions:
+  `key_revocation_retirement_gate_applies` (fail-closed true, §10 only) and
+  `advertises_0_5_0_or_higher` (fail-closed false, Arm 3's code choice only) — both in
+  `crates/acdp-server/src/registry/validator.rs`.
+- **Alternatives:** keep the pre-existing test's expectation and update it to accept the
+  new code under a malformed version (rejected — the test's own reasoning is specifically
+  about the gate applying, not about which code fires under malformed input, and changing
+  it to accept a spec violation would be masking a real bug, not fixing a stale assertion).
+- **Blast radius if wrong:** low — worst case a malformed `acdp_version` on a genuinely
+  `>= 0.5.0` registry would surface the older `SchemaViolation` code instead of the more
+  specific `RevocationTypeMismatch` one; the request is still rejected either way, so no
+  security regression, only a slightly less-specific error for an already-malformed
+  capabilities document (itself a registry misconfiguration).
+- **Status:** UNCONFIRMED
+
+## Phase 4 (issues-273-279-284-285-rfc0014-wave) — added direct unit-test coverage beyond the plan's Tests field
+- **Plan:** plans/issues-273-279-284-285-rfc0014-wave.md, Phase 4
+- **Assumed:** the plan's own Tests field states Phase 4's new code paths are "covered by
+  Phase 6 (the rev-003 O/P/Q/R conformance fixtures) plus the six pre-existing
+  key_revocation_publish_gate.rs tests as regression coverage" — implying Phase 4 itself
+  need not add direct tests for the new branches, deferring that to a later phase.
+- **Chose:** added six direct unit tests in `crates/acdp-server/src/registry/validator.rs`'s
+  own test module covering both new behaviors at both sides of the 0.5.0 boundary (Arm 3's
+  new error code at >= 0.5.0 and unchanged below it at 0.4.9; the §10 interim-form
+  rejection with and without `supersedes`, and confirming the standard form is NOT
+  over-rejected) — on top of, not instead of, what the plan's Tests field names. Shipping
+  new branching logic with zero direct coverage until a separate, later phase lands is a
+  real gap under `/implement`'s "a phase without tests is not complete" constraint,
+  independent of whether Phase 6 will eventually add fixture-driven coverage too.
+- **Alternatives:** ship Phase 4 with only the plan's named coverage (rejected — see above);
+  wait and add these tests as part of Phase 6 instead (rejected — Phase 6 is a separate,
+  later PR per the plan's merge sequence, so Phase 4 would ship new, security-relevant
+  branching logic completely untested in the interim).
+- **Blast radius if wrong:** none — strictly additive test coverage; if any assumption
+  about expected behavior embedded in these tests were wrong, the tests would fail loudly
+  rather than silently passing.
+- **Status:** UNCONFIRMED

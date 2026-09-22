@@ -413,6 +413,7 @@ pub enum AcdpError {
 /// Sub-reason for [`AcdpError::SupersededTarget`]. Mirrors the
 /// `details.reason` values defined by `acdp-error.schema.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 #[serde(rename_all = "snake_case")]
 pub enum SupersessionReason {
     /// The supersedes target context does not exist on this registry.
@@ -429,6 +430,13 @@ pub enum SupersessionReason {
     /// The lineage walk through `supersedes` failed because an
     /// intermediate context could not be retrieved (RFC-ACDP-0001 §5.6.1).
     LineageWalkFailed,
+    /// A non-revocation context superseded a `key-revocation` (or interim
+    /// `acdp:key-revocation`) target (RFC-ACDP-0014 §4/§10). Only emitted by
+    /// registries advertising `acdp_version >= 0.5.0`; below that version
+    /// this rejection surfaces as `AcdpError::SchemaViolation` instead.
+    /// `Provisional` per `registries/error-codes.md` (the 0.5.0 line is
+    /// still Draft).
+    RevocationTypeMismatch,
     /// A reason this version of the library does not recognize.
     #[serde(other)]
     Other,

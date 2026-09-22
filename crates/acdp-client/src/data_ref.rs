@@ -221,10 +221,13 @@ impl DataRefFetcher for HttpsDataRefFetcher {
 /// Behavior:
 /// - **Embedded ref:** returns the decoded bytes via
 ///   [`acdp_validation::embedded_decoded_bytes`]. If the ref declares
-///   either (or both) of the root `content_hash` or `embedded.content_hash`
-///   (RFC-ACDP-0002 §6.3/§6.6), [`acdp_validation::verify_embedded_hash`]
-///   has already verified them at validation time; this function
-///   re-verifies as a defense-in-depth check.
+///   `embedded.content_hash` (RFC-ACDP-0002 §6.3/§6.6 Check 8 — the only
+///   field this obligation is scoped to; a root-level `content_hash` on
+///   an embedded ref carries no verification obligation and is not
+///   checked here, by design — see [`acdp_validation::verify_embedded_hash`]'s
+///   own doc comment), that function has already verified it at
+///   validation time; this function re-verifies as a defense-in-depth
+///   check.
 /// - **URI ref:** delegates to `fetcher` and recomputes SHA-256 over the
 ///   returned bytes, checking against `dr.content_hash` when present.
 ///   If `content_hash` is absent, returns the bytes unverified — the

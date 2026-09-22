@@ -620,25 +620,51 @@ pub fn compute_embedded_hash(emb: &EmbeddedContent) -> Result<ContentHash, AcdpE
     Ok(ContentHash(format!("sha256:{}", hex::encode(digest))))
 }
 
-/// Verify a [`DataRef`]'s declared `content_hash` against its embedded payload.
-/// Does nothing if the ref has no `content_hash` or no `embedded`.
+/// Verify a [`DataRef`]'s declared content hash(es) against its embedded
+/// payload. Does nothing if the ref has no `embedded`.
 ///
-/// BUG-02: a mismatch is a *data-reference-level* integrity failure
-/// ([`AcdpError::DataRefHashMismatch`], wire code `data_ref_hash_mismatch`)
-/// — the embedded bytes diverged from the producer-declared hash, but the
-/// body's own `content_hash` / signature are unaffected. It is NOT the
-/// body-level [`AcdpError::HashMismatch`] (RFC-ACDP-0007 §5, data-ref-007).
+/// RFC-ACDP-0002 §6.6 ("Check 8") scopes the publish-time integrity
+/// obligation to `embedded.content_hash`: when present, it MUST match the
+/// SHA-256 of the decoded `embedded.content` bytes. The DataRef-root
+/// `content_hash` (§6.1) carries no obligation for embedded refs — a
+/// registry "MAY additionally verify" it, but MUST NOT reject a publish
+/// merely because both fields are present. This function checks **both
+/// fields when both are present**: that satisfies §6.6's two hard
+/// requirements (verify `embedded.content_hash`; don't reject on
+/// co-presence alone) while also preserving the pre-existing root-hash
+/// check that consumer-side `location`-form fetch verification
+/// (`acdp-client`) depends on — dropping the root check for embedded refs
+/// would silently regress that coverage. A mismatch on *either* field is a
+/// *data-reference-level* integrity failure ([`AcdpError::DataRefHashMismatch`],
+/// wire code `data_ref_hash_mismatch`) — the embedded bytes diverged from a
+/// producer-declared hash, but the body's own `content_hash` / signature are
+/// unaffected. It is NOT the body-level [`AcdpError::HashMismatch`]
+/// (RFC-ACDP-0007 §5, data-ref-007).
 pub fn verify_embedded_hash(dr: &DataRef) -> Result<(), AcdpError> {
-    let (Some(emb), Some(stored)) = (&dr.embedded, &dr.content_hash) else {
+    let Some(emb) = &dr.embedded else {
         return Ok(());
     };
+    if dr.content_hash.is_none() && emb.content_hash.is_none() {
+        return Ok(());
+    }
     let recomputed = compute_embedded_hash(emb)?;
-    if &recomputed != stored {
-        return Err(AcdpError::DataRefHashMismatch(format!(
-            "embedded content_hash mismatch: declared {}, computed {}",
-            stored.as_str(),
-            recomputed.as_str()
-        )));
+    if let Some(embedded_hash) = &emb.content_hash {
+        if &recomputed != embedded_hash {
+            return Err(AcdpError::DataRefHashMismatch(format!(
+                "embedded.content_hash mismatch: declared {}, computed {}",
+                embedded_hash.as_str(),
+                recomputed.as_str()
+            )));
+        }
+    }
+    if let Some(root_hash) = &dr.content_hash {
+        if &recomputed != root_hash {
+            return Err(AcdpError::DataRefHashMismatch(format!(
+                "content_hash mismatch: declared {}, computed {}",
+                root_hash.as_str(),
+                recomputed.as_str()
+            )));
+        }
     }
     Ok(())
 }
@@ -863,20 +889,26 @@ fn validate_did_key_key_id_form(key_id: &str) -> Result<(), AcdpError> {
     if !key_id.starts_with("did:key:") {
         return Ok(());
     }
-    acdp_did::key::resolve_did_key_url(key_id).map_err(|e| {
-        AcdpError::SchemaViolation(format!(
-            "signature.key_id is not a well-formed did:key URL: {e}"
-        ))
-    })?;
+    // RFC-ACDP-0001 §5.11.1: any did:key resolver fault (steps 1-4) is
+    // REQUIRED to surface as `key_resolution_failed`. `schema_violation` is
+    // only a spec-tolerated MAY-level alternative for a registry's own
+    // stricter grammar on steps 1-2 (dk-002's own
+    // `expected.alternative_applies_to_cases: [1, 2]` proves the tolerance
+    // is narrower than "all did:key resolver faults") — never a
+    // requirement, so propagating the resolver's own `AcdpError::KeyResolution`
+    // unconditionally is conformant for all did:key fixtures and needs no
+    // step-level distinction the resolver doesn't expose anyway.
+    acdp_did::key::resolve_did_key_url(key_id)?;
     Ok(())
 }
 
 fn validate_agent_did(did: &AgentDid) -> Result<(), AcdpError> {
     if did.as_str().starts_with("did:key:") {
         AgentDid::parse(did.as_str())?;
-        acdp_did::key::resolve_did_key(did.as_str()).map_err(|e| {
-            AcdpError::SchemaViolation(format!("agent_id is not a well-formed did:key: {e}"))
-        })?;
+        // See validate_did_key_key_id_form above: propagate the resolver's
+        // own AcdpError::KeyResolution rather than downgrading to
+        // SchemaViolation.
+        acdp_did::key::resolve_did_key(did.as_str())?;
         return Ok(());
     }
     AgentDid::parse_web(did.as_str())?;
@@ -1030,6 +1062,15 @@ mod tests {
         EmbeddedContent {
             encoding: EmbeddedEncoding::Json,
             content: v,
+            content_hash: None,
+        }
+    }
+
+    fn embedded_json_with_hash(v: serde_json::Value, hash: ContentHash) -> EmbeddedContent {
+        EmbeddedContent {
+            encoding: EmbeddedEncoding::Json,
+            content: v,
+            content_hash: Some(hash),
         }
     }
 
@@ -1220,6 +1261,7 @@ mod tests {
             embedded: Some(EmbeddedContent {
                 encoding: EmbeddedEncoding::Utf8,
                 content: json!(42),
+                content_hash: None,
             }),
             extensions: serde_json::Map::new(),
         };
@@ -1259,6 +1301,7 @@ mod tests {
         let emb = EmbeddedContent {
             encoding: EmbeddedEncoding::Utf8,
             content: json!("hello"),
+            content_hash: None,
         };
         let h = compute_embedded_hash(&emb).unwrap();
         let expected = format!("sha256:{}", hex::encode(Sha256::digest(b"hello")));
@@ -1272,6 +1315,7 @@ mod tests {
         let emb = EmbeddedContent {
             encoding: EmbeddedEncoding::Base64,
             content: json!(b64),
+            content_hash: None,
         };
         let h = compute_embedded_hash(&emb).unwrap();
         let expected = format!("sha256:{}", hex::encode(Sha256::digest(raw)));
@@ -1488,7 +1532,65 @@ mod tests {
             embedded: Some(EmbeddedContent {
                 encoding: EmbeddedEncoding::Json,
                 content: json!({"x": 1}),
+                content_hash: None,
             }),
+            extensions: serde_json::Map::new(),
+        };
+        assert!(matches!(
+            verify_embedded_hash(&dr),
+            Err(AcdpError::DataRefHashMismatch(_))
+        ));
+    }
+
+    /// RFC-ACDP-0002 §6.6: a DataRef carrying both root `content_hash` and
+    /// `embedded.content_hash` over the same, *consistent* decoded bytes
+    /// MUST be accepted.
+    #[test]
+    fn both_content_hashes_consistent_accepted() {
+        use acdp_types::data_ref::DataRefType;
+        let emb = embedded_json(json!({"a": 1, "b": 2}));
+        let hash = compute_embedded_hash(&emb).unwrap();
+        let dr = DataRef {
+            ref_type: DataRefType::PrimaryResult,
+            description: None,
+            size_bytes: None,
+            format: None,
+            schema_version: None,
+            content_hash: Some(hash.clone()),
+            location: None,
+            embedded: Some(embedded_json_with_hash(json!({"a": 1, "b": 2}), hash)),
+            extensions: serde_json::Map::new(),
+        };
+        verify_embedded_hash(&dr).unwrap();
+    }
+
+    /// RFC-ACDP-0002 §6.6: when root `content_hash` and
+    /// `embedded.content_hash` disagree, the ref MUST be rejected with
+    /// `DataRefHashMismatch` — checking both fields is the natural
+    /// consequence of Check 8, not a new rule.
+    #[test]
+    fn both_content_hashes_disagree_rejected() {
+        use acdp_types::data_ref::DataRefType;
+        let emb = embedded_json(json!({"a": 1, "b": 2}));
+        let correct_hash = compute_embedded_hash(&emb).unwrap();
+        let wrong_hash = ContentHash(
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000".into(),
+        );
+        // embedded.content_hash is correct, root content_hash disagrees with the
+        // actual decoded bytes — Check 8 passes, but the (still-checked) root
+        // comparison catches the disagreement.
+        let dr = DataRef {
+            ref_type: DataRefType::PrimaryResult,
+            description: None,
+            size_bytes: None,
+            format: None,
+            schema_version: None,
+            content_hash: Some(wrong_hash),
+            location: None,
+            embedded: Some(embedded_json_with_hash(
+                json!({"a": 1, "b": 2}),
+                correct_hash,
+            )),
             extensions: serde_json::Map::new(),
         };
         assert!(matches!(

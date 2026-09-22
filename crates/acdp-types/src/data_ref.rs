@@ -236,6 +236,7 @@ impl DataRef {
             embedded: Some(EmbeddedContent {
                 encoding: EmbeddedEncoding::Json,
                 content,
+                content_hash: None,
             }),
             extensions: serde_json::Map::new(),
         }
@@ -254,6 +255,7 @@ impl DataRef {
             embedded: Some(EmbeddedContent {
                 encoding: EmbeddedEncoding::Utf8,
                 content: serde_json::Value::String(text.into()),
+                content_hash: None,
             }),
             extensions: serde_json::Map::new(),
         }
@@ -272,6 +274,7 @@ impl DataRef {
             embedded: Some(EmbeddedContent {
                 encoding: EmbeddedEncoding::Base64,
                 content: serde_json::Value::String(b64.into()),
+                content_hash: None,
             }),
             extensions: serde_json::Map::new(),
         }
@@ -318,6 +321,15 @@ pub struct EmbeddedContent {
     /// The actual content. For `json` encoding this is any JSON value.
     /// For `utf8` / `base64` it MUST be a JSON string.
     pub content: serde_json::Value,
+    /// Optional SHA-256 hash of the *decoded* content bytes (RFC-ACDP-0002
+    /// §6.3/§6.6), distinct from `DataRef.content_hash` on the enclosing
+    /// ref — a `DataRef` MAY carry both over the same decoded bytes.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::serde_helpers::de_present"
+    )]
+    pub content_hash: Option<ContentHash>,
 }
 
 /// Validate dotted-namespace scheme pattern.

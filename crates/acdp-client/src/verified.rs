@@ -1463,10 +1463,15 @@ impl VerifiedContext {
 
         // Per-DataRef embedded hashes — same as fetch_report_inner.
         for dr in &ctx.body.data_refs {
-            if let (Some(emb), Some(_)) = (&dr.embedded, &dr.content_hash) {
-                let outcome = acdp_validation::verify_embedded_hash(dr)
-                    .and_then(|()| acdp_validation::embedded_decoded_bytes(emb).map(|b| b.len()));
-                report.data_ref_embedded.push(outcome);
+            if let Some(emb) = &dr.embedded {
+                if dr.content_hash.is_some() || emb.content_hash.is_some() {
+                    let outcome = acdp_validation::verify_embedded_hash(dr).and_then(|()| {
+                        acdp_validation::embedded_decoded_bytes(emb).map(|b| b.len())
+                    });
+                    report.data_ref_embedded.push(outcome);
+                } else {
+                    report.data_ref_embedded.push(Ok(0));
+                }
             } else {
                 report.data_ref_embedded.push(Ok(0));
             }
@@ -1596,10 +1601,15 @@ impl VerifiedContext {
 
         // Per-DataRef embedded-hash outcomes — recorded individually.
         for dr in &ctx.body.data_refs {
-            if let (Some(emb), Some(_)) = (&dr.embedded, &dr.content_hash) {
-                let outcome = acdp_validation::verify_embedded_hash(dr)
-                    .and_then(|()| acdp_validation::embedded_decoded_bytes(emb).map(|b| b.len()));
-                report.data_ref_embedded.push(outcome);
+            if let Some(emb) = &dr.embedded {
+                if dr.content_hash.is_some() || emb.content_hash.is_some() {
+                    let outcome = acdp_validation::verify_embedded_hash(dr).and_then(|()| {
+                        acdp_validation::embedded_decoded_bytes(emb).map(|b| b.len())
+                    });
+                    report.data_ref_embedded.push(outcome);
+                } else {
+                    report.data_ref_embedded.push(Ok(0));
+                }
             } else {
                 report.data_ref_embedded.push(Ok(0));
             }

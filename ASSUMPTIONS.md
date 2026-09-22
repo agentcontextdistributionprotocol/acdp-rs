@@ -780,3 +780,29 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   about expected behavior embedded in these tests were wrong, the tests would fail loudly
   rather than silently passing.
 - **Status:** UNCONFIRMED
+
+## Phase 5 (issues-273-279-284-285-rfc0014-wave) — plan's E/F "already covered" claims needed correction
+- **Plan:** plans/issues-273-279-284-285-rfc0014-wave.md, Phase 5
+- **Assumed:** the plan's "reuse, don't duplicate" guidance stated scenario E is "essentially
+  already covered by `rev_002_earliest_boundary_across_lineage`" and scenario F is "essentially
+  already covered by `find_revocations_recovers_retracted_predecessor_across_lineage_supersession`" —
+  suggesting those two existing tests could be extended/renamed rather than adding new ones.
+- **Chose:** verified both claims directly against the existing test bodies before writing any
+  code (per the plan's own fallback instruction to "verify against the actual fixture keys...
+  rather than assuming the existing test already targets the new JSON path"), found both too
+  generous, and added four new dedicated tests instead of extending the two existing ones:
+  `rev_002_earliest_boundary_across_lineage` tests a structurally different WIDENING lineage
+  with non-fixture timestamps (its own comment disclaims being a lettered rev-002 scenario);
+  `find_revocations_recovers_retracted_predecessor_across_lineage_supersession` proves discovery
+  and the `effective_boundary` value but never drives a `classify_under_revocation` verdict.
+  Left both existing tests untouched since they remain valid, independently useful coverage of
+  adjacent properties, rather than repurposing them and losing that coverage.
+- **Alternatives:** extend/rename the two existing tests as the plan suggested (rejected —
+  would have either weakened their existing, still-useful assertions or produced a test doing
+  double duty in a way that obscures which property each assertion is actually pinning); treat
+  the plan's claim as authoritative without direct verification (rejected — the plan itself
+  explicitly warned against this).
+- **Blast radius if wrong:** none — strictly additive; the two pre-existing tests are unchanged
+  and still pass, so no coverage was lost even if this correction turns out to have been overly
+  cautious.
+- **Status:** UNCONFIRMED

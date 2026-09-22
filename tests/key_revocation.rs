@@ -879,6 +879,427 @@ async fn find_revocations_recovers_retracted_predecessor_across_lineage_superses
     );
 }
 
+// ── rev-002 scenarios E/F/G/H: lineage-shaped §7 boundary matrix ────────────
+//
+// Issue-273/279/284/285 + RFC-ACDP-0014 wave, Phase 5. The plan's own
+// text claimed `rev_002_earliest_boundary_across_lineage` "essentially
+// already covers" E and `find_revocations_recovers_retracted_predecessor_across_lineage_supersession`
+// "essentially already covers" F; direct inspection during
+// implementation found both claims too generous — the former exercises
+// a structurally different (widening, not narrowing) lineage with
+// non-fixture timestamps, and the latter proves discovery/boundary
+// correctness but never drives a `classify_under_revocation` verdict —
+// so the four tests below are new, dedicated, fixture-driven coverage
+// rather than reuses. Both existing tests are left untouched; they
+// remain valid, independently useful regression tests of adjacent
+// properties.
+
+/// Scenario E (RFC-ACDP-0014 §7): lineage L1 — R1 (T1 = 2026-05-01,
+/// `key-revocation`) superseded by R2 (T2 = 2026-06-15, also
+/// `key-revocation`, same signer class — a NARROWING supersession；
+/// `check_revocation_supersession` does not gate on direction, only
+/// the consumer-side fold does). A receipt-attested publish at
+/// `created_at_by_scenario.E` (>= T1 but < T2) MUST still fail closed,
+/// because R2's later boundary never narrows the effective window
+/// below T1.
+#[tokio::test]
+async fn rev_002_e_narrowing_supersession_effective_boundary_stays_t1() {
+    use acdp::client::find_revocations;
+
+    let Some(fixture) = rev_002_fixture() else {
+        return;
+    };
+    let revoked_fp = json_str(
+        &fixture,
+        &["input", "body_under_test", "signer_key_fingerprint"],
+    );
+    let receipt_time = json_str(
+        &fixture,
+        &["input", "registry_receipt", "created_at_by_scenario", "E"],
+    );
+
+    let h = LineageServerHarness::start(lifecycle_caps(), false).await;
+
+    let seed = [0xa1u8; 32];
+    let producer = Producer::new_did_key(SigningKey::from_bytes(&seed));
+    let did =
+        acdp::did::key::did_key_from_ed25519(&SigningKey::from_bytes(&seed).verifying_key_bytes());
+    let agent_id = AgentDid::new(did);
+
+    let r1_req = producer
+        .publish_request()
+        .acdp_version("0.3.0")
+        .title("R1: rev-002 scenario E, T1")
+        .context_type(ContextType::KeyRevocation)
+        .visibility(Visibility::Public)
+        .metadata(json!({
+            "revoked_key_fingerprint": revoked_fp,
+            "compromised_since": "2026-05-01T00:00:00.000Z",
+        }))
+        .build()
+        .expect("r1 build");
+    let r1_resp = h
+        .server
+        .publish_verified_did_key(&r1_req, None)
+        .expect("r1 publish");
+    let r1_stored = h
+        .server
+        .store()
+        .get(&r1_resp.ctx_id)
+        .expect("get")
+        .expect("r1 present");
+
+    // R2: same signer class, later (narrower) boundary T2 — permitted
+    // at publish time (RFC-ACDP-0014 §4's supersedes row); the
+    // consumer-side monotonicity fold is what actually matters here.
+    let r2_req = producer
+        .supersede_body(&r1_stored.body)
+        .acdp_version("0.3.0")
+        .title("R2: supersedes R1, narrows to T2")
+        .context_type(ContextType::KeyRevocation)
+        .visibility(Visibility::Public)
+        .metadata(json!({
+            "revoked_key_fingerprint": revoked_fp,
+            "compromised_since": "2026-06-15T00:00:00.000Z",
+        }))
+        .build()
+        .expect("r2 build");
+    h.server
+        .publish_verified_did_key(&r2_req, None)
+        .expect("r2 publish");
+
+    let client = h.client();
+    let mut revs = find_revocations(&client, &h.resolver, &agent_id)
+        .await
+        .expect("find_revocations");
+    assert_eq!(revs.len(), 2);
+    revs.sort_by_key(|r| r.compromised_since);
+    assert_eq!(revs[0].compromised_since, at("2026-05-01T00:00:00.000Z"));
+    assert_eq!(revs[1].compromised_since, at("2026-06-15T00:00:00.000Z"));
+
+    let err = classify_under_revocation(&revs, revoked_fp, Some(at(receipt_time)))
+        .expect_err("scenario E: R2's narrower T2 must not shrink the effective window below T1");
+    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+}
+
+/// Scenario F (RFC-ACDP-0014 §7): identical to scenario E's lineage
+/// L1, but R1 is additionally retracted after R2 supersedes it
+/// (`retraction_for_scenario_F`). Builds on the discovery-recovery
+/// property `find_revocations_recovers_retracted_predecessor_across_lineage_supersession`
+/// already proves (real registry, real retraction, `effective_boundary`
+/// resolves to the earlier T) by driving the fixture's own T1/T2/receipt
+/// values through to a concrete `classify_under_revocation` verdict — a
+/// consumer MUST NOT drop R1 from the fold just because the registry's
+/// *served* status for it is now `retracted` rather than `superseded`.
+#[tokio::test]
+async fn rev_002_f_retracted_predecessor_still_governs_verdict() {
+    use acdp::client::find_revocations;
+    use acdp::types::lifecycle::{LifecycleEvent, LifecycleEventType};
+
+    let Some(fixture) = rev_002_fixture() else {
+        return;
+    };
+    let revoked_fp = json_str(
+        &fixture,
+        &["input", "body_under_test", "signer_key_fingerprint"],
+    );
+    let receipt_time = json_str(
+        &fixture,
+        &["input", "registry_receipt", "created_at_by_scenario", "F"],
+    );
+
+    let h = LineageServerHarness::start(lifecycle_caps(), true).await;
+
+    let seed = [0xa2u8; 32];
+    let producer = Producer::new_did_key(SigningKey::from_bytes(&seed));
+    let did =
+        acdp::did::key::did_key_from_ed25519(&SigningKey::from_bytes(&seed).verifying_key_bytes());
+    let key_id = acdp::did::key::did_key_url(&did).expect("did:key URL");
+    let agent_id = AgentDid::new(did);
+
+    let r1_req = producer
+        .publish_request()
+        .acdp_version("0.3.0")
+        .title("R1: rev-002 scenario F, T1, later retracted")
+        .context_type(ContextType::KeyRevocation)
+        .visibility(Visibility::Public)
+        .metadata(json!({
+            "revoked_key_fingerprint": revoked_fp,
+            "compromised_since": "2026-05-01T00:00:00.000Z",
+        }))
+        .build()
+        .expect("r1 build");
+    let r1_resp = h
+        .server
+        .publish_verified_did_key(&r1_req, None)
+        .expect("r1 publish");
+    let r1_stored = h
+        .server
+        .store()
+        .get(&r1_resp.ctx_id)
+        .expect("get")
+        .expect("r1 present");
+
+    let r2_req = producer
+        .supersede_body(&r1_stored.body)
+        .acdp_version("0.3.0")
+        .title("R2: supersedes R1, narrows to T2")
+        .context_type(ContextType::KeyRevocation)
+        .visibility(Visibility::Public)
+        .metadata(json!({
+            "revoked_key_fingerprint": revoked_fp,
+            "compromised_since": "2026-06-15T00:00:00.000Z",
+        }))
+        .build()
+        .expect("r2 build");
+    h.server
+        .publish_verified_did_key(&r2_req, None)
+        .expect("r2 publish");
+
+    let event = LifecycleEvent::new(
+        "018f6d0a-00f4-4c4d-9e1f-3a5b7c9d1e31",
+        r1_resp.ctx_id.clone(),
+        LifecycleEventType::Retracted,
+        chrono::Utc::now(),
+        agent_id.clone(),
+        Some("R1 retracted after being superseded by R2 (rev-002 scenario F)".into()),
+    )
+    .expect("valid event")
+    .sign_with(SigningKey::from_bytes(&seed), key_id)
+    .expect("signed event");
+    h.server
+        .retract_unverified_for_tests(&event, None)
+        .expect("retract");
+
+    let client = h.client();
+    let mut revs = find_revocations(&client, &h.resolver, &agent_id)
+        .await
+        .expect("find_revocations must recover the retracted predecessor");
+    assert_eq!(revs.len(), 2);
+    revs.sort_by_key(|r| r.compromised_since);
+    assert_eq!(revs[0].compromised_since, at("2026-05-01T00:00:00.000Z"));
+    assert_eq!(revs[1].compromised_since, at("2026-06-15T00:00:00.000Z"));
+
+    let err = classify_under_revocation(&revs, revoked_fp, Some(at(receipt_time))).expect_err(
+        "scenario F: retraction of R1 must not remove it from the fold — the effective \
+         boundary stays T1",
+    );
+    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+}
+
+/// Scenario G (RFC-ACDP-0014 §7): lineage L2 — R1-prime (T1,
+/// `key-revocation`) "superseded" by X, a NON-revocation (`analysis`)
+/// context under the same `agent_id`. This repo's own registry
+/// already rejects such a publish unconditionally at every
+/// `acdp_version` (`check_revocation_supersession` Arm 3, above) — a
+/// protection the fixture itself notes only some registries implement
+/// ("every registry below acdp_version 0.5.0 accepts this publish").
+/// Scenario G exists precisely because RFC-ACDP-0014 §7's consumer-side
+/// defence MUST NOT assume that protection exists on every registry a
+/// context might be discovered through — so this test constructs the
+/// otherwise-unpublishable lineage directly against the store
+/// (`RegistryStore::put`/`mark_superseded`, bypassing
+/// `check_revocation_supersession` entirely) to model a registry that
+/// never closed this gap, then proves real client-side discovery and
+/// the fold still fail closed against it.
+#[tokio::test]
+async fn rev_002_g_non_revocation_supersession_does_not_disarm() {
+    use acdp::client::find_revocations;
+
+    let Some(fixture) = rev_002_fixture() else {
+        return;
+    };
+    let revoked_fp = json_str(
+        &fixture,
+        &["input", "body_under_test", "signer_key_fingerprint"],
+    );
+    let receipt_time = json_str(
+        &fixture,
+        &["input", "registry_receipt", "created_at_by_scenario", "G"],
+    );
+
+    let h = LineageServerHarness::start(lifecycle_caps(), false).await;
+
+    let seed = [0xa3u8; 32];
+    let producer = Producer::new_did_key(SigningKey::from_bytes(&seed));
+    let did =
+        acdp::did::key::did_key_from_ed25519(&SigningKey::from_bytes(&seed).verifying_key_bytes());
+    let agent_id = AgentDid::new(did);
+
+    let r1_prime_ctx_id =
+        CtxId("acdp://registry.example.com/9f1e2d3c-5a6b-4c7d-8e9f-0a1b2c3d4e60".into());
+    let lineage_id = derive_lineage_id(&r1_prime_ctx_id);
+
+    let r1_prime_req = producer
+        .publish_request()
+        .acdp_version("0.3.0")
+        .title("R1-prime: rev-002 scenario G, T1")
+        .context_type(ContextType::KeyRevocation)
+        .visibility(Visibility::Public)
+        .metadata(json!({
+            "revoked_key_fingerprint": revoked_fp,
+            "compromised_since": "2026-05-01T00:00:00.000Z",
+        }))
+        .build()
+        .expect("r1-prime build");
+    let r1_prime_body = Body::from_publish_request(
+        &r1_prime_req,
+        r1_prime_ctx_id.clone(),
+        lineage_id.clone(),
+        "registry.example.com",
+        at("2026-05-02T08:00:00.000Z"),
+    );
+
+    let x_ctx_id = CtxId("acdp://registry.example.com/9f1e2d3c-5a6b-4c7d-8e9f-0a1b2c3d4e61".into());
+    let x_req = producer
+        .supersede_body(&r1_prime_body)
+        .acdp_version("0.3.0")
+        .title("X: a non-revocation superseding R1-prime")
+        .context_type(ContextType::Analysis)
+        .visibility(Visibility::Public)
+        .build()
+        .expect("x build");
+    let x_body = Body::from_publish_request(
+        &x_req,
+        x_ctx_id,
+        lineage_id,
+        "registry.example.com",
+        at("2026-05-10T00:00:00.000Z"),
+    );
+
+    h.server
+        .store()
+        .put(r1_prime_body)
+        .expect("put r1-prime (bypassing check_revocation_supersession)");
+    h.server
+        .store()
+        .put(x_body)
+        .expect("put x (bypassing check_revocation_supersession)");
+    h.server
+        .store()
+        .mark_superseded(&r1_prime_ctx_id)
+        .expect("mark r1-prime superseded");
+
+    let client = h.client();
+    let revs = find_revocations(&client, &h.resolver, &agent_id)
+        .await
+        .expect("find_revocations must recover R1-prime, dropping X");
+    assert_eq!(
+        revs.len(),
+        1,
+        "X is not a key-revocation — it must be dropped by verify_revocation_body's type \
+         check, not silently trusted as a disarming successor"
+    );
+    assert_eq!(revs[0].compromised_since, at("2026-05-01T00:00:00.000Z"));
+    assert_eq!(revs[0].revoked_key_fingerprint, revoked_fp);
+
+    let err = classify_under_revocation(&revs, revoked_fp, Some(at(receipt_time))).expect_err(
+        "scenario G: a non-revocation supersession must not disarm the revocation still \
+         governing the lineage",
+    );
+    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+}
+
+/// Scenario H (RFC-ACDP-0014 §7): lineage L3 — R1-triple-prime (T1,
+/// `key-revocation`) superseded by Y, a WIDENING revocation (T4 =
+/// 2026-04-01, earlier than T1) published under the §10 INTERIM form
+/// `acdp:key-revocation`. Unlike scenario G's X, Y IS itself a
+/// revocation — just spelled the pre-0.3.0 way — so
+/// `check_revocation_supersession` Arm 3 does not reject it
+/// (`is_key_revocation()` treats both forms as equivalent); this
+/// publishes normally, through the real registry, with no store
+/// bypass. The point of this scenario is that the §7 fold MUST count
+/// Y's T4, not disregard it as if it were a disarming non-revocation:
+/// a receipt-attested publish at `created_at_by_scenario.H` (>= T4 but
+/// < T1) MUST fail closed.
+#[tokio::test]
+async fn rev_002_h_interim_form_widening_successor_is_counted() {
+    use acdp::client::find_revocations;
+    use acdp::types::revocation::effective_boundary;
+
+    let Some(fixture) = rev_002_fixture() else {
+        return;
+    };
+    let revoked_fp = json_str(
+        &fixture,
+        &["input", "body_under_test", "signer_key_fingerprint"],
+    );
+    let receipt_time = json_str(
+        &fixture,
+        &["input", "registry_receipt", "created_at_by_scenario", "H"],
+    );
+
+    let h = LineageServerHarness::start(lifecycle_caps(), false).await;
+
+    let seed = [0xa4u8; 32];
+    let producer = Producer::new_did_key(SigningKey::from_bytes(&seed));
+    let did =
+        acdp::did::key::did_key_from_ed25519(&SigningKey::from_bytes(&seed).verifying_key_bytes());
+    let agent_id = AgentDid::new(did);
+
+    let r1_req = producer
+        .publish_request()
+        .acdp_version("0.3.0")
+        .title("R1-triple-prime: rev-002 scenario H, T1")
+        .context_type(ContextType::KeyRevocation)
+        .visibility(Visibility::Public)
+        .metadata(json!({
+            "revoked_key_fingerprint": revoked_fp,
+            "compromised_since": "2026-05-01T00:00:00.000Z",
+        }))
+        .build()
+        .expect("r1-triple-prime build");
+    let r1_resp = h
+        .server
+        .publish_verified_did_key(&r1_req, None)
+        .expect("r1-triple-prime publish");
+    let r1_stored = h
+        .server
+        .store()
+        .get(&r1_resp.ctx_id)
+        .expect("get")
+        .expect("r1-triple-prime present");
+
+    // Y: the §10 interim form, widening the boundary to T4. Arm 3 does
+    // not fire — `is_key_revocation()` treats this custom type as
+    // equivalent to the standard one — so this is a normal, accepted
+    // publish (same signer class as R1-triple-prime).
+    let y_req = producer
+        .supersede_body(&r1_stored.body)
+        .acdp_version("0.3.0")
+        .title("Y: interim-form widening successor")
+        .context_type(ContextType::Custom(
+            ContextType::KEY_REVOCATION_INTERIM.into(),
+        ))
+        .visibility(Visibility::Public)
+        .metadata(json!({
+            "revoked_key_fingerprint": revoked_fp,
+            "compromised_since": "2026-04-01T00:00:00.000Z",
+        }))
+        .build()
+        .expect("y build");
+    h.server
+        .publish_verified_did_key(&y_req, None)
+        .expect("y publish");
+
+    let client = h.client();
+    let revs = find_revocations(&client, &h.resolver, &agent_id)
+        .await
+        .expect("find_revocations must recover both members, interim form included");
+    assert_eq!(revs.len(), 2);
+    assert_eq!(
+        effective_boundary(&revs, revoked_fp),
+        Some(at("2026-04-01T00:00:00.000Z")),
+        "scenario H: Y's interim-typed widening successor must set the effective boundary"
+    );
+
+    let err = classify_under_revocation(&revs, revoked_fp, Some(at(receipt_time))).expect_err(
+        "scenario H: the interim-typed widening successor is itself a revocation and MUST \
+         be counted, not disregarded as a disarming non-revocation",
+    );
+    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+}
+
 // ── §5 pipeline: verify_revocation_body over an offline did:key body ────────
 
 /// A did:key producer CAN issue a producer-signed revocation for some

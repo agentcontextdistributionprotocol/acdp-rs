@@ -39,7 +39,7 @@ newer registry never breaks an older client.
 | `superseded_target` | `SupersededTarget { reason, message }` |
 | *(unknown)* | `Registry(WireError)` |
 
-> This round-trip is exhaustively pinned by the `all_20_wire_codes_round_trip`
+> This round-trip is exhaustively pinned by the `all_26_wire_codes_round_trip`
 > test in `crates/acdp-primitives/src/error.rs`. Adding a new code is a coordinated three-edit change —
 > see [below](#adding-a-new-wire-error-code).
 
@@ -137,7 +137,7 @@ If you contribute a new code (per CONTRIBUTING.md), it's three coordinated edits
 
 1. A new variant in `crates/acdp-primitives/src/error.rs::AcdpError`, with the RFC citation.
 2. A `match` arm in `AcdpError::from_wire_error`.
-3. Extend the `all_20_wire_codes_round_trip` test (and bump its count).
+3. Extend the `all_26_wire_codes_round_trip` test (and bump its count).
 
 Also revisit `is_transient` (is the new code retryable?) and
 `SupersessionReason` (if the code uses a `details.reason` sub-vocabulary).

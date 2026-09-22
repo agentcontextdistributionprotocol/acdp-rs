@@ -202,5 +202,5 @@ fn server_types_reexported() {
     #[allow(unused_imports)]
     use acdp::pagination;
     #[allow(unused_imports)]
-    use acdp::registry::{InMemoryStore, PublishValidator, RegistryServer};
+    use acdp::registry::{InMemoryStore, Proven, PublishValidator, RegistryServer};
 }

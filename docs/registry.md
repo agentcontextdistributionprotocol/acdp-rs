@@ -110,11 +110,16 @@ let outcome = server.commit_proven(proven, None, None)?;
 ```
 
 `Proven` has no public constructor and is not `Clone` — the only way to get
-one is a successful `prove_publish_identity*` call, and it's a move-only,
-one-shot value: `commit_proven` consumes it, so it can't be committed twice.
-`commit_proven` also rejects a `Proven` established against a different
-registry authority, so a "prove against server A, commit on server B" mixup
-fails loudly instead of silently persisting under the wrong authority.
+one is a successful `prove_publish_identity*` call, and it's a move-only
+value consumed by `commit_proven`: one proof commits once, by construction,
+not by a runtime check rejecting a second attempt (the type system makes
+a second attempt inexpressible — there's no second `Proven` to move).
+`commit_proven` also rejects a `Proven` established against a
+differently-configured `RegistryServer`, even one sharing the same
+`authority` string — e.g. proving against an instance with no receipt
+signer configured and committing on one that requires receipts — so a
+"prove against server A, commit on server B" mixup fails loudly instead
+of silently persisting under the wrong configuration.
 
 ## PublishValidator — validation without a server
 

@@ -439,6 +439,17 @@ pub fn validate_data_ref_structural(dr: &DataRef) -> Result<(), AcdpError> {
         _ => {}
     }
 
+    // Root-level content_hash (RFC-ACDP-0002 §6.1) is format-checked here
+    // like every other ContentHash-typed field in this validator (the
+    // body's own, anchors' — see the `ContentHash::parse` call sites
+    // above); nothing downstream (`verify_embedded_hash` never reads this
+    // field at all — see its own doc comment) would otherwise catch a
+    // malformed string, only ever a value that happens to already look
+    // like a `sha256:` digest.
+    if let Some(ch) = &dr.content_hash {
+        ContentHash::parse(ch.as_str())?;
+    }
+
     if let Some(desc) = &dr.description {
         if desc.len() > MAX_DATA_REF_DESCRIPTION_LEN {
             return Err(AcdpError::SchemaViolation(format!(
@@ -576,6 +587,13 @@ fn validate_embedded(emb: &EmbeddedContent) -> Result<(), AcdpError> {
         }
         EmbeddedEncoding::Json => {}
     }
+    // `embedded.content_hash` (RFC-ACDP-0002 §6.3) format-checked the same
+    // way — a malformed value here would otherwise only ever surface as a
+    // `DataRefHashMismatch` from `verify_embedded_hash`'s string compare,
+    // which is a confusing error for what is actually a schema violation.
+    if let Some(ch) = &emb.content_hash {
+        ContentHash::parse(ch.as_str())?;
+    }
     // Decoded size cap
     let decoded = embedded_decoded_bytes(emb)?;
     if decoded.len() > MAX_EMBEDDED_BYTES {
@@ -620,51 +638,47 @@ pub fn compute_embedded_hash(emb: &EmbeddedContent) -> Result<ContentHash, AcdpE
     Ok(ContentHash(format!("sha256:{}", hex::encode(digest))))
 }
 
-/// Verify a [`DataRef`]'s declared content hash(es) against its embedded
-/// payload. Does nothing if the ref has no `embedded`.
+/// Verify a [`DataRef`]'s declared `embedded.content_hash` against its
+/// embedded payload. Does nothing if the ref has no `embedded`, or if
+/// `embedded.content_hash` is absent.
 ///
 /// RFC-ACDP-0002 §6.6 ("Check 8") scopes the publish-time integrity
-/// obligation to `embedded.content_hash`: when present, it MUST match the
-/// SHA-256 of the decoded `embedded.content` bytes. The DataRef-root
-/// `content_hash` (§6.1) carries no obligation for embedded refs — a
-/// registry "MAY additionally verify" it, but MUST NOT reject a publish
-/// merely because both fields are present. This function checks **both
-/// fields when both are present**: that satisfies §6.6's two hard
-/// requirements (verify `embedded.content_hash`; don't reject on
-/// co-presence alone) while also preserving the pre-existing root-hash
-/// check that consumer-side `location`-form fetch verification
-/// (`acdp-client`) depends on — dropping the root check for embedded refs
-/// would silently regress that coverage. A mismatch on *either* field is a
-/// *data-reference-level* integrity failure ([`AcdpError::DataRefHashMismatch`],
-/// wire code `data_ref_hash_mismatch`) — the embedded bytes diverged from a
-/// producer-declared hash, but the body's own `content_hash` / signature are
-/// unaffected. It is NOT the body-level [`AcdpError::HashMismatch`]
-/// (RFC-ACDP-0007 §5, data-ref-007).
+/// obligation to `embedded.content_hash` **only**: when present, it MUST
+/// match the SHA-256 of the decoded `embedded.content` bytes — that is
+/// this function's entire job. The DataRef-root `content_hash` (§6.1)
+/// carries no publish-time obligation for embedded refs; §6.6 explicitly
+/// says a registry "MAY additionally verify" it, but this function
+/// deliberately does not, so as to accept every context whose only
+/// obligation is the required one. Root-checking used to also be
+/// exercised here — reverted (see `CHANGELOG.md`) after it was found to
+/// reject the spec's own canonical `examples/mixed-data-refs/` example
+/// (root and embedded hashes legitimately differ there): a registry
+/// exercising the root-check MAY is spec-permitted, but doing so
+/// unconditionally, with no way to opt out, made this crate reject
+/// spec-conformant publishes that the minimum required check accepts.
+/// Consumers verify the root field after fetching `location`-form data
+/// (§6.5, `acdp-client`) — that check lives entirely there and is
+/// unaffected by this function, which only ever runs for `embedded` refs.
+///
+/// A mismatch is a *data-reference-level* integrity failure
+/// ([`AcdpError::DataRefHashMismatch`], wire code `data_ref_hash_mismatch`)
+/// — the embedded bytes diverged from a producer-declared hash, but the
+/// body's own `content_hash` / signature are unaffected. It is NOT the
+/// body-level [`AcdpError::HashMismatch`] (RFC-ACDP-0007 §5, data-ref-007).
 pub fn verify_embedded_hash(dr: &DataRef) -> Result<(), AcdpError> {
     let Some(emb) = &dr.embedded else {
         return Ok(());
     };
-    if dr.content_hash.is_none() && emb.content_hash.is_none() {
+    let Some(embedded_hash) = &emb.content_hash else {
         return Ok(());
-    }
+    };
     let recomputed = compute_embedded_hash(emb)?;
-    if let Some(embedded_hash) = &emb.content_hash {
-        if &recomputed != embedded_hash {
-            return Err(AcdpError::DataRefHashMismatch(format!(
-                "embedded.content_hash mismatch: declared {}, computed {}",
-                embedded_hash.as_str(),
-                recomputed.as_str()
-            )));
-        }
-    }
-    if let Some(root_hash) = &dr.content_hash {
-        if &recomputed != root_hash {
-            return Err(AcdpError::DataRefHashMismatch(format!(
-                "content_hash mismatch: declared {}, computed {}",
-                root_hash.as_str(),
-                recomputed.as_str()
-            )));
-        }
+    if &recomputed != embedded_hash {
+        return Err(AcdpError::DataRefHashMismatch(format!(
+            "embedded.content_hash mismatch: declared {}, computed {}",
+            embedded_hash.as_str(),
+            recomputed.as_str()
+        )));
     }
     Ok(())
 }
@@ -1151,6 +1165,52 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn data_ref_malformed_root_content_hash_rejected() {
+        let dr = DataRef {
+            ref_type: DataRefType::PrimaryResult,
+            description: None,
+            size_bytes: None,
+            format: None,
+            schema_version: None,
+            content_hash: Some(ContentHash("not-a-content-hash".into())),
+            location: Some(Location::Uri("https://x/y".into())),
+            embedded: None,
+            extensions: serde_json::Map::new(),
+        };
+        let err = validate_data_ref_structural(&dr)
+            .expect_err("a malformed root content_hash must be caught structurally");
+        assert!(
+            matches!(err, AcdpError::SchemaViolation(ref msg) if msg.contains("content_hash")),
+            "expected a SchemaViolation naming content_hash, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn data_ref_malformed_embedded_content_hash_rejected() {
+        let dr = DataRef {
+            ref_type: DataRefType::PrimaryResult,
+            description: None,
+            size_bytes: None,
+            format: None,
+            schema_version: None,
+            content_hash: None,
+            location: None,
+            embedded: Some(EmbeddedContent {
+                encoding: EmbeddedEncoding::Utf8,
+                content: serde_json::Value::String("hello".into()),
+                content_hash: Some(ContentHash("sha256:not-hex".into())),
+            }),
+            extensions: serde_json::Map::new(),
+        };
+        let err = validate_data_ref_structural(&dr)
+            .expect_err("a malformed embedded content_hash must be caught structurally");
+        assert!(
+            matches!(err, AcdpError::SchemaViolation(ref msg) if msg.contains("content_hash")),
+            "expected a SchemaViolation naming content_hash, got {err:?}"
+        );
+    }
+
     // ── DataRef.location URI ─────────────────────────────────────────────────
 
     #[test]
@@ -1322,8 +1382,14 @@ mod tests {
         assert_eq!(h.as_str(), expected);
     }
 
+    /// A root `content_hash` with no `embedded.content_hash` at all has
+    /// nothing for Check 8 to verify (RFC-ACDP-0002 §6.6 scopes the
+    /// obligation to `embedded.content_hash`, which is absent here) —
+    /// `verify_embedded_hash` no longer independently checks the root
+    /// field for embedded refs (see the function's own doc comment), so
+    /// this is accepted regardless of what the root field says.
     #[test]
-    fn verify_embedded_hash_mismatch_detected() {
+    fn verify_embedded_hash_ignores_root_only_content_hash() {
         let emb = embedded_json(json!({"x": 1}));
         let dr = DataRef {
             ref_type: DataRefType::PrimaryResult,
@@ -1336,10 +1402,7 @@ mod tests {
             embedded: Some(emb),
             extensions: serde_json::Map::new(),
         };
-        assert!(matches!(
-            verify_embedded_hash(&dr),
-            Err(AcdpError::DataRefHashMismatch(_))
-        ));
+        verify_embedded_hash(&dr).unwrap();
     }
 
     // ── Metadata ─────────────────────────────────────────────────────────────
@@ -1516,10 +1579,14 @@ mod tests {
         assert!(matches!(err, AcdpError::SchemaViolation(_)));
     }
 
-    /// T2 — Embedded `content_hash` mismatch caught by
-    /// `verify_embedded_hash`.
+    /// T2 (corrected) — despite its original name, this DataRef has no
+    /// `embedded.content_hash` at all (only a mismatching root one), so
+    /// there is nothing for Check 8 to catch — see
+    /// `verify_embedded_hash_ignores_root_only_content_hash` above, which
+    /// covers the identical shape; kept here under its original T2 label
+    /// so that catalog reference doesn't silently disappear.
     #[test]
-    fn embedded_content_hash_mismatch_caught() {
+    fn embedded_content_hash_absent_root_mismatch_not_an_error() {
         use acdp_types::data_ref::DataRefType;
         let dr = DataRef {
             ref_type: DataRefType::PrimaryResult,
@@ -1536,10 +1603,7 @@ mod tests {
             }),
             extensions: serde_json::Map::new(),
         };
-        assert!(matches!(
-            verify_embedded_hash(&dr),
-            Err(AcdpError::DataRefHashMismatch(_))
-        ));
+        verify_embedded_hash(&dr).unwrap();
     }
 
     /// RFC-ACDP-0002 §6.6: a DataRef carrying both root `content_hash` and
@@ -1564,21 +1628,25 @@ mod tests {
         verify_embedded_hash(&dr).unwrap();
     }
 
-    /// RFC-ACDP-0002 §6.6: when root `content_hash` and
-    /// `embedded.content_hash` disagree, the ref MUST be rejected with
-    /// `DataRefHashMismatch` — checking both fields is the natural
-    /// consequence of Check 8, not a new rule.
+    /// RFC-ACDP-0002 §6.6: root `content_hash` and `embedded.content_hash`
+    /// disagreeing is accepted as long as `embedded.content_hash` itself
+    /// is correct — checking the root field for embedded refs is a
+    /// registry MAY, not exercised by `verify_embedded_hash`, and §6.6 is
+    /// explicit that a registry "MUST NOT reject a publish merely because
+    /// a root `content_hash` is present alongside an embedded one." This
+    /// is exactly the shape of the spec's own canonical
+    /// `examples/mixed-data-refs/alert-mixed-data-refs.json` example
+    /// (`data_refs[0]`, per `conformance.rs`'s
+    /// `mixed_data_refs_example_deserializes` test) — a regression here
+    /// previously rejected that spec-conformant example.
     #[test]
-    fn both_content_hashes_disagree_rejected() {
+    fn root_content_hash_disagreement_accepted_when_embedded_correct() {
         use acdp_types::data_ref::DataRefType;
         let emb = embedded_json(json!({"a": 1, "b": 2}));
         let correct_hash = compute_embedded_hash(&emb).unwrap();
         let wrong_hash = ContentHash(
             "sha256:0000000000000000000000000000000000000000000000000000000000000000".into(),
         );
-        // embedded.content_hash is correct, root content_hash disagrees with the
-        // actual decoded bytes — Check 8 passes, but the (still-checked) root
-        // comparison catches the disagreement.
         let dr = DataRef {
             ref_type: DataRefType::PrimaryResult,
             description: None,
@@ -1593,10 +1661,7 @@ mod tests {
             )),
             extensions: serde_json::Map::new(),
         };
-        assert!(matches!(
-            verify_embedded_hash(&dr),
-            Err(AcdpError::DataRefHashMismatch(_))
-        ));
+        verify_embedded_hash(&dr).unwrap();
     }
 
     /// T14 — duplicate audience entries rejected (uniqueItems: true).

@@ -903,6 +903,34 @@ fn fresh_interim_form_publish_rejected_at_0_5_0() {
     );
 }
 
+/// rev-003 Q's positive control, at exactly 0.4.0 — the current default
+/// `ACDP_VERSION` this crate ships with (see `CLAUDE.md`), so this is the
+/// specific version a registry gets by not overriding it at all. Q's own
+/// fixture text is explicit about the whole `[0.3.0, 0.5.0)` band: "a
+/// registry advertising acdp_version in [0.3.0, 0.5.0) MUST NOT reject
+/// this publish." Before this test, that band's boundary was only
+/// exercised as a raw boolean via `key_revocation_gate_truth_table`
+/// (`"0.4.9" -> false` for the §4/§10 gate helpers) — nothing drove an
+/// actual publish through the full facade at 0.4.0 to prove the interim
+/// form is genuinely *accepted*, not merely "the gate function returns
+/// false in isolation." `fresh_interim_form_publish_rejected_at_0_5_0`
+/// above only proves the opposite edge (>= 0.5.0 rejects); this is its
+/// missing sibling for the accepting side, at the version that matters
+/// most because it's the one this crate ships with by default.
+#[test]
+fn fresh_interim_form_publish_accepted_at_0_4_0() {
+    let seed = [69u8; 32];
+    let fp = fingerprint_ed25519(&SigningKey::from_bytes(&[70u8; 32]).verifying_key_bytes());
+    let server =
+        RegistryServer::try_new(InMemoryStore::new(), caps_at("0.4.0"), REGISTRY_AUTHORITY)
+            .expect("server");
+
+    let req = interim_revocation_request(SigningKey::from_bytes(&seed), "key-1", &fp);
+    server.publish_unverified_for_tests(&req).expect(
+        "a 0.4.0 registry (this crate's shipped default) must accept a fresh interim-form publish",
+    );
+}
+
 /// rev-003 R: the positive control, at 0.5.0 specifically — a
 /// key-revocation properly superseding a key-revocation (same signer
 /// class, widening the boundary) is still accepted. Without this, a

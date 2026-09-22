@@ -95,4 +95,68 @@ fn revocation_discovery_futures_are_send() {
     ));
     assert_send(cross.resolve(&ctx_id));
     assert_send(cross.walk_derived_from(&body));
+
+    // Both go through the same `verify_retrieved` → `discover_revocations`
+    // path as the entry points above, but are separate public async fns
+    // (`fetch_report_inner`'s two callers) that a prior sweep of this
+    // regression missed — a `!Send` future here would be just as fatal to
+    // `axum::handler::Handler` compatibility as any of the ones above.
+    assert_send(VerifiedContext::fetch_report_diagnose(
+        &client, &resolver, &ctx_id, &policy,
+    ));
+    let fetcher = acdp::client::HttpsDataRefFetcher::new();
+    assert_send(VerifiedContext::fetch_report_with_fetcher(
+        &client, &resolver, &ctx_id, &policy, &fetcher,
+    ));
+}
+
+/// `RegistryServer::prove_publish_identity` (the did:web path) also holds
+/// a `WebResolver` across DID-resolution `.await` points, same shape as
+/// the consumer-side entry points above. It has never regressed, but
+/// nothing asserted `Send` on it either — this closes that gap so a
+/// future change here would actually be caught. Requires both `client`
+/// (for `WebResolver`) and `server` (for `RegistryServer`), which is why
+/// this lives in the same `#![cfg(feature = "client")]` file behind its
+/// own additional `server` gate rather than a new one.
+#[cfg(feature = "server")]
+#[test]
+fn prove_publish_identity_future_is_send() {
+    use acdp::crypto::SigningKey;
+    use acdp::did::WebResolver;
+    use acdp::producer::Producer;
+    use acdp::registry::{InMemoryStore, RegistryServer};
+    use acdp::types::{AgentDid, CapabilitiesDocument, ContextType, Limits};
+
+    let caps = CapabilitiesDocument {
+        acdp_version: "0.1.0".into(),
+        registry_did: "did:web:registry.example.com".into(),
+        supported_signature_algorithms: vec!["ed25519".into()],
+        supported_did_methods: vec!["did:web".into()],
+        profiles: vec!["acdp-registry-core".into()],
+        limits: Limits {
+            max_payload_bytes: 1_048_576,
+            max_embedded_bytes: 65_536,
+            idempotency_key_ttl_seconds: None,
+            max_publish_per_minute: None,
+        },
+        read_authentication_methods: vec![],
+        anonymous_public_reads: false,
+        supports_idempotency_key: false,
+        extensions: Default::default(),
+    };
+    let server = RegistryServer::new(InMemoryStore::new(), caps, "registry.example.com");
+    let resolver = WebResolver::new();
+
+    let req = Producer::new(
+        SigningKey::from_bytes(&[7u8; 32]),
+        AgentDid::new("did:web:agents.example.com:test"),
+        "did:web:agents.example.com:test#key-1",
+    )
+    .publish_request()
+    .title("t")
+    .context_type(ContextType::DataSnapshot)
+    .build()
+    .unwrap();
+
+    assert_send(server.prove_publish_identity(&req, &resolver));
 }

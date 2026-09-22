@@ -328,6 +328,28 @@ fn is_well_formed_version(v: &str) -> bool {
             .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
 }
 
+/// Parses `major` and `minor` out of a string already confirmed
+/// well-formed by [`is_well_formed_version`] (exactly 3 non-empty,
+/// all-ASCII-digit, dot-separated parts) — so `split('.')` is guaranteed
+/// to yield exactly 3 numeric-looking parts here, and the only way
+/// `str::parse::<u64>` can fail on one is genuine overflow (a digit
+/// string too large for `u64`, e.g. 20+ digits), never a format issue —
+/// `is_well_formed_version` already ruled that out. Saturates to
+/// `u64::MAX` on overflow rather than treating it as "unparseable":
+/// every caller only compares this against small thresholds like `3` or
+/// `5`, so an astronomically large major/minor component must still
+/// compare as astronomically large, not fall through to whatever
+/// fail-closed default the caller uses for a *format* failure — those
+/// are different failure modes and conflating them previously made
+/// `advertises_0_5_0_or_higher` answer `false` for a version that was, if
+/// anything, unambiguously `>= 0.5.0`.
+fn parse_major_minor_saturating(v: &str) -> (u64, u64) {
+    let mut parts = v.split('.');
+    let major = parts.next().unwrap_or("0").parse().unwrap_or(u64::MAX);
+    let minor = parts.next().unwrap_or("0").parse().unwrap_or(u64::MAX);
+    (major, minor)
+}
+
 /// RFC-ACDP-0014 §4 version gate, fail-closed.
 ///
 /// A malformed `acdp_version` must turn the gate ON, never OFF. This
@@ -354,15 +376,7 @@ pub fn key_revocation_gate_applies(acdp_version: &str) -> bool {
     if !is_well_formed_version(acdp_version) {
         return true;
     }
-    let mut parts = acdp_version.split('.');
-    let major: u64 = match parts.next().and_then(|p| p.parse().ok()) {
-        Some(m) => m,
-        None => return true,
-    };
-    let minor: u64 = match parts.next().and_then(|p| p.parse().ok()) {
-        Some(m) => m,
-        None => return true,
-    };
+    let (major, minor) = parse_major_minor_saturating(acdp_version);
     major > 0 || minor >= 3
 }
 
@@ -386,15 +400,7 @@ fn key_revocation_retirement_gate_applies(acdp_version: &str) -> bool {
     if !is_well_formed_version(acdp_version) {
         return true;
     }
-    let mut parts = acdp_version.split('.');
-    let major: u64 = match parts.next().and_then(|p| p.parse().ok()) {
-        Some(m) => m,
-        None => return true,
-    };
-    let minor: u64 = match parts.next().and_then(|p| p.parse().ok()) {
-        Some(m) => m,
-        None => return true,
-    };
+    let (major, minor) = parse_major_minor_saturating(acdp_version);
     major > 0 || minor >= 5
 }
 
@@ -418,15 +424,7 @@ fn advertises_0_5_0_or_higher(acdp_version: &str) -> bool {
     if !is_well_formed_version(acdp_version) {
         return false;
     }
-    let mut parts = acdp_version.split('.');
-    let major: u64 = match parts.next().and_then(|p| p.parse().ok()) {
-        Some(m) => m,
-        None => return false,
-    };
-    let minor: u64 = match parts.next().and_then(|p| p.parse().ok()) {
-        Some(m) => m,
-        None => return false,
-    };
+    let (major, minor) = parse_major_minor_saturating(acdp_version);
     major > 0 || minor >= 5
 }
 
@@ -1282,6 +1280,63 @@ mod tests {
                 *expected,
                 "input {input:?} should gate {}",
                 if *expected { "ON" } else { "OFF" }
+            );
+        }
+    }
+
+    /// Same shape as `key_revocation_gate_truth_table`, but exercising
+    /// the two 0.5.0-threshold gates side by side on the same inputs —
+    /// including edge cases the original 4-assertion coverage for these
+    /// two functions never reached: leading zeros, a pre-release/build
+    /// suffix on an otherwise well-formed patch segment, a 4th version
+    /// component, and a major segment too large to fit in `u64` (only
+    /// `is_well_formed_version`'s narrower "all ASCII digits" check gates
+    /// entry to the numeric comparison — it says nothing about range).
+    /// Each row states both gates' expected outcome, since they
+    /// deliberately disagree on malformed input (opposite fail-closed
+    /// polarity — see both functions' doc comments) and this table is
+    /// exactly where that disagreement should be visible at a glance.
+    #[test]
+    fn zero_five_zero_threshold_gates_truth_table() {
+        let cases: &[(&str, bool, bool)] = &[
+            // Well-formed, on both sides of the 0.5.0 line.
+            ("0.5.0", true, true),
+            ("0.4.9", false, false),
+            ("1.0.0", true, true),
+            ("0.5.1", true, true),
+            // Leading zeros: "0.05.0"/"000.005.000" are still all-ASCII-digit
+            // per-segment, so `is_well_formed_version` accepts them, and
+            // `str::parse::<u64>` reads leading zeros as ordinary decimal
+            // (05 == 5) — both gates must read these exactly like "0.5.0".
+            ("0.05.0", true, true),
+            ("000.005.000", true, true),
+            // A pre-release/build suffix on the patch segment is not an
+            // all-ASCII-digit segment, so the whole string is malformed —
+            // both gates must disagree with their usual opposite polarity.
+            ("0.5.0-alpha", true, false),
+            // A 4th component makes `split('.')` yield 4 parts, failing
+            // the `parts.len() == 3` check — malformed, same as above.
+            ("0.5.0.1", true, false),
+            // A major segment with far more digits than `u64` can hold.
+            // This is *not* the same failure mode as a non-digit segment:
+            // it is syntactically well-formed (all ASCII digits) and
+            // numerically unambiguous — enormously larger than any real
+            // threshold in this file — so it must NOT fall through to
+            // either gate's "malformed" fallback. Both read it as
+            // unambiguously >= 0.5.0.
+            ("99999999999999999999.0.0", true, true),
+        ];
+        for (input, retirement_expected, advertises_expected) in cases {
+            assert_eq!(
+                key_revocation_retirement_gate_applies(input),
+                *retirement_expected,
+                "§10 retirement gate: input {input:?} should gate {}",
+                if *retirement_expected { "ON" } else { "OFF" }
+            );
+            assert_eq!(
+                advertises_0_5_0_or_higher(input),
+                *advertises_expected,
+                "advertises_0_5_0_or_higher: input {input:?} should be {advertises_expected}"
             );
         }
     }

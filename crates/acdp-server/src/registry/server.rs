@@ -28,6 +28,15 @@
 //! only steps 1–6 (skipping DID resolution + signature verification)
 //! and are intentionally **not** RFC-conformant; use only in tests
 //! where DID resolution would require a live network or mock server.
+//!
+//! [`RegistryServer::publish_pinned_verified_in_tenant_with_outcome`] (and
+//! [`RegistryServer::prove_publish_identity_pinned`]) are a third,
+//! distinct, RFC-conformant category — not a laxer variant of the
+//! `_unverified_for_tests` pair above. Steps 1–6 run here as usual; steps
+//! 7–8 (signature verification against a resolved key) are the *caller's*
+//! responsibility, already done before this method is reached, against an
+//! operator-pinned key rather than a live-resolved DID document. See that
+//! method's own doc comment for the full trust argument.
 
 use crate::registry::rate_limit::{NoopRateLimiter, RateLimiter};
 use crate::registry::store::RegistryStore;
@@ -956,7 +965,16 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
             })),
             _ => None,
         };
-        let minted_expected = minter.is_some();
+        // Keyed on the COMMITTING server's own config, not on whether
+        // `minter` happened to build — `minter` also depends on
+        // `producer_key_fingerprint`, which a caller external to this
+        // method controls (see `commit_proven`'s own additional guard for
+        // the specific case this protects against: a `Proven` established
+        // against a different, differently-configured `RegistryServer`
+        // instance that merely shares this one's `authority` string). A
+        // receipts-advertising registry with no fingerprint to mint from
+        // must still fail the §7 check below, not silently skip it.
+        let minted_expected = self.receipt_signer.is_some();
 
         // RFC-ACDP-0014 §4 `supersedes`-row admission hook. `Some` iff
         // the version gate is on AND this request actually carries a
@@ -1066,6 +1084,25 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
                  wrong registry",
                 proven.authority, self.authority
             )));
+        }
+        // The authority string alone is not a full registry-instance
+        // identity check: two `RegistryServer`s can legitimately (or by
+        // misconfiguration) share an `authority` while differing in
+        // `receipt_signer`. Catch the dangerous direction explicitly —
+        // proving against a signer-less instance, then committing on a
+        // receipts-advertising one — here, with a message that names the
+        // actual mistake, rather than relying solely on the generic §7
+        // belt-and-braces check inside `commit_via_store` to catch it.
+        if self.receipt_signer.is_some() && proven.fingerprint.is_none() {
+            return Err(AcdpError::RegistryInternal(
+                "commit_proven: this registry requires receipts (a receipt_signer is \
+                 configured) but the Proven carries no producer key fingerprint — it was \
+                 most likely established via a different RegistryServer instance (one with \
+                 no receipt_signer configured) that happens to share this one's authority; \
+                 refusing to commit rather than silently persist a receipt-less context \
+                 (RFC-ACDP-0010 §7: no degraded mode)"
+                    .into(),
+            ));
         }
         debug_assert_eq!(
             proven.recomputed_hash, proven.req.content_hash,
@@ -3041,6 +3078,61 @@ mod tests {
                 );
             }
             other => panic!("expected RegistryInternal authority-mismatch, got {other:?}"),
+        }
+    }
+
+    /// The `authority` string alone is not a full registry-instance
+    /// identity check: two `RegistryServer`s can share an `authority`
+    /// while genuinely differing in configuration. `commit_proven` must
+    /// refuse — not silently persist a receipt-less context — when a
+    /// `Proven` minted on a signer-less instance is committed on a
+    /// receipts-advertising instance that merely happens to share the
+    /// first one's authority (RFC-ACDP-0010 §7: no degraded mode). Before
+    /// the fix this reproduces, the commit succeeded and the persisted
+    /// context carried `registry_receipt: None` on a registry whose own
+    /// capabilities advertise receipts.
+    #[test]
+    fn commit_proven_refuses_cross_instance_same_authority_signer_mismatch() {
+        let mut c = caps();
+        c.supported_did_methods.push("did:key".into());
+        c.registry_did = "did:web:shared.example.com".into();
+        c.acdp_version = "0.2.0".into();
+        let signer_less =
+            RegistryServer::new(InMemoryStore::new(), c.clone(), "shared.example.com");
+        let receipts_enabled = RegistryServer::new(InMemoryStore::new(), c, "shared.example.com")
+            .with_receipt_signer(
+                acdp_types::receipt::ReceiptSigner::new(
+                    SigningKey::from_bytes(&[0x44u8; 32]),
+                    "did:web:shared.example.com",
+                    "did:web:shared.example.com#receipt-key-1",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let req = did_key_request();
+        let proven = signer_less
+            .prove_publish_identity_did_key(&req)
+            .expect("prove must succeed against the signer-less instance");
+        assert!(
+            proven.key_fingerprint().is_none(),
+            "a signer-less instance must not compute a fingerprint"
+        );
+
+        let err = receipts_enabled
+            .commit_proven(proven, None, None)
+            .expect_err(
+                "commit_proven must refuse a fingerprint-less Proven on a receipts-advertising \
+                 registry, even though the authority string matches",
+            );
+        match err {
+            AcdpError::RegistryInternal(msg) => {
+                assert!(
+                    msg.contains("no producer key fingerprint"),
+                    "error should name the actual mistake, got: {msg}"
+                );
+            }
+            other => panic!("expected RegistryInternal fingerprint-mismatch, got {other:?}"),
         }
     }
 

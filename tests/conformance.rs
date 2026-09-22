@@ -1189,6 +1189,41 @@ fn mixed_data_refs_example_deserializes() {
     }
 }
 
+/// Deserializing this example is not the same as it being *publishable* —
+/// this drives every `data_refs[]` entry through the actual registry-side
+/// Check 8 (`verify_embedded_hash`), the check a real publish runs. Found
+/// via `/reconcile`-adjacent review: `data_refs[0]` here carries a root
+/// `content_hash` that does not match its `embedded` content (no
+/// `embedded.content_hash` of its own — nothing for Check 8 to verify per
+/// RFC-ACDP-0002 §6.6) — a registry that independently validated the root
+/// field for embedded refs anyway (as this crate did before this test was
+/// added) rejects the spec's own canonical example. `data_refs[3]` covers
+/// the co-presence case for real (both fields set, and equal); `[1]`/`[2]`
+/// are location-form and have no `embedded` at all, so Check 8 doesn't
+/// apply to them regardless.
+#[test]
+fn mixed_data_refs_example_passes_registry_check_8() {
+    let Some(root) = spec_root() else {
+        return;
+    };
+    let path = root.join("examples/mixed-data-refs/alert-mixed-data-refs.json");
+    if fixture_missing(&path) {
+        return;
+    }
+    let v = read_json(&path);
+    let full: acdp::types::body::FullContext = serde_json::from_value(v).unwrap();
+    let data_refs = &full.body.data_refs;
+    assert_eq!(
+        data_refs.len(),
+        4,
+        "example shape drifted — update this test's data_refs[] commentary too"
+    );
+    for (i, dr) in data_refs.iter().enumerate() {
+        acdp::validation::verify_embedded_hash(dr)
+            .unwrap_or_else(|e| panic!("data_refs[{i}] must pass Check 8, got {e:?}"));
+    }
+}
+
 /// T9 — every `can-*` canonicalization vector that publishes an
 /// `expected.canonical_form` and `expected.sha256_hex` (or
 /// `expected.content_hash_field_value`) MUST hash-match exactly.
@@ -2733,7 +2768,7 @@ fn dk_fixtures_drive_validate_publish_request() {
     // inside validate_agent_did, the first did:key-sensitive check in
     // validate_publish_request.
     let p = dir.join("dk-001-wrong-multicodec-prefix.json");
-    if p.exists() {
+    if !fixture_missing(&p) {
         let v = read_json(&p);
         let agent_id = v["input"]["agent_id"].as_str().unwrap();
         let key_id = v["input"]["signature_key_id"].as_str().unwrap();
@@ -2748,7 +2783,7 @@ fn dk_fixtures_drive_validate_publish_request() {
     // same call path, each case's agent_id used as both DID and key_id
     // DID-portion so validate_agent_did is what actually fires first.
     let p = dir.join("dk-002-malformed-multibase.json");
-    if p.exists() {
+    if !fixture_missing(&p) {
         let v = read_json(&p);
         for case in v["input"]["cases"].as_array().unwrap() {
             let agent_id = case["agent_id"].as_str().unwrap();
@@ -2766,7 +2801,7 @@ fn dk_fixtures_drive_validate_publish_request() {
     // DIFFERENT key (step 1) — fires inside validate_did_key_key_id_form,
     // reached only after validate_agent_did accepts the (valid) agent_id.
     let p = dir.join("dk-004-fragment-mismatch.json");
-    if p.exists() {
+    if !fixture_missing(&p) {
         let v = read_json(&p);
         let agent_id = v["input"]["agent_id"].as_str().unwrap();
         let key_id = v["input"]["signature_key_id"].as_str().unwrap();

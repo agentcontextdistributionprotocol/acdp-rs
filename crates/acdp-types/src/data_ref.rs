@@ -543,6 +543,40 @@ mod tests {
         assert!(parsed.is_err(), "unknown field must be rejected");
     }
 
+    /// RFC-ACDP-0002 §6.3 — `EmbeddedContent.content_hash` (issue #284)
+    /// round-trips both ways: omitted entirely when `None` (not emitted
+    /// as `null` — load-bearing for JCS canonicalization, per this
+    /// repo's `Option::is_none` skip-serialization convention), and
+    /// present verbatim when `Some`.
+    #[test]
+    fn embedded_content_hash_round_trips() {
+        let without = EmbeddedContent {
+            encoding: EmbeddedEncoding::Utf8,
+            content: json!("hello"),
+            content_hash: None,
+        };
+        let v = serde_json::to_value(&without).unwrap();
+        assert!(
+            v.as_object().unwrap().get("content_hash").is_none(),
+            "None content_hash must be omitted, not emitted as null; got {v:?}"
+        );
+        let back: EmbeddedContent = serde_json::from_value(v).unwrap();
+        assert_eq!(back.content_hash, None);
+
+        let hash = ContentHash(
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000".into(),
+        );
+        let with = EmbeddedContent {
+            encoding: EmbeddedEncoding::Utf8,
+            content: json!("hello"),
+            content_hash: Some(hash.clone()),
+        };
+        let v = serde_json::to_value(&with).unwrap();
+        assert_eq!(v["content_hash"], json!(hash.as_str()));
+        let back: EmbeddedContent = serde_json::from_value(v).unwrap();
+        assert_eq!(back.content_hash, Some(hash));
+    }
+
     #[test]
     fn constructed_uri_ref_round_trips_through_json() {
         let dr = DataRef::uri(DataRefType::PrimaryResult, "https://x/d");

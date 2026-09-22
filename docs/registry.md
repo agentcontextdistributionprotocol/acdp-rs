@@ -76,12 +76,45 @@ let server = RegistryServer::new(
 | `with_rate_limiter(limiter)` | Swap in a `RateLimiter` (default `NoopRateLimiter`). |
 | `publish_verified(req, idem, resolver)` | The conformant publish path (above). |
 | `publish_verified_in_tenant(req, idem, resolver, tenant)` | Same, binding the row to a tenant id for multi-tenant stores. |
+| `prove_publish_identity(req, resolver)` / `_did_key(req)` / `_pinned(req, key, alg)` | Split half of the publish pipeline — steps 1–8 (identity) without persisting. Pairs with `commit_proven`. |
+| `commit_proven(proven, idem, tenant)` | The other half — the atomic store commit, given a `Proven`. |
 | `retrieve` / `retrieve_body` / `lineage` / `current` | Read paths (RFC-ACDP-0004). |
 | `search` | Discovery (RFC-ACDP-0005). |
 | `store()` / `capabilities()` | Accessors. |
 
 The publish pipeline is `async` (it resolves DIDs over the network, requiring
 the `client` feature transitively); the read paths are synchronous.
+
+### Splitting prove from commit
+
+`publish_verified_in_tenant_with_outcome` (and its `_did_key`/`_pinned`
+siblings) are each a one-line composition of a `prove_publish_identity*` call
+followed by `commit_proven` — the split is published, not just an internal
+implementation detail, for callers that need to know identity was
+cryptographically established *before* doing something else that shouldn't
+happen for an unverified request (e.g. arming a rate-limit charge that's only
+correct to apply once the producer is known to control the signing key) but
+that also shouldn't happen twice if persistence is later skipped:
+
+```rust,no_run
+# #[cfg(all(feature = "server", feature = "client"))]
+# async fn run(
+#     server: &acdp::registry::RegistryServer<acdp::registry::InMemoryStore>,
+#     resolver: &acdp::did::WebResolver,
+#     req: &acdp::PublishRequest,
+# ) -> Result<(), acdp::AcdpError> {
+let proven = server.prove_publish_identity(req, resolver).await?;
+// ... identity is now established; safe to arm a side effect here ...
+let outcome = server.commit_proven(proven, None, None)?;
+# let _ = outcome; Ok(()) }
+```
+
+`Proven` has no public constructor and is not `Clone` — the only way to get
+one is a successful `prove_publish_identity*` call, and it's a move-only,
+one-shot value: `commit_proven` consumes it, so it can't be committed twice.
+`commit_proven` also rejects a `Proven` established against a different
+registry authority, so a "prove against server A, commit on server B" mixup
+fails loudly instead of silently persisting under the wrong authority.
 
 ## PublishValidator — validation without a server
 

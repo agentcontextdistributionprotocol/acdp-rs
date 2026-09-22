@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- *(server)* split `RegistryServer`'s publish pipeline into a `prove_publish_identity*` /
+  `commit_proven` pair, alongside the existing composed entry points
+  ([#273](https://github.com/agentcontextdistributionprotocol/acdp-rs/issues/273)).
+  `prove_publish_identity` (did:web), `prove_publish_identity_did_key`, and
+  `prove_publish_identity_pinned` each run RFC-ACDP-0003 §2.1 steps 1-8 (plus the
+  RFC-ACDP-0014 §5 step 2 self-revocation check, where applicable) and return an opaque
+  `Proven<'a>` — proof that a request's identity was cryptographically established —
+  without persisting anything. `commit_proven(proven, idempotency_key, tenant)` completes
+  the publish via the same atomic store commit the existing entry points already use.
+  `Proven` has no public constructor and is not `Clone`: the only way to produce one is a
+  successful `prove_publish_identity*` call, and it is a move-only, one-shot value, so a
+  proof can't be committed twice. `commit_proven` also rejects a `Proven` established
+  against a different registry authority. This lets a caller (e.g. a rate-limit charge
+  that should only ever apply once identity is genuinely established) gate a side effect
+  strictly between proof and commit, without duplicating the verification pipeline by
+  hand — `publish_verified_in_tenant_with_outcome` and its `_did_key`/`_pinned` siblings
+  are now one-line compositions of `prove_*` + `commit_proven`, unchanged in behavior.
+  Purely additive.
+
 ### Changed
 
 - **[BREAKING] `acdp-types`'s `EmbeddedContent` gained a new field, `content_hash`, and

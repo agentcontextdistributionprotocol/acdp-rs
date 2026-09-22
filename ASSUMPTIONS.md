@@ -832,3 +832,33 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   layer only (logic itself remains validator-unit-tested either way), and is straightforward to
   close later with more facade tests; nothing here weakens an existing assertion.
 - **Status:** UNCONFIRMED
+
+## Phase 8 (issues-273-279-284-285-rfc0014-wave) — added a `recomputed_hash()` accessor not named in the plan's public API list
+- **Plan:** plans/issues-273-279-284-285-rfc0014-wave.md, Phase 8
+- **Assumed:** the plan's Files section lists `recomputed_hash: ContentHash` as a private
+  field on `Proven<'a>` and names exactly three accessors (`agent_id()`, `key_fingerprint()`,
+  `request()`) — no fourth accessor for the hash.
+- **Chose:** added `pub fn recomputed_hash(&self) -> &ContentHash` anyway. Built as specified
+  first (field present, no accessor) and hit a real `-D warnings` failure:
+  `#[derive(Debug)]` does not suppress `dead_code` for a field rustc considers otherwise
+  unread (confirmed directly — `cargo build -p acdp-server --all-features` emitted "field
+  `recomputed_hash` is never read ... `Proven` has a derived impl for the trait `Debug`, but
+  this is intentionally ignored during dead code analysis"), so the field-with-no-consumer
+  shape as literally specified does not compile clean under this repo's required lint gate.
+  The plan's own resolved Open Question #4 explicitly declines to thread the real value
+  through `commit_via_store`/the `RegistryStore` trait this phase (a materially bigger,
+  cross-repo-relevant change to `PublishCommit`'s shape) — so the smallest fix consistent
+  with that decision is exposing the field the same way the other three are exposed, rather
+  than leaving it unused or suppressing the lint.
+- **Alternatives:** `#[allow(dead_code)]` on the field (rejected — hides a real question about
+  whether the field belongs at all, for a codebase with no other `allow(dead_code)`
+  precedent found in this crate); drop the field entirely, keeping only what's consumed today
+  (rejected — the plan explicitly wants `Proven` to carry the real recomputed hash rather
+  than relying on a downstream re-fabrication, per the same Open Question #4 discussion; a
+  caller holding only a `Proven`, not the original request, has no other way to learn the
+  verified hash).
+- **Blast radius if wrong:** trivial — an unused-but-harmless public getter; removing it
+  later is not a breaking removal concern worth blocking on (it would be breaking in the
+  strict semver sense, but this crate hasn't shipped `Proven` yet at all, so there is no
+  external caller to break by adjusting the surface before the first release that includes it).
+- **Status:** UNCONFIRMED

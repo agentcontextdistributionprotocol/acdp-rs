@@ -410,8 +410,15 @@ pub enum AcdpError {
     Http(String),
 }
 
-/// Sub-reason for [`AcdpError::SupersededTarget`]. Mirrors the
-/// `details.reason` values defined by `acdp-error.schema.json`.
+/// Sub-reason for [`AcdpError::SupersededTarget`]. Starts from the
+/// `details.reason` values enumerated by `acdp-error.schema.json`'s
+/// `superseded_target` description (`not_found`, `lineage_mismatch`,
+/// `version_mismatch`, `already_superseded`,
+/// `cross_registry_supersession_unsupported`) and adds typed reasons this
+/// library recognizes beyond what that enum currently lists
+/// (`LineageWalkFailed`, `RevocationTypeMismatch`) — it is a superset, not
+/// a mirror. `#[non_exhaustive]` plus the `Other` catch-all below is what
+/// keeps a schema addition from being a breaking change here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 #[serde(rename_all = "snake_case")]
@@ -724,6 +731,36 @@ mod tests {
         match AcdpError::from_wire_error(w) {
             AcdpError::SupersededTarget { reason, .. } => {
                 assert_eq!(reason, SupersessionReason::LineageWalkFailed);
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    /// RFC-ACDP-0014 §4 — `revocation_type_mismatch` reason round-trips via
+    /// `WireError`, same shape as `lineage_walk_failed_reason_roundtrip`
+    /// above. This is also a direct serde round-trip of the
+    /// `SupersessionReason` variant itself (`to_value`/`from_value`), not
+    /// just an assertion on the value `from_wire_error` produces.
+    #[test]
+    fn revocation_type_mismatch_reason_roundtrip() {
+        assert_eq!(
+            serde_json::to_value(SupersessionReason::RevocationTypeMismatch).unwrap(),
+            json!("revocation_type_mismatch")
+        );
+        assert_eq!(
+            serde_json::from_value::<SupersessionReason>(json!("revocation_type_mismatch"))
+                .unwrap(),
+            SupersessionReason::RevocationTypeMismatch
+        );
+
+        let w = wire(
+            "superseded_target",
+            "non-revocation context cannot supersede a key-revocation target",
+            Some(json!({"reason": "revocation_type_mismatch"})),
+        );
+        match AcdpError::from_wire_error(w) {
+            AcdpError::SupersededTarget { reason, .. } => {
+                assert_eq!(reason, SupersessionReason::RevocationTypeMismatch);
             }
             other => panic!("got {other:?}"),
         }

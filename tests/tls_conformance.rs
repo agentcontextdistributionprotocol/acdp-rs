@@ -694,11 +694,17 @@ async fn fetch_report_records_embedded_hash_failure() {
     let did = tls.did();
     let key_id = format!("{did}#key-1");
 
-    // Bad embedded ref: the producer claims `content_hash = sha256:0000…`
-    // but the actual UTF-8 payload is "hello" (which has a different
-    // SHA-256). The DataRef itself is structurally valid (one of
-    // location/embedded, embedded.content is a string for utf8
-    // encoding) — only the declared hash is wrong.
+    // Bad embedded ref: the producer claims `embedded.content_hash =
+    // sha256:0000…` but the actual UTF-8 payload is "hello" (which has a
+    // different SHA-256). The DataRef itself is structurally valid (one
+    // of location/embedded, embedded.content is a string for utf8
+    // encoding) — only the declared hash is wrong. The root-level
+    // `content_hash` is deliberately also set to an unrelated
+    // all-zeros placeholder that disagrees with the embedded hash too —
+    // RFC-ACDP-0002 §6.6 Check 8 scopes the publish-time (and here,
+    // consumer-side) integrity obligation to `embedded.content_hash`
+    // only, so this proves the root field is correctly ignored rather
+    // than being the (also wrong) thing that trips the mismatch.
     let bad_data_ref = DataRef {
         ref_type: DataRefType::PrimaryResult,
         description: None,
@@ -710,7 +716,7 @@ async fn fetch_report_records_embedded_hash_failure() {
         embedded: Some(EmbeddedContent {
             encoding: EmbeddedEncoding::Utf8,
             content: serde_json::Value::String("hello".into()),
-            content_hash: None,
+            content_hash: Some(ContentHash(format!("sha256:{}", "0".repeat(64)))),
         }),
         extensions: serde_json::Map::new(),
     };
@@ -818,6 +824,156 @@ async fn fetch_report_records_embedded_hash_failure() {
         report.data_ref_external[0].is_none(),
         "no fetcher supplied — external slot MUST be None, got {:?}",
         report.data_ref_external[0]
+    );
+}
+
+/// RFC-ACDP-0002 §6.6 Check 8, consumer side — a `DataRef` that carries
+/// a root-level `content_hash` disagreeing with the embedded payload,
+/// but no `embedded.content_hash` at all, MUST be accepted
+/// (`data_ref_embedded[i] == Ok(_)`). The root field carries no
+/// publish-time-or-later integrity obligation when data is embedded;
+/// only `embedded.content_hash` does. This is the direct consumer-side
+/// counterpart to `fetch_report_records_embedded_hash_failure` above —
+/// same fixture shape, opposite (accepting) outcome, and it is what
+/// actually exercises the widened gate `fetch_report`/
+/// `fetch_report_with_fetcher`/`fetch_report_diagnose` all share
+/// (`dr.content_hash.is_some() || emb.content_hash.is_some()`) all the
+/// way through to a real `VerifiedContext::fetch_report` call, not just
+/// the underlying `acdp_validation::verify_embedded_hash` unit tests.
+#[tokio::test]
+async fn fetch_report_accepts_root_only_hash_disagreement() {
+    use acdp::client::{RegistryClient, VerificationPolicy, VerifiedContext};
+    use acdp::crypto::{compute_content_hash, derive_lineage_id};
+    use acdp::types::body::{Body, FullContext, RegistryState, Signature};
+    use acdp::types::data_ref::{DataRef, DataRefType, EmbeddedContent, EmbeddedEncoding};
+    use acdp::types::primitives::{CtxId, Status};
+    use acdp::types::ContentHash;
+    use chrono::{TimeZone, Utc};
+    use wiremock::matchers::{method, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let key = SigningKey::generate();
+    let pub_bytes = key.verifying_key_bytes();
+
+    let tls = TlsTestServer::start_with(|port| {
+        let did = format!("did:web:localhost%3A{port}");
+        did_doc_router(ed25519_did_doc(&did, "key-1", &pub_bytes))
+    })
+    .await;
+    let did = tls.did();
+    let key_id = format!("{did}#key-1");
+
+    // Root `content_hash` is an all-zeros placeholder that does NOT
+    // match the "hello" embedded payload. `embedded.content_hash` is
+    // absent entirely — nothing is declared for Check 8 to verify.
+    let root_only_data_ref = DataRef {
+        ref_type: DataRefType::PrimaryResult,
+        description: None,
+        size_bytes: None,
+        format: None,
+        schema_version: None,
+        content_hash: Some(ContentHash(format!("sha256:{}", "0".repeat(64)))),
+        location: None,
+        embedded: Some(EmbeddedContent {
+            encoding: EmbeddedEncoding::Utf8,
+            content: serde_json::Value::String("hello".into()),
+            content_hash: None,
+        }),
+        extensions: serde_json::Map::new(),
+    };
+
+    let ctx_id = CtxId("acdp://registry.example.com/12345678-1234-4321-8123-123456781235".into());
+    let lineage_id = derive_lineage_id(&ctx_id);
+    let created_at = Utc.with_ymd_and_hms(2026, 5, 11, 0, 0, 0).unwrap();
+
+    // Producer cannot use `RequestBuilder` here because builder runs
+    // `validate_data_ref`, which would reject the disagreeing root hash
+    // at build time (schema-time validation is stricter than
+    // registry-publish-time-or-later Check 8 — that gap is intentional
+    // and out of scope for this fixture).
+    let mut body = Body {
+        ctx_id: ctx_id.clone(),
+        lineage_id,
+        origin_registry: "registry.example.com".into(),
+        created_at,
+        content_hash: ContentHash(String::new()),
+        signature: Signature {
+            algorithm: "ed25519".into(),
+            key_id: key_id.clone(),
+            value: String::new(),
+        },
+        version: 1,
+        supersedes: None,
+        agent_id: AgentDid::new(did.clone()),
+        contributors: vec![],
+        title: "root-only-hash-disagreement fixture".into(),
+        context_type: ContextType::DataSnapshot,
+        data_refs: vec![root_only_data_ref],
+        derived_from: vec![],
+        visibility: Visibility::Public,
+        audience: None,
+        acdp_version: None,
+        description: None,
+        summary: None,
+        tags: None,
+        domain: None,
+        expires_at: None,
+        data_period: None,
+        metadata: None,
+        schema_uri: None,
+        anchors: None,
+        extensions: Default::default(),
+    };
+
+    let body_value = serde_json::to_value(&body).expect("serialize body for hashing");
+    let computed = compute_content_hash(&body_value).expect("compute body hash");
+    body.content_hash = computed.clone();
+    body.signature.value = key.sign_content_hash(&computed);
+
+    let full_value = serde_json::to_value(FullContext {
+        body,
+        registry_state: RegistryState {
+            status: Status::Active,
+            lifecycle_events: None,
+            extensions: Default::default(),
+        },
+        registry_receipt: None,
+        lineage_head_receipt: None,
+        log_inclusion: None,
+        extensions: Default::default(),
+    })
+    .expect("serialize full context");
+
+    let registry = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/contexts/.+"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(full_value))
+        .mount(&registry)
+        .await;
+    let client = RegistryClient::with_test_transport(&registry.uri()).expect("client");
+    let resolver = test_resolver(&tls.root_cert_pem);
+
+    let (_verified, report) =
+        VerifiedContext::fetch_report(&client, &resolver, &ctx_id, &VerificationPolicy::default())
+            .await
+            .expect("fetch_report MUST succeed — root-only hash disagreement is not an error");
+
+    assert!(report.schema_ok, "structural schema MUST pass");
+    assert!(report.body_hash_ok, "body-level content_hash MUST verify");
+    assert!(report.signature_ok, "producer signature MUST verify");
+
+    assert_eq!(report.data_ref_embedded.len(), 1);
+    assert!(
+        report.data_ref_embedded[0].is_ok(),
+        "root-only content_hash disagreement MUST NOT surface as Err \
+         (RFC-ACDP-0002 §6.6 Check 8 scopes the obligation to \
+         embedded.content_hash only); got {:?}",
+        report.data_ref_embedded[0]
+    );
+    assert_eq!(
+        report.data_ref_embedded[0].as_ref().ok().copied(),
+        Some(5),
+        "the Ok payload MUST be the decoded embedded byte length (\"hello\".len())"
     );
 }
 

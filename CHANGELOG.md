@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- *(validation)* Check 8 (RFC-ACDP-0002 §6.6) no longer rejects a `DataRef` whose
+  root-level `content_hash` (§6.1) disagrees with the embedded payload when
+  `embedded.content_hash` is absent. `verify_embedded_hash` (`crates/acdp-validation`)
+  was changed in 0.14.0 to also recompute and compare the root field whenever it was
+  present, alongside the new `embedded.content_hash` field — described there as
+  "kept intentionally, not dropped." That was itself a bug: §6.6's publish-time
+  integrity obligation is scoped to `embedded.content_hash` only; the root field is,
+  at most, something a registry *MAY* additionally verify, never something it *MUST*
+  reject a publish over. The 0.14.0 code rejected the spec's own canonical
+  `examples/mixed-data-refs/alert-mixed-data-refs.json` fixture (its first `DataRef`
+  carries a placeholder root hash with no `embedded.content_hash` at all) — a
+  spec-conformant shape, incorrectly rejected. `verify_embedded_hash` now checks only
+  `embedded.content_hash`; a root-only `content_hash`, present or absent, agreeing or
+  not, is never consulted. Covered by
+  `tests/conformance.rs::mixed_data_refs_example_passes_registry_check_8` (driven
+  against the real spec fixture) and by
+  `tests/tls_conformance.rs::fetch_report_accepts_root_only_hash_disagreement` on the
+  consumer (`VerifiedContext::fetch_report`) side.
+
+- *(server)* `commit_proven` no longer accepts a `Proven` that was established against a
+  *different* `RegistryServer` instance which merely happens to share the committing
+  registry's `authority` string. `Proven`'s existing authority check
+  (`crates/acdp-server/src/registry/server.rs`) is a string comparison, not a full
+  registry-instance identity check, so two differently-configured `RegistryServer`s
+  serving the same authority (e.g. one with no `receipt_signer` configured, one with
+  one) could previously cross a `Proven` from the signer-less instance into
+  `commit_proven` on the receipts-advertising one, silently persisting a context with no
+  receipt — a violation of RFC-ACDP-0010 §7's "no degraded mode" guarantee.
+  `commit_via_store`'s receipt-guard trigger is now keyed on the *committing* server's
+  own `receipt_signer` rather than on whether a `minter` happened to build for this
+  particular `Proven`, and `commit_proven` additionally refuses up front when the
+  committing registry requires receipts but the `Proven` carries no producer key
+  fingerprint. Covered by
+  `commit_proven_refuses_cross_instance_same_authority_signer_mismatch`.
+
+- *(server)* the key-revocation and 0.5.0-threshold version gates
+  (`key_revocation_gate_applies`, `key_revocation_retirement_gate_applies`,
+  `advertises_0_5_0_or_higher` in `crates/acdp-server/src/registry/validator.rs`) no
+  longer treat a syntactically well-formed but numerically overflowing
+  `acdp_version` major/minor component (e.g. `"99999999999999999999.0.0"`) as
+  malformed. `str::parse::<u64>()` fails on overflow the same way it fails on a
+  non-digit string, but the two are different failure modes for a fail-closed gate: an
+  absurdly large *well-formed* version should still compare as "at least as new as the
+  threshold," not fall through to the malformed-input branch. A shared
+  `parse_major_minor_saturating` helper now saturates to `u64::MAX` on overflow instead
+  of discarding the value. Covered by `zero_five_zero_threshold_gates_truth_table`.
+
+- *(client)* `tests/send_futures.rs`'s regression guard for #279 was itself incomplete:
+  it asserted `Send` for nine of the affected entry points but missed
+  `VerifiedContext::fetch_report_diagnose` and `VerifiedContext::fetch_report_with_fetcher`,
+  which go through the same `discover_revocations` code path as the nine already covered
+  (`fetch_report_inner`'s two other callers). The underlying 0.14.0 fix already covered
+  these two correctly — only the regression test's coverage was short — but a future
+  change reintroducing the bug on just these two paths would have gone undetected. Both
+  are now asserted alongside the original nine.
+
 ## [0.14.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.13.2...acdp-v0.14.0) - 2026-09-22
 
 ### Added

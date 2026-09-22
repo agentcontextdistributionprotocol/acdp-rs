@@ -220,9 +220,10 @@ impl DataRefFetcher for HttpsDataRefFetcher {
 ///
 /// Behavior:
 /// - **Embedded ref:** returns the decoded bytes via
-///   [`acdp_validation::embedded_decoded_bytes`]. If the ref also
-///   declares a `content_hash`, [`acdp_validation::verify_embedded_hash`]
-///   has already verified it at validation time; this function
+///   [`acdp_validation::embedded_decoded_bytes`]. If the ref declares
+///   either (or both) of the root `content_hash` or `embedded.content_hash`
+///   (RFC-ACDP-0002 §6.3/§6.6), [`acdp_validation::verify_embedded_hash`]
+///   has already verified them at validation time; this function
 ///   re-verifies as a defense-in-depth check.
 /// - **URI ref:** delegates to `fetcher` and recomputes SHA-256 over the
 ///   returned bytes, checking against `dr.content_hash` when present.
@@ -236,7 +237,7 @@ pub async fn fetch_and_verify_data_ref(
 ) -> Result<Vec<u8>, AcdpError> {
     if let Some(emb) = &dr.embedded {
         let bytes = acdp_validation::embedded_decoded_bytes(emb)?;
-        if dr.content_hash.is_some() {
+        if dr.content_hash.is_some() || emb.content_hash.is_some() {
             acdp_validation::verify_embedded_hash(dr)?;
         }
         return Ok(bytes);
@@ -368,6 +369,7 @@ mod tests {
             embedded: Some(EmbeddedContent {
                 encoding: EmbeddedEncoding::Base64,
                 content: serde_json::json!(encoded),
+                content_hash: None,
             }),
             extensions: serde_json::Map::new(),
         };

@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **[BREAKING] `acdp-types`'s `EmbeddedContent` gained a new field, `content_hash`, and
+  `acdp-validation`'s Check-8 publish-time integrity check now verifies it** ([#284](https://github.com/agentcontextdistributionprotocol/acdp-rs/issues/284)).
+  RFC-ACDP-0002 §6.3/§6.6 (spec commit `16211e6`) codify a DataRef-embedded payload's own
+  `content_hash` member, distinct from the DataRef-root `content_hash` (§6.1) — a DataRef MAY
+  carry both over the same decoded bytes. `verify_embedded_hash` (`crates/acdp-validation`)
+  previously read only the root field even for embedded refs, which was actually a bug: it meant
+  the SDK could not model or verify §6.6's real Check-8 obligation at all. It now checks both
+  fields when both are present — the embedded field (the spec's new, primary obligation) and the
+  pre-existing root field (kept intentionally, not dropped, since §6.6 only makes the root check
+  optional for embedded refs, never forbidden, and this repo's own consumer-side `location`-form
+  fetch verification already depends on that root-check code path). A mismatch on either field is
+  `AcdpError::DataRefHashMismatch`. `EmbeddedContent` is a plain `pub struct` (not
+  `#[non_exhaustive]`), so this field addition breaks any external `EmbeddedContent { encoding,
+  content }` struct-literal construction — callers must add `content_hash: None`/`Some(..)`.
+
+- **[BREAKING] did:key resolver faults surfaced by `acdp-validation` no longer downgrade to
+  `schema_violation`** ([#285](https://github.com/agentcontextdistributionprotocol/acdp-rs/issues/285)).
+  `validate_did_key_key_id_form` and `validate_agent_did` previously wrapped every did:key
+  resolver error (RFC-ACDP-0001 §5.11.1 steps 1-4) in `AcdpError::SchemaViolation`. The spec
+  (commit `16211e6`) settles that `key_resolution_failed` is the REQUIRED code for these faults;
+  `schema_violation` is only a MAY-level tolerance for a registry's own stricter grammar, and only
+  for specific steps (`dk-002`'s `alternative_applies_to_cases: [1, 2]`), never a blanket
+  requirement. Both functions now propagate the resolver's own `AcdpError::KeyResolution`
+  directly. Listed as breaking because it changes the concrete error variant/wire code a caller
+  observes for a case that was previously rejected, even though the request is still rejected
+  either way.
+
 ## [0.13.2](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.13.1...acdp-v0.13.2) - 2026-09-13
 
 ### Added

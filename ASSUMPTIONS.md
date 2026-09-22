@@ -661,3 +661,67 @@
 - **Status:** CONFIRMED (2026-09-06/07) — see DECISIONS.md. Resolved this session: Fable
   decided 0.10.0 for the bindings (matching the crate family's cascade-computed bump from
   PR #227's break), and PR #230 implemented it.
+
+## Phase 1 (issues-273-279-284-285-rfc0014-wave) — CHANGELOG.md entry: correction
+**RETRACTED.** The original entry here (skip the hand-edit, claiming only `chore: release`
+commits touch `CHANGELOG.md`) was factually wrong — caught by Phase 1's verifier, which ran
+`git log --pretty=format:"%h %s" -- CHANGELOG.md` and found 17 non-release commits hand-writing
+`## [Unreleased]` entries in the same commit as breaking/notable code changes (e.g. `0f9425b
+feat(server)!: ...`, `0fe9b77 feat(primitives): ...`). My original `git log` check was too
+shallow (likely filtered to too-recent history) and I didn't verify the claim carefully enough
+before acting on it. Fixed: added a proper `### Changed` / `[BREAKING]` entry to
+`CHANGELOG.md`'s `## [Unreleased]` section covering both Phase 1 (#284) and Phase 2 (#285),
+matching `0f9425b`'s style. No lasting blast radius — caught before commit.
+- **Status:** CONFIRMED (self-corrected same session, before any commit)
+
+## Phase 1 — verified.rs gate widened beyond the plan's named files
+- **Plan:** plans/issues-273-279-284-285-rfc0014-wave.md, Phase 1
+- **Assumed:** the plan named `acdp-client/src/verified.rs:1467,1600` as recompile-only
+  (unconditional `verify_embedded_hash(dr)` calls needing no logic change).
+- **Chose:** on inspection, both sites were actually gated by
+  `if let (Some(emb), Some(_)) = (&dr.embedded, &dr.content_hash)` — only firing
+  `verify_embedded_hash` when the *root* hash was present, silently skipping the
+  embedded-only case that is Check 8's primary (RFC-required) obligation. Widened the gate to
+  `dr.content_hash.is_some() || emb.content_hash.is_some()` at both sites, matching the fix
+  already made in `acdp-client/src/data_ref.rs`.
+- **Alternatives:** leave as the plan described (rejected — would ship Phase 1 with a real,
+  newly-relevant gap in `VerifiedContext::fetch_report`/its sibling, undermining the phase's
+  own purpose).
+- **Blast radius if wrong:** low — strictly additive verification (more cases now get
+  checked, previously-passing cases are unaffected); reversible by narrowing the condition
+  back in one commit.
+- **Status:** UNCONFIRMED
+
+## Phase 1 — cargo-semver-checks environment mismatch, fell back to manual review
+- **Plan:** plans/issues-273-279-284-285-rfc0014-wave.md, Phase 1, acceptance criterion 8
+- **Assumed:** `cargo semver-checks -p acdp-types` would run and confirm the breaking flag.
+- **Chose:** it failed with `unsupported rustdoc format v60 (supported: v53, v55, v56)` — a
+  local nightly-toolchain/tool-version mismatch, not a code issue. Used the acceptance
+  criterion's own explicit "(or manual review)" fallback: `EmbeddedContent` is a plain
+  `pub struct` (not `#[non_exhaustive]`) with public fields; adding a field to it breaks any
+  existing external `EmbeddedContent { encoding, content }` struct-literal construction
+  (`E0063` missing field) — confirmed necessary in this very crate, where every
+  construction site needed a `content_hash: None`/`Some(...)` addition to keep compiling.
+  This is unambiguously a breaking change.
+- **Alternatives:** install a matching nightly toolchain to unblock the tool (deferred — pure
+  environment yak-shaving, not blocking, and `release-plz.yml`'s CI-hosted semver-checks run
+  is the actually-blocking gate at release time, on a controlled toolchain).
+- **Blast radius if wrong:** none on correctness (the breaking classification is independently
+  certain); only affects whether local tooling can auto-confirm it pre-release.
+- **Status:** UNCONFIRMED
+
+## Phase 2 (issues-273-279-284-285-rfc0014-wave) — pub-009 assertion widened beyond the plan's named files
+- **Plan:** plans/issues-273-279-284-285-rfc0014-wave.md, Phase 2
+- **Assumed:** the plan's Files section named only the two functions and their call sites as
+  needing changes, plus new dk-driven tests to add.
+- **Chose:** found `did_web_enforcement_fixtures`'s existing "pub-009" assertion block
+  (tests/conformance.rs) directly exercised `validate_did_key_key_id_form` with a fragment
+  mismatch and asserted the old `SchemaViolation` behavior — updated it to assert
+  `KeyResolution`, matching the actual (correct, spec-required) new behavior.
+- **Alternatives:** leave it (rejected — it would fail as soon as the fix landed, an
+  immediate self-inflicted regression the plan's own acceptance criteria would have caught
+  at `cargo test` time regardless, just later and with less context than fixing it here).
+- **Blast radius if wrong:** none — this only tightens an existing assertion to match the
+  behavior the phase's own acceptance criteria require; the test would fail loudly if the
+  reasoning were wrong.
+- **Status:** UNCONFIRMED

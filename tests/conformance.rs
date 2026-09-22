@@ -399,6 +399,14 @@ fn data_ref_conformance_fixtures() {
         if name.starts_with("data-ref-008") {
             continue;
         }
+        // data-ref-007 — embedded content_hash mismatch, tested separately
+        // by data_ref_007_embedded_hash_mismatch_surfaced_as_data_ref_hash_mismatch
+        // with an error-*variant*-specific assertion; the generic `is_err()`
+        // check below would pass vacuously on a schema_violation too (the
+        // exact false-pass this fixture's own `description` warns about).
+        if name.starts_with("data-ref-007") {
+            continue;
+        }
         // data-ref-ssrf-* — consumer fetch-time SSRF refusal, not
         // structural validation (tested by data_ref_ssrf_conformance_fixtures).
         if name.starts_with("data-ref-ssrf-") {
@@ -777,6 +785,11 @@ fn did_web_enforcement_fixtures() {
 
     // did:key key_id with a non-key fragment is structurally invalid:
     // the did:key document's only verification method is the key itself.
+    // #285 / RFC-ACDP-0001 §5.11.1 step 1: this is a did:key *resolver*
+    // fault (fragment ≠ method-specific identifier), so it MUST surface as
+    // `key_resolution_failed`, not `schema_violation` — the spec's
+    // `schema_violation` alternative is a MAY-level tolerance the SDK
+    // doesn't take (see `validate_did_key_key_id_form`).
     let p = Producer::new(
         SigningKey::from_bytes(&[0u8; 32]),
         AgentDid::new("did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp"),
@@ -789,8 +802,9 @@ fn did_web_enforcement_fixtures() {
         .build()
         .unwrap_err();
     assert!(
-        matches!(err, acdp::AcdpError::SchemaViolation(_)),
-        "pub-009 (0.2): did:key key_id fragment MUST equal the key itself"
+        matches!(err, acdp::AcdpError::KeyResolution(_)),
+        "pub-009 (0.2): did:key key_id fragment MUST equal the key itself, \
+         and MUST be reported as key_resolution_failed (#285), got {err:?}"
     );
 
     // pub-010: did:key contributor accepted
@@ -1760,6 +1774,45 @@ async fn data_ref_008_external_hash_mismatch_surfaced_as_data_ref_hash_mismatch(
     }
 }
 
+/// data-ref-007 — an EMBEDDED `content_hash` mismatch (RFC-ACDP-0002 §6.3/
+/// §6.6 "Check 8") is surfaced as [`acdp::AcdpError::DataRefHashMismatch`]
+/// (wire code `data_ref_hash_mismatch`), specifically — not merely "any
+/// `Err`". The fixture's own `description` warns that an implementation
+/// missing the `embedded.content_hash` member would fail to *deserialize*
+/// this fixture and reject it with `schema_violation`, which a harness
+/// asserting only "was it rejected?" would count as a false pass without
+/// ever reaching Check 8. This test closes exactly that gap: it asserts
+/// deserialization succeeds (proving the field is modeled) and that
+/// validation fails with the specific expected variant.
+#[test]
+fn data_ref_007_embedded_hash_mismatch_surfaced_as_data_ref_hash_mismatch() {
+    let Some(root) = spec_root() else { return };
+    let path = root.join("schemas/conformance/data-ref-007-embedded-hash-mismatch.json");
+    if fixture_missing(&path) {
+        return;
+    }
+    let fixture = read_json(&path);
+    let dr_value = fixture
+        .pointer("/input/data_ref_under_test")
+        .expect("fixture must expose data_ref_under_test");
+
+    let dr: acdp::types::DataRef = serde_json::from_value(dr_value.clone())
+        .expect("data-ref-007: embedded.content_hash MUST be modeled — a deserialize failure here is a conformance failure, not a pass");
+
+    let err = acdp::validation::validate_data_ref(&dr)
+        .expect_err("data-ref-007: mismatched embedded.content_hash MUST be rejected");
+    assert!(
+        matches!(err, acdp::AcdpError::DataRefHashMismatch(_)),
+        "data-ref-007: expected DataRefHashMismatch (checklist_step 8), got {err:?}"
+    );
+
+    let expected_code = fixture["expected"]["error_code"].as_str().unwrap_or("");
+    assert_eq!(
+        expected_code, "data_ref_hash_mismatch",
+        "data-ref-007: fixture's own expected.error_code drifted"
+    );
+}
+
 /// BUG-07 — `acdp-context.schema.json` is `additionalProperties: true`.
 /// An unknown top-level field in a retrieval envelope MUST be preserved
 /// in `FullContext.extensions` and survive a serialize round-trip, so a
@@ -2642,6 +2695,86 @@ fn dk_fixtures_did_key_rejections() {
                 "dk-003: capability gate must emit key_resolution_failed, got {err:?}"
             );
         }
+    }
+}
+
+/// dk-001/002/004, driven through the actual `acdp-validation` entry point
+/// (`validate_publish_request`, via `RequestBuilder::build`) rather than
+/// calling `acdp_did::key::resolve_did_key*` directly as
+/// `dk_fixtures_did_key_rejections` does above. #285: `validate_agent_did`
+/// and `validate_did_key_key_id_form` MUST propagate the resolver's own
+/// `AcdpError::KeyResolution` for every one of these cases, never
+/// downgrade to `AcdpError::SchemaViolation` — this is new coverage: prior
+/// to this fix, nothing exercised these two functions with a did:key
+/// resolver fault.
+#[test]
+fn dk_fixtures_drive_validate_publish_request() {
+    use acdp::crypto::SigningKey;
+    use acdp::producer::Producer;
+    use acdp::types::{AgentDid, ContextType};
+
+    let Some(root) = spec_root() else { return };
+    let dir = root.join("schemas/conformance");
+
+    let build_err = |agent_id: &str, key_id: &str| -> acdp::AcdpError {
+        Producer::new(
+            SigningKey::from_bytes(&[0u8; 32]),
+            AgentDid::new(agent_id),
+            key_id,
+        )
+        .publish_request()
+        .title("t")
+        .context_type(ContextType::DataSnapshot)
+        .build()
+        .expect_err("malformed did:key input MUST be rejected")
+    };
+
+    // dk-001: agent_id carries an unsupported multicodec (step 3) — fires
+    // inside validate_agent_did, the first did:key-sensitive check in
+    // validate_publish_request.
+    let p = dir.join("dk-001-wrong-multicodec-prefix.json");
+    if p.exists() {
+        let v = read_json(&p);
+        let agent_id = v["input"]["agent_id"].as_str().unwrap();
+        let key_id = v["input"]["signature_key_id"].as_str().unwrap();
+        let err = build_err(agent_id, key_id);
+        assert!(
+            matches!(err, acdp::AcdpError::KeyResolution(_)),
+            "dk-001 via validate_publish_request: got {err:?}"
+        );
+    }
+
+    // dk-002: three malformed-multibase agent_id cases (steps 2 and 3) —
+    // same call path, each case's agent_id used as both DID and key_id
+    // DID-portion so validate_agent_did is what actually fires first.
+    let p = dir.join("dk-002-malformed-multibase.json");
+    if p.exists() {
+        let v = read_json(&p);
+        for case in v["input"]["cases"].as_array().unwrap() {
+            let agent_id = case["agent_id"].as_str().unwrap();
+            let key_id = format!("{agent_id}#{}", agent_id.trim_start_matches("did:key:"));
+            let err = build_err(agent_id, &key_id);
+            assert!(
+                matches!(err, acdp::AcdpError::KeyResolution(_)),
+                "dk-002 case '{}' via validate_publish_request: got {err:?}",
+                case["case"]
+            );
+        }
+    }
+
+    // dk-004: agent_id is well-formed; signature.key_id's fragment names a
+    // DIFFERENT key (step 1) — fires inside validate_did_key_key_id_form,
+    // reached only after validate_agent_did accepts the (valid) agent_id.
+    let p = dir.join("dk-004-fragment-mismatch.json");
+    if p.exists() {
+        let v = read_json(&p);
+        let agent_id = v["input"]["agent_id"].as_str().unwrap();
+        let key_id = v["input"]["signature_key_id"].as_str().unwrap();
+        let err = build_err(agent_id, key_id);
+        assert!(
+            matches!(err, acdp::AcdpError::KeyResolution(_)),
+            "dk-004 via validate_publish_request: got {err:?}"
+        );
     }
 }
 

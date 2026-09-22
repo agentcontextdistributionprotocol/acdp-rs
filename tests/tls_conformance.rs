@@ -710,6 +710,7 @@ async fn fetch_report_records_embedded_hash_failure() {
         embedded: Some(EmbeddedContent {
             encoding: EmbeddedEncoding::Utf8,
             content: serde_json::Value::String("hello".into()),
+            content_hash: None,
         }),
         extensions: serde_json::Map::new(),
     };

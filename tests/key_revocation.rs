@@ -1355,7 +1355,7 @@ async fn rev_002_h_interim_form_widening_successor_is_counted() {
 /// be rejected by the §10 retirement gate (rev-003 Q), which is exactly
 /// the point — this body predates that gate, and retrieval must not
 /// retroactively apply it.
-async fn rev_004_seed_interim_body() -> (LineageServerHarness, CtxId, LineageId, AgentDid) {
+async fn rev_004_seed_interim_body() -> (LineageServerHarness, CtxId, LineageId, AgentDid, Body) {
     let caps = CapabilitiesDocument {
         acdp_version: "0.5.0".into(),
         ..lifecycle_caps()
@@ -1395,17 +1395,20 @@ async fn rev_004_seed_interim_body() -> (LineageServerHarness, CtxId, LineageId,
     );
     h.server
         .store()
-        .put(body)
+        .put(body.clone())
         .expect("seed the pre-existing interim-form body");
 
-    (h, ctx_id, lineage_id, agent_id)
+    (h, ctx_id, lineage_id, agent_id, body)
 }
 
 /// rev-004 A: direct retrieval succeeds, unchanged — same type
-/// (`acdp:key-revocation`, not rewritten or rejected), same content_hash.
+/// (`acdp:key-revocation`, not rewritten or rejected), same content_hash,
+/// same signature, and `acdp_version` still `0.2.0` (what the producer's
+/// registry advertised at ORIGINAL publish time — the fixture's own
+/// point is that this field is never rewritten on registry upgrade).
 #[tokio::test]
 async fn rev_004_a_direct_retrieval_succeeds_unchanged() {
-    let (h, ctx_id, _lineage_id, _agent_id) = rev_004_seed_interim_body().await;
+    let (h, ctx_id, _lineage_id, _agent_id, seeded) = rev_004_seed_interim_body().await;
     let client = h.client();
 
     let ctx = client
@@ -1418,6 +1421,14 @@ async fn rev_004_a_direct_retrieval_succeeds_unchanged() {
         "the stored type must not be rewritten to the standard form"
     );
     assert_eq!(ctx.body.ctx_id, ctx_id);
+    assert_eq!(ctx.body.content_hash, seeded.content_hash);
+    assert_eq!(ctx.body.signature, seeded.signature);
+    assert_eq!(
+        ctx.body.acdp_version.as_deref(),
+        Some("0.2.0"),
+        "the body's own acdp_version field must stay what it was published under, \
+         regardless of what the serving registry advertises today"
+    );
 }
 
 /// rev-004 B: discoverable via search on its actual type string, not
@@ -1427,7 +1438,7 @@ async fn rev_004_a_direct_retrieval_succeeds_unchanged() {
 /// publications.
 #[tokio::test]
 async fn rev_004_b_discoverable_via_search_on_its_actual_type() {
-    let (h, ctx_id, _lineage_id, agent_id) = rev_004_seed_interim_body().await;
+    let (h, ctx_id, _lineage_id, agent_id, _seeded) = rev_004_seed_interim_body().await;
     let client = h.client();
 
     let params = acdp::types::SearchParamsBuilder::new()
@@ -1448,7 +1459,7 @@ async fn rev_004_b_discoverable_via_search_on_its_actual_type() {
 /// walk actually returns that member in the first place.
 #[tokio::test]
 async fn rev_004_c_included_in_lineage_walk() {
-    let (h, ctx_id, lineage_id, _agent_id) = rev_004_seed_interim_body().await;
+    let (h, ctx_id, lineage_id, _agent_id, _seeded) = rev_004_seed_interim_body().await;
     let client = h.client();
 
     let members = client

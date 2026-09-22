@@ -721,3 +721,44 @@ small, safe, low-blast-radius fixes (both re-verified: full workspace suite gree
 `--no-default-features` green, fmt/clippy clean on both feature sets, acdp-server lib
 133 → 134 tests). No code follow-up needed before the next `/ship`. ASSUMPTIONS.md
 entries for all 8 original items marked `CONFIRMED (2026-09-22)`.
+
+## 2026-09-22 — PR #283 merged, v0.14.0 released (issues-273-279-284-285-rfc0014-wave, Phase 7 closed)
+
+Explicit user authorization: "Go ahead and merge #283 and release." This was the one
+deliberately-held, genuinely irreversible action in the whole plan — public package
+publication to crates.io/PyPI/npm.
+
+**What was found and fixed along the way, not just executed:**
+
+1. PR #283's CI checks were sitting in GitHub's `action_required` state — a bot-authored
+   PR has its workflow runs held for manual approval rather than actually running. Approved
+   all 4 held runs before treating anything as green; a naive merge on the PR's apparent
+   "no checks reported" state would have skipped real verification entirely.
+2. `cargo-semver-checks (advisory)` — red on both prior PRs this run (#292, #293) for
+   expected reasons — passed clean here, since the PR's breaking-change list matches
+   exactly what Phases 1/4/8 of this plan shipped (no unexpected extra breakage).
+3. The npm SDK-bindings publish genuinely, partially failed on its first attempt: 3 of 4
+   platform packages (`acdp-darwin-x64`/`-darwin-arm64`/`-linux-x64-gnu`) published, but
+   `acdp-linux-arm64-gnu` hit a transient `IDENTITY_TOKEN_READ_ERROR` and the job aborted
+   before reaching it — while the root loader package had already published at 0.14.0,
+   referencing all 4 platforms as `optionalDependencies`. This would have broken
+   `npm install` on linux/arm64 (a version that doesn't exist can't resolve as an optional
+   dependency the way an incompatible-platform skip can). Confirmed real (not propagation
+   lag) by re-querying the npm registry API directly until each package's own `versions`
+   map settled, rather than trusting a single read or the local `npm view` cache.
+4. Before retrying, read `@napi-rs/cli`'s actual `pre-publish` source in
+   `bindings/acdp-node/node_modules/@napi-rs/cli/dist/cli.js` to confirm its `execSync('npm
+   publish', ...)` call site only swallows "You cannot publish over the previously published
+   versions" and rethrows everything else — establishing that `gh run rerun --failed` was
+   actually safe (idempotent for the 3 already-published packages) rather than assumed safe.
+   The rerun published the missing package cleanly; skipped the other 3 as expected.
+5. Final state independently verified against all 3 registries directly (crates.io API,
+   PyPI API, npm registry API) rather than inferred from CI going green: 13/13 crates at
+   0.14.0, 5/5 npm packages at 0.14.0, PyPI at 0.14.0.
+
+**Disposition:** merged and released. Phase 7 (and the whole
+`issues-273-279-284-285-rfc0014-wave` plan) marked `Status: DONE` in
+`plans/issues-273-279-284-285-rfc0014-wave.md` and `plans/PROGRESS.md`. No code change
+resulted from this entry (it's a release-process finding, not a code one) — noted here so
+a future release isn't surprised by the same `action_required`/OIDC-flake/propagation-lag
+shape if it recurs.

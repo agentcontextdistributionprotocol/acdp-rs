@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-primitives-v0.13.2...acdp-primitives-v0.14.0) - 2026-09-22
+
+### Added
+
+- *(server)* [**breaking**] enforce RFC-ACDP-0014 §4/§10 registry-side 0.5.0 amendments ([#290](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/290))
+
 ## [0.13.2](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-primitives-v0.13.1...acdp-primitives-v0.13.2) - 2026-09-13
 
 ### Added

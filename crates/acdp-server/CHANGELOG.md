@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-server-v0.13.2...acdp-server-v0.14.0) - 2026-09-22
+
+### Added
+
+- *(server)* split publish pipeline into prove_publish_identity* + commit_proven ([#273](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/273)) ([#292](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/292))
+- *(server)* [**breaking**] enforce RFC-ACDP-0014 §4/§10 registry-side 0.5.0 amendments ([#290](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/290))
+- *(server)* add outcome-preserving publish entry points
+- *(server)* return the publish commit outcome from commit_via_store
+
+### Fixed
+
+- *(server)* actually unhide the pinned twin, and correct the same claim in the source
+- *(server)* restore doc(hidden) parity, back the receipt claim, correct three false statements
+
+### Other
+
+- *(server)* drop redundant Proven::recomputed_hash() accessor, add malformed-version test ([#293](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/293))
+- RFC-ACDP-0014 rev-002/003/004 conformance tests, spec pin bump to 9deb7e7 ([#291](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/291))
+- *(server)* fix a broken intra-doc link and state which entry points have twins
+- release v0.13.2
+
 ## [0.13.2](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-server-v0.13.1...acdp-server-v0.13.2) - 2026-09-13
 
 ### Other

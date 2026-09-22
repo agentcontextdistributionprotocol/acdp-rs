@@ -28,14 +28,14 @@
 
 mod common;
 
-use acdp::crypto::{fingerprint_ed25519, SigningKey};
+use acdp::crypto::{derive_lineage_id, fingerprint_ed25519, SigningKey};
 use acdp::did::WebResolver;
 use acdp::error::{AcdpError, SupersessionReason};
 use acdp::producer::Producer;
-use acdp::registry::{InMemoryStore, PublishCommitOutcome, RegistryServer};
+use acdp::registry::{InMemoryStore, PublishCommitOutcome, RegistryServer, RegistryStore as _};
 use acdp::types::capabilities::Limits;
 use acdp::types::{
-    AgentDid, CapabilitiesDocument, ContextType, CtxId, PublishRequest, Status, Visibility,
+    AgentDid, Body, CapabilitiesDocument, ContextType, CtxId, PublishRequest, Status, Visibility,
 };
 use axum::{routing::get, Json, Router};
 use common::TlsTestServer;
@@ -737,6 +737,213 @@ fn revocation_superseded_by_non_revocation_rejected_under_malformed_acdp_version
     assert!(
         matches!(err, AcdpError::SchemaViolation(_)),
         "expected SchemaViolation (arm 3), got {err:?}"
+    );
+}
+
+// ── RFC-ACDP-0014 §4/§10 (0.5.0) registry amendments — rev-003 O/P/Q/R,
+// facade level (Phase 6) ──────────────────────────────────────────────────
+//
+// The supersedes-row tests above pin Arm 3's unconditional rejection at
+// 0.3.0/0.2.0 through all four publish entry points; `validator.rs`'s own
+// unit test module pins the 0.5.0-specific logic (the new error code, the
+// §10 retirement gate, the interim-predecessor case, the same-type positive
+// control) directly against `PublishValidator`/`check_revocation_supersession`.
+// Neither proves the *facade* (`acdp::registry::RegistryServer`, the surface
+// a downstream registry actually calls) carries the 0.5.0 boundary's new
+// behavior end to end — this file's own header explains why that matters:
+// a unit test inside `acdp-server` passes even if the facade stopped
+// re-exporting the right thing. rev-003's A-N/Q obligations predate this
+// wave and add no new normative requirement (per the fixture's own
+// description), so they are not re-proven here at the facade level too —
+// only O/P/Q/R, the genuinely new 0.5.0 logic, get a dedicated facade test.
+
+fn interim_revocation_request(
+    signing_key: SigningKey,
+    key_fragment: &str,
+    revoked_fingerprint: &str,
+) -> PublishRequest {
+    Producer::new(
+        signing_key,
+        AgentDid::new(PRODUCER_DID),
+        format!("{PRODUCER_DID}#{key_fragment}"),
+    )
+    .publish_request()
+    .acdp_version("0.3.0")
+    .title("Key revocation — interim §10 form")
+    .context_type(ContextType::Custom(
+        ContextType::KEY_REVOCATION_INTERIM.into(),
+    ))
+    .visibility(Visibility::Public)
+    .metadata(json!({
+        "revoked_key_fingerprint": revoked_fingerprint,
+        "compromised_since": COMPROMISED_SINCE,
+        "reason": "test compromise",
+    }))
+    .build()
+    .expect("valid interim-form revocation publish request")
+}
+
+/// rev-003 O: a non-revocation supersedes a standard-typed key-revocation
+/// target, at a registry advertising acdp_version >= 0.5.0 — the wire code
+/// is now `SupersededTarget`/`revocation_type_mismatch`, not the historical
+/// `schema_violation` the 0.3.0-boundary tests above pin.
+#[test]
+fn revocation_superseded_by_non_revocation_rejected_as_revocation_type_mismatch_at_0_5_0() {
+    let seed = [61u8; 32];
+    let other_fp = fingerprint_ed25519(&SigningKey::from_bytes(&[62u8; 32]).verifying_key_bytes());
+    let server =
+        RegistryServer::try_new(InMemoryStore::new(), caps_at("0.5.0"), REGISTRY_AUTHORITY)
+            .expect("server");
+
+    let v1_req = revocation_request(SigningKey::from_bytes(&seed), "key-1", &other_fp);
+    let v1 = server
+        .publish_unverified_for_tests(&v1_req)
+        .expect("v1 key-revocation publish must succeed");
+
+    let v2_req = analysis_supersede_request(
+        SigningKey::from_bytes(&seed),
+        PRODUCER_DID,
+        "key-1",
+        v1.ctx_id.clone(),
+        2,
+    );
+    let err = server
+        .publish_unverified_for_tests(&v2_req)
+        .expect_err("a >= 0.5.0 registry must reject a non-revocation supersession");
+    assert!(
+        matches!(
+            err,
+            AcdpError::SupersededTarget {
+                reason: SupersessionReason::RevocationTypeMismatch,
+                ..
+            }
+        ),
+        "expected SupersededTarget/RevocationTypeMismatch, got {err:?}"
+    );
+}
+
+/// rev-003 P: same as O, but the predecessor is published under the §10
+/// interim `acdp:key-revocation` form — `is_key_revocation()` treats it as
+/// an equally triggering predecessor type, so this must reject the same way.
+///
+/// The fixture's own precondition frames this as a predecessor published
+/// while the registry advertised BELOW 0.5.0 (interim form still
+/// accepted), with the registry having since upgraded to 0.5.0 by the time
+/// v2 is attempted — a single fixed-`caps` `RegistryServer` can't model
+/// that upgrade directly (and publishing v1 through this 0.5.0 server would
+/// itself hit Q's own §10 retirement gate), so v1 is inserted straight into
+/// the store, mirroring how the otherwise-unpublishable rev-002 scenario G
+/// lineage is constructed in `tests/key_revocation.rs`.
+#[test]
+fn revocation_interim_predecessor_superseded_by_non_revocation_rejected_at_0_5_0() {
+    let seed = [63u8; 32];
+    let other_fp = fingerprint_ed25519(&SigningKey::from_bytes(&[64u8; 32]).verifying_key_bytes());
+    let server =
+        RegistryServer::try_new(InMemoryStore::new(), caps_at("0.5.0"), REGISTRY_AUTHORITY)
+            .expect("server");
+
+    let v1_req = interim_revocation_request(SigningKey::from_bytes(&seed), "key-1", &other_fp);
+    let v1_ctx_id = CtxId("acdp://localhost/9f1e2d3c-5a6b-4c7d-8e9f-0a1b2c3d4e70".into());
+    let v1_lineage_id = derive_lineage_id(&v1_ctx_id);
+    let v1_body = Body::from_publish_request(
+        &v1_req,
+        v1_ctx_id.clone(),
+        v1_lineage_id,
+        REGISTRY_AUTHORITY,
+        chrono::DateTime::parse_from_rfc3339("2026-01-15T00:00:00.000Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc),
+    );
+    server
+        .store()
+        .put(v1_body)
+        .expect("v1 interim-form key-revocation insert must succeed");
+
+    let v2_req = analysis_supersede_request(
+        SigningKey::from_bytes(&seed),
+        PRODUCER_DID,
+        "key-1",
+        v1_ctx_id.clone(),
+        2,
+    );
+    let err = server
+        .publish_unverified_for_tests(&v2_req)
+        .expect_err("an interim-typed predecessor must reject a non-revocation successor too");
+    assert!(
+        matches!(
+            err,
+            AcdpError::SupersededTarget {
+                reason: SupersessionReason::RevocationTypeMismatch,
+                ..
+            }
+        ),
+        "expected SupersededTarget/RevocationTypeMismatch, got {err:?}"
+    );
+}
+
+/// rev-003 Q: a *fresh* (non-superseding) publish under the §10 interim
+/// type is rejected outright at a registry advertising acdp_version >=
+/// 0.5.0 — the retirement gate, distinct from Arm 3's supersession rule
+/// above (no predecessor is involved at all).
+#[test]
+fn fresh_interim_form_publish_rejected_at_0_5_0() {
+    let seed = [65u8; 32];
+    let fp = fingerprint_ed25519(&SigningKey::from_bytes(&[66u8; 32]).verifying_key_bytes());
+    let server =
+        RegistryServer::try_new(InMemoryStore::new(), caps_at("0.5.0"), REGISTRY_AUTHORITY)
+            .expect("server");
+
+    let req = interim_revocation_request(SigningKey::from_bytes(&seed), "key-1", &fp);
+    let err = server
+        .publish_unverified_for_tests(&req)
+        .expect_err("a >= 0.5.0 registry must reject a new interim-form publish outright");
+    assert!(
+        matches!(err, AcdpError::SchemaViolation(_)),
+        "expected SchemaViolation (§10 retirement gate), got {err:?}"
+    );
+}
+
+/// rev-003 R: the positive control, at 0.5.0 specifically — a
+/// key-revocation properly superseding a key-revocation (same signer
+/// class, widening the boundary) is still accepted. Without this, a
+/// registry that (incorrectly) rejected every supersession of a
+/// key-revocation target once acdp_version >= 0.5.0 — not only
+/// non-revocation ones — would pass O/P for the wrong reason.
+#[test]
+fn revocation_superseded_by_revocation_still_accepted_at_0_5_0() {
+    let seed = [67u8; 32];
+    let fp = fingerprint_ed25519(&SigningKey::from_bytes(&[68u8; 32]).verifying_key_bytes());
+    let server =
+        RegistryServer::try_new(InMemoryStore::new(), caps_at("0.5.0"), REGISTRY_AUTHORITY)
+            .expect("server");
+
+    let v1_req = revocation_request(SigningKey::from_bytes(&seed), "key-1", &fp);
+    let v1 = server
+        .publish_unverified_for_tests(&v1_req)
+        .expect("v1 key-revocation publish must succeed");
+
+    let v2_req = Producer::new(
+        SigningKey::from_bytes(&seed),
+        AgentDid::new(PRODUCER_DID),
+        format!("{PRODUCER_DID}#key-1"),
+    )
+    .supersede(v1.ctx_id.clone())
+    .version(2)
+    .acdp_version("0.5.0")
+    .title("Key revocation — widened boundary")
+    .context_type(ContextType::KeyRevocation)
+    .visibility(Visibility::Public)
+    .metadata(json!({
+        "revoked_key_fingerprint": fp,
+        "compromised_since": "2026-04-01T00:00:00.000Z", // earlier — widening
+        "reason": "test compromise, corrected",
+    }))
+    .build()
+    .expect("valid v2 key-revocation publish request");
+
+    server.publish_unverified_for_tests(&v2_req).expect(
+        "a same-class key-revocation supersession must still be accepted at 0.5.0 — the \
+         (0.5.0) rule targets non-revocation successors only",
     );
 }
 

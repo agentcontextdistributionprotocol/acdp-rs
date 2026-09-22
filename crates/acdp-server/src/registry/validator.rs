@@ -1172,6 +1172,25 @@ mod tests {
         v.validate_post_schema(&req, raw_len).unwrap();
     }
 
+    // rev-003 scenario N: the bound is INCLUSIVE — a reason of EXACTLY
+    // `MAX_REASON_CHARS` MUST be accepted at 0.3.0. Paired with the
+    // rejection test above (which uses `MAX_REASON_CHARS + 1`); without
+    // this positive control a registry using `>= MAX_REASON_CHARS`
+    // instead of `>` would pass the rejection test above while wrongly
+    // rejecting exactly this length — the off-by-one this pair exists
+    // to catch.
+    #[test]
+    fn revocation_reason_at_exactly_the_limit_accepted_at_0_3_0() {
+        let caps = test_caps_v030();
+        let v = PublishValidator::new(&caps);
+        let mut meta = valid_revocation_metadata();
+        meta["reason"] = serde_json::json!("x".repeat(acdp_types::revocation::MAX_REASON_CHARS));
+        let req = build_revocation_request(REVOCATION_PRODUCER_DID, meta, "0.3.0");
+        let raw_len = serde_json::to_vec(&req).unwrap().len();
+        v.validate_post_schema(&req, raw_len)
+            .expect("a reason of exactly MAX_REASON_CHARS must be accepted, not rejected");
+    }
+
     // Malformed `acdp_version` must turn the gate ON (fail closed), not
     // off — `key_revocation_gate_applies` treats anything that is not a
     // well-formed `major.minor.patch` string as malformed rather than
@@ -1531,6 +1550,68 @@ mod tests {
         assert!(
             matches!(err, AcdpError::SchemaViolation(_)),
             "0.4.9 is below the 0.5.0 boundary; expected the unchanged SchemaViolation, got {err:?}"
+        );
+    }
+
+    // rev-003 scenario P: identical to O above, except PREV is published
+    // under the RFC-ACDP-0014 §10 INTERIM `acdp:key-revocation` form
+    // rather than the standard type. `check_revocation_supersession`'s
+    // Arm 3 gate is `prev.context_type.is_key_revocation()`, which
+    // treats both forms as equivalent triggering predecessor types — an
+    // implementation that special-cases the standard type string and
+    // misses the interim one would pass O while failing here.
+    #[test]
+    fn revocation_superseded_by_non_revocation_rejected_as_revocation_type_mismatch_interim_predecessor_at_0_5_0(
+    ) {
+        let prev_req = build_revocation_request_with_type(
+            REVOCATION_PRODUCER_DID,
+            valid_revocation_metadata(),
+            "0.3.0",
+            ContextType::Custom(ContextType::KEY_REVOCATION_INTERIM.into()),
+        );
+        let prev = body_from_request(&prev_req);
+        let req = test_request(); // ordinary DataSnapshot body
+
+        let err = check_revocation_supersession(&prev, &req, "0.5.0").unwrap_err();
+        assert!(
+            matches!(
+                err,
+                AcdpError::SupersededTarget {
+                    reason: acdp_primitives::error::SupersessionReason::RevocationTypeMismatch,
+                    ..
+                }
+            ),
+            "an interim-typed predecessor must trigger the same rejection as a \
+             standard-typed one, got {err:?}"
+        );
+    }
+
+    // rev-003 scenario R: the positive control pinning that the (0.5.0)
+    // predecessor-keyed rule does not over-reject the legitimate case —
+    // a key-revocation properly superseding a key-revocation, widening
+    // the boundary — specifically AT the 0.5.0 boundary itself.
+    // `revocation_supersession_same_class_allowed_t_earlier` above pins
+    // the identical shape but only at 0.3.0; without a dedicated 0.5.0
+    // test, a registry that (incorrectly) rejected every supersession of
+    // a key-revocation target once acdp_version >= 0.5.0 — not only
+    // non-revocation ones — would pass O/P for the wrong reason
+    // (over-rejection) and nothing here would catch it.
+    #[test]
+    fn revocation_supersession_same_class_allowed_at_0_5_0() {
+        let prev_req = build_revocation_request(
+            REVOCATION_PRODUCER_DID,
+            valid_revocation_metadata(), // T = 2026-05-01
+            "0.5.0",
+        );
+        let prev = body_from_request(&prev_req);
+
+        let mut meta = valid_revocation_metadata();
+        meta["compromised_since"] = serde_json::json!("2026-04-01T00:00:00.000Z"); // earlier, widening
+        let req = build_revocation_request(REVOCATION_PRODUCER_DID, meta, "0.5.0");
+
+        check_revocation_supersession(&prev, &req, "0.5.0").expect(
+            "a same-class key-revocation supersession must still be allowed at 0.5.0 — \
+             the (0.5.0) rule targets non-revocation successors only",
         );
     }
 

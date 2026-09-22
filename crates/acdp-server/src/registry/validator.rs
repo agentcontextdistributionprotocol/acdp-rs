@@ -237,7 +237,17 @@ impl<'a> PublishValidator<'a> {
         // acdp_version >= 0.3.0 MUST reject malformed key-revocation
         // bodies with schema_violation. See `key_revocation_gate_applies`
         // for the fail-closed polarity on a malformed acdp_version.
-        if req.context_type.is_key_revocation()
+        //
+        // Scoped to the *standard* `key-revocation` context_type only —
+        // deliberately NOT `ContextType::is_key_revocation()`, which also
+        // matches the interim `acdp:key-revocation` custom form. §10 is
+        // explicit that in `[0.3.0, 0.5.0)` a registry "neither rejects
+        // nor §4-validates the interim form": it is architecturally an
+        // opaque custom type there (RFC-ACDP-0002 §5), and this RFC
+        // "deliberately does not extend §4 shape validation to a custom
+        // type." At >= 0.5.0 the interim form is rejected outright by the
+        // retirement gate above, before it can ever reach this check.
+        if matches!(req.context_type, ContextType::KeyRevocation)
             && key_revocation_gate_applies(&self.caps.acdp_version)
         {
             let revocation = KeyRevocation::from_publish_request(req)?;
@@ -1364,11 +1374,16 @@ mod tests {
             .unwrap()
     }
 
-    // §10: a >= 0.3.0 registry ACCEPTS the interim `acdp:key-revocation`
-    // custom type — not just the standard `key-revocation` type — and
-    // applies the same §4 shape validation to it, since
-    // `ContextType::is_key_revocation()` treats both forms as
-    // equivalent and the gate is keyed off that predicate.
+    // §10: a >= 0.3.0 (and < 0.5.0) registry treats the interim
+    // `acdp:key-revocation` custom type as an ordinary, architecturally
+    // opaque custom context_type (RFC-ACDP-0002 §5) — it does NOT apply
+    // §4 shape validation to it. §10 states this explicitly: "Registries
+    // advertising acdp_version in [0.3.0, 0.5.0) neither reject nor
+    // §4-validate the interim form: ... this RFC deliberately does not
+    // extend §4 shape validation to a custom type." The gate is keyed off
+    // `ContextType::KeyRevocation` specifically, not
+    // `ContextType::is_key_revocation()`, so the interim form never
+    // reaches `KeyRevocation::from_publish_request` in this window.
     #[test]
     fn revocation_interim_custom_type_valid_body_accepted_at_0_3_0() {
         let caps = test_caps_v030();
@@ -1383,8 +1398,13 @@ mod tests {
         v.validate_post_schema(&req, raw_len).unwrap();
     }
 
+    // Same §10 opaque-custom-type treatment applies even when the body
+    // would fail §4 shape validation under the standard type — a
+    // `[0.3.0, 0.5.0)` registry has no basis to inspect the interim
+    // form's metadata shape at all, so a "violation" here is not
+    // observable at this version boundary (issue #295).
     #[test]
-    fn revocation_interim_custom_type_violation_rejected_at_0_3_0() {
+    fn revocation_interim_custom_type_malformed_body_accepted_at_0_3_0() {
         let caps = test_caps_v030();
         let v = PublishValidator::new(&caps);
         let mut meta = valid_revocation_metadata();
@@ -1398,8 +1418,7 @@ mod tests {
             ContextType::Custom(ContextType::KEY_REVOCATION_INTERIM.into()),
         );
         let raw_len = serde_json::to_vec(&req).unwrap().len();
-        let err = v.validate_post_schema(&req, raw_len).unwrap_err();
-        assert!(matches!(err, AcdpError::SchemaViolation(_)));
+        v.validate_post_schema(&req, raw_len).unwrap();
     }
 
     // ── Phase 4 (#279+RFC-0014-wave): RFC-ACDP-0014 §10 — interim-form

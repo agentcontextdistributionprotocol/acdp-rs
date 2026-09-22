@@ -38,7 +38,7 @@ use acdp_primitives::error::AcdpError;
 use acdp_types::{
     body::{Body, FullContext},
     capabilities::CapabilitiesDocument,
-    primitives::{AgentDid, CtxId, LineageId, Status, Visibility},
+    primitives::{AgentDid, ContentHash, CtxId, LineageId, Status, Visibility},
     publish::{PublishRequest, PublishResponse},
     revocation::KeyRevocation,
     search::{SearchParams, SearchResponse},
@@ -73,6 +73,68 @@ pub struct RegistryServer<S: RegistryStore, L: RateLimiter = NoopRateLimiter> {
     /// non-advertising registries: HTTP 501) and the registry never
     /// emits `lifecycle_events` or the `retracted` status.
     lifecycle_enabled: bool,
+}
+
+/// Proof that a [`PublishRequest`]'s identity has been established —
+/// RFC-ACDP-0003 §2.1 steps 1–8 (schema/hash validation, DID resolution,
+/// signature verification) plus the RFC-ACDP-0014 §5 step 2 self-revocation
+/// check, whichever of those the request's `context_type` and the
+/// registry's `acdp_version` require — but nothing has been persisted yet.
+///
+/// Produced only by a successful [`RegistryServer::prove_publish_identity`] /
+/// [`RegistryServer::prove_publish_identity_did_key`] /
+/// [`RegistryServer::prove_publish_identity_pinned`] call — there is no
+/// public constructor, so a caller cannot manufacture one from an
+/// unverified request. Not [`Clone`]: a `Proven` that outlived its single
+/// intended [`RegistryServer::commit_proven`] call risks being committed
+/// twice against different tenants/idempotency keys, so this is a
+/// move-only, "prove once, commit once" value.
+///
+/// Borrows `req` rather than owning a clone — the did:web caller already
+/// holds an owned request across its `.await`, and the did:key caller
+/// already clones into its blocking closure, so an owned `Proven` would
+/// force a needless clone on the async path for no benefit on the sync
+/// one.
+#[derive(Debug)]
+pub struct Proven<'a> {
+    req: &'a PublishRequest,
+    fingerprint: Option<String>,
+    recomputed_hash: ContentHash,
+    authority: String,
+}
+
+impl<'a> Proven<'a> {
+    /// The request this proof was established for.
+    pub fn request(&self) -> &PublishRequest {
+        self.req
+    }
+
+    /// The producer's agent DID.
+    pub fn agent_id(&self) -> &AgentDid {
+        &self.req.agent_id
+    }
+
+    /// The verified producer key's fingerprint, when one was computed.
+    ///
+    /// Computed only when the registry has a receipt signer configured
+    /// (RFC-ACDP-0010) or `req` is a key-revocation subject to the
+    /// RFC-ACDP-0014 §5 step 2 self-sign check — `None` otherwise, exactly
+    /// mirroring the conditions the pre-`Proven` publish pipeline already
+    /// used to decide whether fingerprinting was worth its cost.
+    pub fn key_fingerprint(&self) -> Option<&str> {
+        self.fingerprint.as_deref()
+    }
+
+    /// The `content_hash` recomputed over `req`'s `ProducerContent` during
+    /// proving (RFC-ACDP-0003 §2.1 step 4) — guaranteed equal to
+    /// `req.content_hash`, since a mismatch would have already failed
+    /// `prove_publish_identity*` with [`AcdpError::HashMismatch`] before a
+    /// `Proven` could be produced. Exposed so a caller that only holds a
+    /// `Proven` (not the original request) doesn't need to re-derive or
+    /// re-trust an echoed value.
+    pub fn recomputed_hash(&self) -> &ContentHash {
+        &self.recomputed_hash
+    }
 }
 
 impl<S: RegistryStore> RegistryServer<S, NoopRateLimiter> {
@@ -393,12 +455,36 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
         resolver: &acdp_did::WebResolver,
         tenant: Option<&str>,
     ) -> Result<crate::registry::store::PublishCommitOutcome, AcdpError> {
+        // FEAT-01: hand the rest of the pipeline to the store as a
+        // single atomic commit. Idempotency lookup, predecessor
+        // verification, body insertion, predecessor supersession
+        // marking, and idempotency record writing all happen under one
+        // critical section. Two concurrent publishes against the same
+        // `supersedes` (or the same `Idempotency-Key`) can no longer
+        // both succeed.
+        let proven = self.prove_publish_identity(req, resolver).await?;
+        self.commit_proven(proven, idempotency_key, tenant)
+    }
+
+    /// **Prove** a did:web producer's identity for `req` — RFC-ACDP-0003
+    /// §2.1 steps 1–8 (schema/hash validation, DID resolution, signature
+    /// verification) plus the RFC-ACDP-0014 §5 step 2 self-revocation
+    /// check — without persisting anything. Pair with
+    /// [`Self::commit_proven`] to complete the publish; the two together
+    /// are exactly what [`Self::publish_verified_in_tenant_with_outcome`]
+    /// composes.
+    #[cfg(feature = "client")]
+    pub async fn prove_publish_identity<'a>(
+        &self,
+        req: &'a PublishRequest,
+        resolver: &acdp_did::WebResolver,
+    ) -> Result<Proven<'a>, AcdpError> {
         // Rate-limit gate runs before any expensive work — RFC-ACDP-0008 §4.3.
         self.check_publish_rate_limit(&req.agent_id)?;
 
         let raw_bytes = serde_json::to_vec(req)?.len();
         let validator = PublishValidator::for_authority(&self.caps, &self.authority);
-        let _validated = validator.validate_post_schema(req, raw_bytes)?;
+        let validated = validator.validate_post_schema(req, raw_bytes)?;
 
         // Steps 7–8: DID resolution + signature verification.
         acdp_verify::verify_publish_request_signature(req, resolver).await?;
@@ -454,14 +540,12 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
             KeyRevocation::from_publish_request(req)?.check_not_self_signed(fp)?;
         }
 
-        // FEAT-01: hand the rest of the pipeline to the store as a
-        // single atomic commit. Idempotency lookup, predecessor
-        // verification, body insertion, predecessor supersession
-        // marking, and idempotency record writing all happen under one
-        // critical section. Two concurrent publishes against the same
-        // `supersedes` (or the same `Idempotency-Key`) can no longer
-        // both succeed.
-        self.commit_via_store(req, idempotency_key, tenant, fingerprint)
+        Ok(Proven {
+            req,
+            fingerprint,
+            recomputed_hash: validated.recomputed_hash,
+            authority: self.authority.clone(),
+        })
     }
 
     /// [`Self::publish_verified_in_tenant_with_outcome`] with the insert/replay
@@ -536,11 +620,24 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
         idempotency_key: Option<&str>,
         tenant: Option<&str>,
     ) -> Result<crate::registry::store::PublishCommitOutcome, AcdpError> {
+        let proven = self.prove_publish_identity_did_key(req)?;
+        self.commit_proven(proven, idempotency_key, tenant)
+    }
+
+    /// **Prove** a did:key producer's identity for `req` — RFC-ACDP-0003
+    /// §2.1 steps 1–8, pure (no resolver, no network) — without
+    /// persisting anything. Pair with [`Self::commit_proven`] to complete
+    /// the publish; the two together are exactly what
+    /// [`Self::publish_verified_did_key_in_tenant_with_outcome`] composes.
+    pub fn prove_publish_identity_did_key<'a>(
+        &self,
+        req: &'a PublishRequest,
+    ) -> Result<Proven<'a>, AcdpError> {
         self.check_publish_rate_limit(&req.agent_id)?;
 
         let raw_bytes = serde_json::to_vec(req)?.len();
         let validator = PublishValidator::for_authority(&self.caps, &self.authority);
-        let _validated = validator.validate_post_schema(req, raw_bytes)?;
+        let validated = validator.validate_post_schema(req, raw_bytes)?;
 
         // Steps 7–8, pure: did:key resolution + signature verification.
         acdp_verify::verify_publish_request_signature_offline(req)?;
@@ -556,7 +653,12 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
             None
         };
 
-        self.commit_via_store(req, idempotency_key, tenant, fingerprint)
+        Ok(Proven {
+            req,
+            fingerprint,
+            recomputed_hash: validated.recomputed_hash,
+            authority: self.authority.clone(),
+        })
     }
 
     /// [`Self::publish_verified_did_key_in_tenant_with_outcome`] with the insert/replay
@@ -683,19 +785,37 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
         verified_public_key_b64: &str,
         verified_algorithm: &str,
     ) -> Result<crate::registry::store::PublishCommitOutcome, AcdpError> {
+        let proven =
+            self.prove_publish_identity_pinned(req, verified_public_key_b64, verified_algorithm)?;
+        self.commit_proven(proven, idempotency_key, tenant)
+    }
+
+    /// **Prove** an operator-pinned-key producer's identity for `req` —
+    /// RFC-ACDP-0003 §2.1 steps 1–6 plus the RFC-ACDP-0014 §5 step 2
+    /// self-revocation check (steps 7–8 are the CALLER's responsibility —
+    /// see the doc comment on
+    /// [`Self::publish_pinned_verified_in_tenant_with_outcome`]) — without
+    /// persisting anything. Pair with [`Self::commit_proven`] to complete
+    /// the publish; the two together are exactly what
+    /// [`Self::publish_pinned_verified_in_tenant_with_outcome`] composes.
+    pub fn prove_publish_identity_pinned<'a>(
+        &self,
+        req: &'a PublishRequest,
+        verified_public_key_b64: &str,
+        verified_algorithm: &str,
+    ) -> Result<Proven<'a>, AcdpError> {
         self.check_publish_rate_limit(&req.agent_id)?;
 
         let raw_bytes = serde_json::to_vec(req)?.len();
         let validator = PublishValidator::for_authority(&self.caps, &self.authority);
-        let _validated = validator.validate_post_schema(req, raw_bytes)?;
+        let validated = validator.validate_post_schema(req, raw_bytes)?;
 
         // RFC-ACDP-0014 §5 step 2 applies here too, and at no extra
         // resolution cost: `verified_public_key_b64` is the key the
         // *caller* already verified the signature against — there is
         // no DID document to fetch, so fingerprinting it is a pure,
         // local computation regardless of receipt minting. Unlike the
-        // did:web hook in `publish_verified_in_tenant`, this adds no
-        // new I/O.
+        // did:web hook in `prove_publish_identity`, this adds no new I/O.
         let revocation_check_needed = req.context_type.is_key_revocation()
             && key_revocation_gate_applies(&self.caps.acdp_version);
 
@@ -709,12 +829,12 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
         };
 
         if revocation_check_needed {
-            // See the identical guard in `publish_verified_in_tenant` for
-            // why this is `ok_or_else` rather than `expect`: the
-            // `Some`-ness of `fingerprint` here depends on the `if` a few
-            // lines above matching this same `revocation_check_needed`, a
-            // non-local invariant that shouldn't panic the publish path
-            // if it's ever broken by a future edit.
+            // See the identical guard in `prove_publish_identity` for why
+            // this is `ok_or_else` rather than `expect`: the `Some`-ness
+            // of `fingerprint` here depends on the `if` a few lines above
+            // matching this same `revocation_check_needed`, a non-local
+            // invariant that shouldn't panic the publish path if it's
+            // ever broken by a future edit.
             let fp = fingerprint.as_deref().ok_or_else(|| {
                 AcdpError::RegistryInternal(
                     "key-revocation fingerprint missing despite revocation_check_needed \
@@ -725,7 +845,12 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
             KeyRevocation::from_publish_request(req)?.check_not_self_signed(fp)?;
         }
 
-        self.commit_via_store(req, idempotency_key, tenant, fingerprint)
+        Ok(Proven {
+            req,
+            fingerprint,
+            recomputed_hash: validated.recomputed_hash,
+            authority: self.authority.clone(),
+        })
     }
 
     /// [`Self::publish_pinned_verified_in_tenant_with_outcome`] with the insert/replay
@@ -913,6 +1038,39 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
             ));
         }
         Ok(outcome)
+    }
+
+    /// **Commit** a [`Proven`] publish — the second half of the
+    /// `prove → commit` split (`prove_publish_identity*` /
+    /// `commit_proven`, #273). Everything through RFC-ACDP-0003 §2.1
+    /// steps 1–8 (and the RFC-ACDP-0014 §5 step 2 self-revocation check,
+    /// where applicable) already passed to produce `proven` — this call
+    /// runs the same atomic store commit
+    /// (idempotency lookup, predecessor verification, insertion,
+    /// predecessor-supersession marking) that
+    /// [`Self::publish_verified_in_tenant_with_outcome`] and its siblings
+    /// have always run, just reachable without re-deriving identity.
+    ///
+    /// Rejects a `proven` minted for a different registry authority with
+    /// [`AcdpError::RegistryInternal`] rather than silently committing
+    /// under the wrong one — a `Proven` carries the authority it was
+    /// proved against specifically so this cross-registry mismatch is
+    /// cheap to catch here, before persistence.
+    pub fn commit_proven(
+        &self,
+        proven: Proven<'_>,
+        idempotency_key: Option<&str>,
+        tenant: Option<&str>,
+    ) -> Result<crate::registry::store::PublishCommitOutcome, AcdpError> {
+        if proven.authority != self.authority {
+            return Err(AcdpError::RegistryInternal(format!(
+                "commit_proven: Proven was established against authority '{}', but this \
+                 registry's authority is '{}' — refusing to commit a proof against the \
+                 wrong registry",
+                proven.authority, self.authority
+            )));
+        }
+        self.commit_via_store(proven.req, idempotency_key, tenant, proven.fingerprint)
     }
 
     /// `GET /contexts/{ctx_id}`.
@@ -2735,6 +2893,174 @@ mod tests {
             matches!(err, AcdpError::KeyResolution(_)),
             "did:web on the offline path must be refused, got {err:?}"
         );
+    }
+
+    // ── Phase 8: prove/commit split (#273) ────────────────────────────
+
+    /// `prove_publish_identity_did_key` + `commit_proven` must succeed and
+    /// persist exactly like the composed
+    /// `publish_verified_did_key_in_tenant_with_outcome` they replace the
+    /// body of — proving the split is a genuine decomposition of the
+    /// existing pipeline, not a different one.
+    #[test]
+    fn prove_then_commit_did_key_round_trip_matches_direct_publish() {
+        let mut c = caps();
+        c.supported_did_methods.push("did:key".into());
+        let server = RegistryServer::new(InMemoryStore::new(), c, "registry.example.com");
+        let req = did_key_request();
+
+        let proven = server
+            .prove_publish_identity_did_key(&req)
+            .expect("prove must succeed for a validly signed did:key request");
+        assert_eq!(proven.agent_id(), &req.agent_id);
+        assert_eq!(proven.request().content_hash, req.content_hash);
+        assert_eq!(proven.recomputed_hash(), &req.content_hash);
+
+        let outcome = server
+            .commit_proven(proven, None, None)
+            .expect("commit_proven must persist a proven publish");
+        let resp = outcome.into_response();
+        assert_eq!(resp.ctx_id.authority(), "registry.example.com");
+        assert_eq!(resp.version, 1);
+
+        let ctx = server.retrieve(&resp.ctx_id, None).unwrap().unwrap();
+        assert_eq!(ctx.body.content_hash, req.content_hash);
+    }
+
+    /// The pinned-key `prove`/`commit` split must still thread the
+    /// fingerprint through to receipt minting exactly like
+    /// `publish_pinned_verified_in_tenant_with_outcome` does directly.
+    #[test]
+    fn prove_then_commit_pinned_round_trip_mints_receipt_with_correct_fingerprint() {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+
+        let key = SigningKey::from_bytes(&[5u8; 32]);
+        let verifying_key_bytes = key.verifying_key_bytes();
+        let pub_b64 = STANDARD.encode(verifying_key_bytes);
+        let did = "did:web:agents.example.com:pinned-proven-agent";
+        let p = Producer::new(key, AgentDid::new(did), format!("{did}#key-1"));
+        let req = p
+            .publish_request()
+            .title("pinned publish via prove/commit")
+            .context_type(ContextType::DataSnapshot)
+            .visibility(Visibility::Public)
+            .build()
+            .unwrap();
+
+        let mut c = caps();
+        c.acdp_version = "0.2.0".into();
+        let server = RegistryServer::new(InMemoryStore::new(), c, "registry.example.com")
+            .with_receipt_signer(
+                acdp_types::receipt::ReceiptSigner::new(
+                    SigningKey::from_bytes(&[0x33u8; 32]),
+                    "did:web:registry.example.com",
+                    "did:web:registry.example.com#receipt-key-1",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let proven = server
+            .prove_publish_identity_pinned(&req, &pub_b64, "ed25519")
+            .expect("prove must succeed for a validly pinned request");
+        let expected_fp = acdp_crypto::fingerprint::fingerprint_ed25519(&verifying_key_bytes);
+        assert_eq!(proven.key_fingerprint(), Some(expected_fp.as_str()));
+
+        let outcome = server
+            .commit_proven(proven, None, None)
+            .expect("commit_proven must persist and mint a receipt");
+        let resp = outcome.into_response();
+        let receipt = resp
+            .registry_receipt
+            .expect("a receipts-advertising registry must mint a receipt");
+        assert_eq!(receipt["key_fingerprint"].as_str().unwrap(), expected_fp);
+    }
+
+    /// `prove_publish_identity` (the did:web variant) runs the same
+    /// pre-resolution rejections as `publish_verified` — proving the
+    /// async prove entry point exists and is wired into the same
+    /// validation pipeline, without needing a live/mocked resolver.
+    #[cfg(feature = "client")]
+    #[tokio::test]
+    async fn prove_publish_identity_rejects_non_did_web_key_id_before_producing_proven() {
+        let server = RegistryServer::new(InMemoryStore::new(), caps(), "registry.example.com");
+        let p = producer();
+        let mut req = p
+            .publish_request()
+            .title("v1")
+            .context_type(ContextType::DataSnapshot)
+            .visibility(Visibility::Public)
+            .build()
+            .unwrap();
+        let did_key = acdp_did::key::did_key_from_ed25519(
+            &SigningKey::from_bytes(&[10u8; 32]).verifying_key_bytes(),
+        );
+        req.signature.key_id = acdp_did::key::did_key_url(&did_key).unwrap();
+        let resolver = acdp_did::WebResolver::new();
+        let err = server
+            .prove_publish_identity(&req, &resolver)
+            .await
+            .unwrap_err();
+        match err {
+            AcdpError::KeyNotAuthorized(msg) => assert!(msg.contains("did:web")),
+            other => panic!("expected KeyNotAuthorized for non-did:web, got {other:?}"),
+        }
+    }
+
+    /// `commit_proven` must refuse a `Proven` established against a
+    /// different registry authority rather than silently persisting it —
+    /// the "prove against server A, commit on server B" footgun the
+    /// authority check exists to close.
+    #[test]
+    fn commit_proven_rejects_proven_from_different_authority() {
+        let mut c1 = caps();
+        c1.supported_did_methods.push("did:key".into());
+        let mut c2 = caps();
+        c2.supported_did_methods.push("did:key".into());
+        let server_a = RegistryServer::new(InMemoryStore::new(), c1, "registry-a.example.com");
+        let server_b = RegistryServer::new(InMemoryStore::new(), c2, "registry-b.example.com");
+
+        let req = did_key_request();
+        let proven = server_a
+            .prove_publish_identity_did_key(&req)
+            .expect("prove must succeed against server A");
+
+        let err = server_b
+            .commit_proven(proven, None, None)
+            .expect_err("commit_proven must refuse a Proven minted for a different authority");
+        match err {
+            AcdpError::RegistryInternal(msg) => {
+                assert!(
+                    msg.contains("registry-a.example.com")
+                        && msg.contains("registry-b.example.com"),
+                    "error should name both authorities, got: {msg}"
+                );
+            }
+            other => panic!("expected RegistryInternal authority-mismatch, got {other:?}"),
+        }
+    }
+
+    /// The `prove → commit` split's core invariant: `commit_proven` is
+    /// only reachable via a `Proven`, and the only way to mint one is a
+    /// successful `prove_publish_identity*` call — a request that fails
+    /// RFC-ACDP-0003 §2.1 verification (here: a tampered body, caught by
+    /// the hash-mismatch check) produces no `Proven` at all, so there is
+    /// no path from a bare `PublishRequest` to `commit_proven` for it.
+    #[test]
+    fn prove_publish_identity_did_key_produces_no_proven_for_a_tampered_request() {
+        let mut c = caps();
+        c.supported_did_methods.push("did:key".into());
+        let server = RegistryServer::new(InMemoryStore::new(), c, "registry.example.com");
+
+        let mut tampered = did_key_request();
+        tampered.title = "tampered".into();
+        let err = server
+            .prove_publish_identity_did_key(&tampered)
+            .expect_err("prove must fail for a request whose hash no longer matches its body");
+        assert!(matches!(err, AcdpError::HashMismatch { .. }), "got {err:?}");
+        // No `Proven` was produced for `tampered` — structurally, nothing
+        // else in this crate's public API could have manufactured one
+        // either, since `Proven` has no public constructor.
     }
 
     // ── the insert/replay distinction, per entry point ───────────────────

@@ -25,15 +25,15 @@ client = [
 tracing = ["dep:tracing", "acdp-verify/tracing"]
 
 [dependencies]
-acdp-primitives = { path = "../acdp-primitives", version = "=0.14.0" }
-acdp-types      = { path = "../acdp-types", version = "=0.14.0" }
-acdp-crypto     = { path = "../acdp-crypto", version = "=0.14.0" }
-acdp-did        = { path = "../acdp-did", version = "=0.14.0" }
-acdp-validation = { path = "../acdp-validation", version = "=0.14.0" }
-acdp-verify     = { path = "../acdp-verify", version = "=0.14.0" }
+acdp-primitives = { path = "../acdp-primitives", version = "=0.14.1" }
+acdp-types      = { path = "../acdp-types", version = "=0.14.1" }
+acdp-crypto     = { path = "../acdp-crypto", version = "=0.14.1" }
+acdp-did        = { path = "../acdp-did", version = "=0.14.1" }
+acdp-validation = { path = "../acdp-validation", version = "=0.14.1" }
+acdp-verify     = { path = "../acdp-verify", version = "=0.14.1" }
 tracing         = { version = "0.1", optional = true, default-features = false, features = ["attributes"] }
-acdp-producer   = { path = "../acdp-producer", version = "=0.14.0" }
-acdp-safe-http  = { path = "../acdp-safe-http", version = "=0.14.0" }
+acdp-producer   = { path = "../acdp-producer", version = "=0.14.1" }
+acdp-safe-http  = { path = "../acdp-safe-http", version = "=0.14.1" }
 serde      = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 chrono     = { version = "0.4", features = ["serde"] }

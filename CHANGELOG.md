@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.14.0...acdp-v0.14.1) - 2026-09-22
+
+### Fixed
+
+- post-release review of the RFC-0014 wave — 3 bugs, coverage gaps, doc drift ([#296](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/296))
+
+### Other
+
+- log the #283 release-merge decision to DECISIONS.md ([#294](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/294))
+
 ### Fixed
 
 - *(validation)* Check 8 (RFC-ACDP-0002 §6.6) no longer rejects a `DataRef` whose

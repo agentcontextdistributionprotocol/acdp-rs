@@ -36,6 +36,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   observes for a case that was previously rejected, even though the request is still rejected
   either way.
 
+### Fixed
+
+- *(client)* restore `Send` on every public async entry point that discovers revocations
+  ([#279](https://github.com/agentcontextdistributionprotocol/acdp-rs/issues/279)).
+  0.13.2 accidentally made `find_revocations`, `find_registry_attested_revocations`,
+  `VerifiedContext::fetch`/`fetch_with_policy`/`fetch_current`/`fetch_current_with_policy`/
+  `fetch_report`, and `CrossRegistryResolver::resolve`/`walk_derived_from` all `!Send`:
+  `discover_revocations` (`crates/acdp-client/src/revocation.rs`) holds two `&dyn Fn(..)`
+  closure parameters across an `.await` point, and `&dyn Fn` is `Send` only when the trait
+  object itself is `Sync` — the parameters were missing that bound. This broke
+  `axum::handler::Handler` compatibility (and any other executor requiring `Send` futures)
+  for every caller doing cross-registry resolution. Fixed by adding `+ Sync` to both
+  parameters. A new compile-only regression test, `tests/send_futures.rs`, asserts `Send`
+  for all nine affected entry points.
+
 ## [0.13.2](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.13.1...acdp-v0.13.2) - 2026-09-13
 
 ### Added

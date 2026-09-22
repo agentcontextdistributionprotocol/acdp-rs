@@ -69,7 +69,11 @@ decoded into `SupersessionReason`:
 | `AlreadySuperseded` | the target was already superseded by another version |
 | `CrossRegistrySupersessionUnsupported` | v0.1.0 only allows same-registry supersession |
 | `LineageWalkFailed` | an intermediate context in the `supersedes` chain couldn't be retrieved |
+| `RevocationTypeMismatch` | a non-revocation context superseded a `key-revocation` target (RFC-ACDP-0014 §4/§10) — only emitted by registries advertising `acdp_version >= 0.5.0`; below that version this rejection is `SchemaViolation` instead |
 | `Other` | a reason this library version doesn't recognize (forward-compat) |
+
+`SupersessionReason` is `#[non_exhaustive]` — match it with a wildcard arm, not
+exhaustively, so a future variant addition isn't a breaking change for callers.
 
 Most of these are prevented up front by using
 [`supersede_body`](producing.md#supersession), which sets `version`,

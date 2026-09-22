@@ -894,9 +894,34 @@ async fn find_revocations_recovers_retracted_predecessor_across_lineage_superses
 // remain valid, independently useful regression tests of adjacent
 // properties.
 
+/// Look up a lineage member's `compromised_since` by its `label`
+/// (e.g. "R1", "X", "Y") within `input.revocation_lineage.<lineage>.members`
+/// — an array, so it can't be reached by `json_str`'s object-path walk.
+/// Reading these live (rather than hand-copying the values into the
+/// test bodies below) means a fixture edit to L1/L2/L3's timestamps
+/// changes what these tests exercise, matching `rev_002_revocation_from_fixture`'s
+/// own rationale.
+fn lineage_member_compromised_since<'a>(
+    fixture: &'a serde_json::Value,
+    lineage: &str,
+    label: &str,
+) -> &'a str {
+    fixture["input"]["revocation_lineage"][lineage]["members"]
+        .as_array()
+        .unwrap_or_else(|| panic!("rev-002 fixture missing revocation_lineage.{lineage}.members"))
+        .iter()
+        .find(|m| m["label"] == label)
+        .unwrap_or_else(|| panic!("rev-002 fixture {lineage} has no member labeled '{label}'"))
+        ["compromised_since"]
+        .as_str()
+        .unwrap_or_else(|| {
+            panic!("rev-002 fixture {lineage}.{label}.compromised_since is not a string")
+        })
+}
+
 /// Scenario E (RFC-ACDP-0014 §7): lineage L1 — R1 (T1 = 2026-05-01,
 /// `key-revocation`) superseded by R2 (T2 = 2026-06-15, also
-/// `key-revocation`, same signer class — a NARROWING supersession；
+/// `key-revocation`, same signer class — a NARROWING supersession —
 /// `check_revocation_supersession` does not gate on direction, only
 /// the consumer-side fold does). A receipt-attested publish at
 /// `created_at_by_scenario.E` (>= T1 but < T2) MUST still fail closed,
@@ -917,6 +942,8 @@ async fn rev_002_e_narrowing_supersession_effective_boundary_stays_t1() {
         &fixture,
         &["input", "registry_receipt", "created_at_by_scenario", "E"],
     );
+    let t1 = lineage_member_compromised_since(&fixture, "L1", "R1");
+    let t2 = lineage_member_compromised_since(&fixture, "L1", "R2");
 
     let h = LineageServerHarness::start(lifecycle_caps(), false).await;
 
@@ -934,7 +961,7 @@ async fn rev_002_e_narrowing_supersession_effective_boundary_stays_t1() {
         .visibility(Visibility::Public)
         .metadata(json!({
             "revoked_key_fingerprint": revoked_fp,
-            "compromised_since": "2026-05-01T00:00:00.000Z",
+            "compromised_since": t1,
         }))
         .build()
         .expect("r1 build");
@@ -960,7 +987,7 @@ async fn rev_002_e_narrowing_supersession_effective_boundary_stays_t1() {
         .visibility(Visibility::Public)
         .metadata(json!({
             "revoked_key_fingerprint": revoked_fp,
-            "compromised_since": "2026-06-15T00:00:00.000Z",
+            "compromised_since": t2,
         }))
         .build()
         .expect("r2 build");
@@ -974,8 +1001,8 @@ async fn rev_002_e_narrowing_supersession_effective_boundary_stays_t1() {
         .expect("find_revocations");
     assert_eq!(revs.len(), 2);
     revs.sort_by_key(|r| r.compromised_since);
-    assert_eq!(revs[0].compromised_since, at("2026-05-01T00:00:00.000Z"));
-    assert_eq!(revs[1].compromised_since, at("2026-06-15T00:00:00.000Z"));
+    assert_eq!(revs[0].compromised_since, at(t1));
+    assert_eq!(revs[1].compromised_since, at(t2));
 
     let err = classify_under_revocation(&revs, revoked_fp, Some(at(receipt_time)))
         .expect_err("scenario E: R2's narrower T2 must not shrink the effective window below T1");
@@ -1007,6 +1034,8 @@ async fn rev_002_f_retracted_predecessor_still_governs_verdict() {
         &fixture,
         &["input", "registry_receipt", "created_at_by_scenario", "F"],
     );
+    let t1 = lineage_member_compromised_since(&fixture, "L1", "R1");
+    let t2 = lineage_member_compromised_since(&fixture, "L1", "R2");
 
     let h = LineageServerHarness::start(lifecycle_caps(), true).await;
 
@@ -1025,7 +1054,7 @@ async fn rev_002_f_retracted_predecessor_still_governs_verdict() {
         .visibility(Visibility::Public)
         .metadata(json!({
             "revoked_key_fingerprint": revoked_fp,
-            "compromised_since": "2026-05-01T00:00:00.000Z",
+            "compromised_since": t1,
         }))
         .build()
         .expect("r1 build");
@@ -1048,7 +1077,7 @@ async fn rev_002_f_retracted_predecessor_still_governs_verdict() {
         .visibility(Visibility::Public)
         .metadata(json!({
             "revoked_key_fingerprint": revoked_fp,
-            "compromised_since": "2026-06-15T00:00:00.000Z",
+            "compromised_since": t2,
         }))
         .build()
         .expect("r2 build");
@@ -1071,14 +1100,20 @@ async fn rev_002_f_retracted_predecessor_still_governs_verdict() {
         .retract_unverified_for_tests(&event, None)
         .expect("retract");
 
+    // If retraction regressed to a no-op, R1 would still be visible via
+    // the `superseded` search pass and this test would keep passing
+    // vacuously — assert the served status actually flipped.
+    let r1_after_retract = h.server.store().get(&r1_resp.ctx_id).unwrap().unwrap();
+    assert_eq!(r1_after_retract.registry_state.status, Status::Retracted);
+
     let client = h.client();
     let mut revs = find_revocations(&client, &h.resolver, &agent_id)
         .await
         .expect("find_revocations must recover the retracted predecessor");
     assert_eq!(revs.len(), 2);
     revs.sort_by_key(|r| r.compromised_since);
-    assert_eq!(revs[0].compromised_since, at("2026-05-01T00:00:00.000Z"));
-    assert_eq!(revs[1].compromised_since, at("2026-06-15T00:00:00.000Z"));
+    assert_eq!(revs[0].compromised_since, at(t1));
+    assert_eq!(revs[1].compromised_since, at(t2));
 
     let err = classify_under_revocation(&revs, revoked_fp, Some(at(receipt_time))).expect_err(
         "scenario F: retraction of R1 must not remove it from the fold — the effective \

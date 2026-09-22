@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-client-v0.13.2...acdp-client-v0.14.0) - 2026-09-22
+
+### Added
+
+- *(types,validation)* [**breaking**] EmbeddedContent.content_hash + did:key resolver errors (#284, #285) ([#288](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/288))
+
+### Fixed
+
+- *(client)* restore Send on revocation-discovery futures ([#289](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/289))
+
 ## [0.13.2](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-client-v0.13.1...acdp-client-v0.13.2) - 2026-09-13
 
 ### Other

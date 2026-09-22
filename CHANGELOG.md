@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.13.2...acdp-v0.14.0) - 2026-09-22
+
+### Added
+
+- *(server)* split publish pipeline into prove_publish_identity* + commit_proven ([#273](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/273)) ([#292](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/292))
+- *(server)* [**breaking**] enforce RFC-ACDP-0014 §4/§10 registry-side 0.5.0 amendments ([#290](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/290))
+- *(types,validation)* [**breaking**] EmbeddedContent.content_hash + did:key resolver errors (#284, #285) ([#288](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/288))
+
+### Fixed
+
+- *(client)* restore Send on revocation-discovery futures ([#289](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/289))
+
+### Other
+
+- *(server)* drop redundant Proven::recomputed_hash() accessor, add malformed-version test ([#293](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/293))
+- RFC-ACDP-0014 rev-002/003/004 conformance tests, spec pin bump to 9deb7e7 ([#291](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/291))
+- *(supply-chain)* move the rustls exemption to 0.23.45
+
 ### Added
 
 - *(server)* split `RegistryServer`'s publish pipeline into a `prove_publish_identity*` /

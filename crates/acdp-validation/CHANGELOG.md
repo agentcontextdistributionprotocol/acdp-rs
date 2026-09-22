@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-validation-v0.13.2...acdp-validation-v0.14.0) - 2026-09-22
+
+### Added
+
+- *(types,validation)* [**breaking**] EmbeddedContent.content_hash + did:key resolver errors (#284, #285) ([#288](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/288))
+
+### Other
+
+- release v0.13.2
+
 ## [0.13.2](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-validation-v0.13.1...acdp-validation-v0.13.2) - 2026-09-13
 
 ### Other

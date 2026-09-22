@@ -690,7 +690,10 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
 - **Blast radius if wrong:** low — strictly additive verification (more cases now get
   checked, previously-passing cases are unaffected); reversible by narrowing the condition
   back in one commit.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-09-22) — see DECISIONS.md. Independently re-checked against
+  RFC-ACDP-0002-context-body.md:294-296 in the spec checkout: Check 8's obligation is
+  scoped to `embedded.content_hash`; checking the root hash too is a permitted MAY, never
+  forbidden. Both call sites match `data_ref.rs:240`'s already-fixed condition.
 
 ## Phase 1 — cargo-semver-checks environment mismatch, fell back to manual review
 - **Plan:** plans/issues-273-279-284-285-rfc0014-wave.md, Phase 1, acceptance criterion 8
@@ -708,7 +711,11 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   is the actually-blocking gate at release time, on a controlled toolchain).
 - **Blast radius if wrong:** none on correctness (the breaking classification is independently
   certain); only affects whether local tooling can auto-confirm it pre-release.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-09-22) — see DECISIONS.md. The local toolchain was upgraded
+  later this session (0.45.0 → 0.50.0) for an unrelated reason; re-ran it and it now
+  independently confirms the exact breaking classification (`constructible_struct_adds_field`
+  on `EmbeddedContent.content_hash`) manual review reached — tooling and manual reasoning
+  now agree.
 
 ## Phase 2 (issues-273-279-284-285-rfc0014-wave) — pub-009 assertion widened beyond the plan's named files
 - **Plan:** plans/issues-273-279-284-285-rfc0014-wave.md, Phase 2
@@ -724,7 +731,9 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
 - **Blast radius if wrong:** none — this only tightens an existing assertion to match the
   behavior the phase's own acceptance criteria require; the test would fail loudly if the
   reasoning were wrong.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-09-22) — see DECISIONS.md. `KeyResolution` matches
+  RFC-ACDP-0001 §5.11.1 step 1's MUST-level requirement (checked against the actual spec
+  text), and the `pub-009` fixture passes under `ACDP_REQUIRE_CONFORMANCE=1`.
 
 ## Phase 4 (issues-273-279-284-285-rfc0014-wave) — Arm 3's error-code gate needs opposite fail-closed polarity from §10's rejection gate
 - **Plan:** plans/issues-273-279-284-285-rfc0014-wave.md, Phase 4
@@ -756,7 +765,15 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   specific `RevocationTypeMismatch` one; the request is still rejected either way, so no
   security regression, only a slightly less-specific error for an already-malformed
   capabilities document (itself a registry misconfiguration).
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-09-22) — see DECISIONS.md. Independently confirmed the spec
+  text (`registries/error-codes.md:60`) matches the claimed MUST-NOT verbatim, and that the
+  asymmetric polarity is structurally correct (the two functions answer different questions,
+  each with its own safe default under uncertainty), not a coincidental patch. Follow-up
+  applied: `key_revocation_retirement_gate_applies` now has its own direct
+  malformed-`acdp_version` test (previously only proven by structural identity with the
+  well-tested `key_revocation_gate_applies`) — see
+  `interim_form_retirement_gate_fails_closed_on_malformed_acdp_version` in
+  `crates/acdp-server/src/registry/validator.rs`.
 
 ## Phase 4 (issues-273-279-284-285-rfc0014-wave) — added direct unit-test coverage beyond the plan's Tests field
 - **Plan:** plans/issues-273-279-284-285-rfc0014-wave.md, Phase 4
@@ -779,7 +796,11 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
 - **Blast radius if wrong:** none — strictly additive test coverage; if any assumption
   about expected behavior embedded in these tests were wrong, the tests would fail loudly
   rather than silently passing.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-09-22) — see DECISIONS.md. Confirmed "test immediately
+  rather than deferring to Phase 6" was the right call in retrospect: Phase 6 landed later,
+  in a separate PR, so deferring would have left security-relevant fail-closed logic
+  untested in `main` for an indeterminate stretch. The later Phase 6 facade-level tests are
+  intentional two-layer coverage, not accidental duplication.
 
 ## Phase 5 (issues-273-279-284-285-rfc0014-wave) — plan's E/F "already covered" claims needed correction
 - **Plan:** plans/issues-273-279-284-285-rfc0014-wave.md, Phase 5
@@ -805,7 +826,10 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
 - **Blast radius if wrong:** none — strictly additive; the two pre-existing tests are unchanged
   and still pass, so no coverage was lost even if this correction turns out to have been overly
   cautious.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-09-22) — see DECISIONS.md. Both new-vs-existing test claims
+  verified directly against the merged test bodies; the two pre-existing tests are untouched
+  and all four new tests drive a real `classify_under_revocation` verdict using
+  fixture-sourced timestamps, not just discovery.
 
 ## Phase 6 (issues-273-279-284-285-rfc0014-wave) — scoped down from "18 new tests" to the gaps a two-layer analysis actually found
 - **Plan:** plans/issues-273-279-284-285-rfc0014-wave.md, Phase 6
@@ -831,7 +855,11 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
 - **Blast radius if wrong:** low — if this judgment under-covers, the gap is at the facade
   layer only (logic itself remains validator-unit-tested either way), and is straightforward to
   close later with more facade tests; nothing here weakens an existing assertion.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-09-22) — see DECISIONS.md. Verified counts against the actual
+  merged diff (exactly 3+4+3 new tests, matching the claim) and independently re-checked 8
+  of the 13 skipped rev-003 scenario letters directly against the pinned spec fixture — all
+  8 have an exact pre-existing match (same rejection shape, same asserted error code/status).
+  The gap analysis holds under independent scrutiny, not just self-report.
 
 ## Phase 8 (issues-273-279-284-285-rfc0014-wave) — added a `recomputed_hash()` accessor not named in the plan's public API list
 - **Plan:** plans/issues-273-279-284-285-rfc0014-wave.md, Phase 8
@@ -861,4 +889,13 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   later is not a breaking removal concern worth blocking on (it would be breaking in the
   strict semver sense, but this crate hasn't shipped `Proven` yet at all, so there is no
   external caller to break by adjusting the surface before the first release that includes it).
-- **Status:** UNCONFIRMED
+- **Status:** CHANGED (2026-09-22) — see DECISIONS.md. `/reconcile`'s independent review
+  found the "no other way to learn the hash" premise above doesn't hold:
+  `proven.request().content_hash` (one of the plan's own 3 named accessors,
+  `PublishRequest.content_hash` being `pub`) already exposes the identical value, since
+  `Proven` always borrows `req`. Removed `pub fn recomputed_hash()`; replaced it with a
+  `debug_assert_eq!` inside `commit_proven` that actively checks the same invariant the
+  field exists to prove, instead of exposing a public getter that duplicates existing
+  surface. `Proven`'s public API is now exactly the plan's originally-named 3 accessors
+  (`agent_id`, `key_fingerprint`, `request`). Applied immediately (not deferred) since this
+  crate has not released `Proven` yet, making the change genuinely costless today.

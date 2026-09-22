@@ -9,7 +9,7 @@ resolver = "2"
 # set and a fresh resolver cannot mix release generations. Bump all
 # crates together (release-plz groups them via `version_group`).
 [workspace.package]
-version = "0.14.0"
+version = "0.14.1"
 
 [package]
 name    = "acdp"
@@ -146,17 +146,17 @@ harness = false
 # crates live in `[dev-dependencies]` (used only by the integration
 # tests and examples that still live here).
 [dependencies]
-acdp-primitives = { path = "crates/acdp-primitives", version = "=0.14.0" }
-acdp-jcs        = { path = "crates/acdp-jcs", version = "=0.14.0" }
-acdp-safe-http  = { path = "crates/acdp-safe-http", version = "=0.14.0" }
-acdp-did        = { path = "crates/acdp-did", version = "=0.14.0" }
-acdp-crypto     = { path = "crates/acdp-crypto", version = "=0.14.0" }
-acdp-types      = { path = "crates/acdp-types", version = "=0.14.0" }
-acdp-validation = { path = "crates/acdp-validation", version = "=0.14.0" }
-acdp-verify     = { path = "crates/acdp-verify", version = "=0.14.0" }
-acdp-producer   = { path = "crates/acdp-producer", version = "=0.14.0" }
-acdp-client     = { path = "crates/acdp-client", version = "=0.14.0", optional = true }
-acdp-server     = { path = "crates/acdp-server", version = "=0.14.0", optional = true }
+acdp-primitives = { path = "crates/acdp-primitives", version = "=0.14.1" }
+acdp-jcs        = { path = "crates/acdp-jcs", version = "=0.14.1" }
+acdp-safe-http  = { path = "crates/acdp-safe-http", version = "=0.14.1" }
+acdp-did        = { path = "crates/acdp-did", version = "=0.14.1" }
+acdp-crypto     = { path = "crates/acdp-crypto", version = "=0.14.1" }
+acdp-types      = { path = "crates/acdp-types", version = "=0.14.1" }
+acdp-validation = { path = "crates/acdp-validation", version = "=0.14.1" }
+acdp-verify     = { path = "crates/acdp-verify", version = "=0.14.1" }
+acdp-producer   = { path = "crates/acdp-producer", version = "=0.14.1" }
+acdp-client     = { path = "crates/acdp-client", version = "=0.14.1", optional = true }
+acdp-server     = { path = "crates/acdp-server", version = "=0.14.1", optional = true }
 
 [dev-dependencies]
 serde         = { version = "1", features = ["derive"] }

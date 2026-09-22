@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-types-v0.14.0...acdp-types-v0.14.1) - 2026-09-22
+
+### Fixed
+
+- post-release review of the RFC-0014 wave — 3 bugs, coverage gaps, doc drift ([#296](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/296))
+
 ## [0.14.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-types-v0.13.2...acdp-types-v0.14.0) - 2026-09-22
 
 ### Added

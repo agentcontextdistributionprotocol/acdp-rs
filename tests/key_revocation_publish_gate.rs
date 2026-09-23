@@ -271,6 +271,52 @@ fn did_key_self_revocation_rejected_at_registry_server_level() {
     );
 }
 
+/// Facade-level regression: a bug fixed after issue #295's own fix landed.
+/// Narrowing `PublishValidator::validate_post_schema`'s §4 gate to the
+/// standard type only (#295) had the side effect of silently dropping the
+/// did:key §5-step-2 self-sign sub-check for the §10 interim
+/// `acdp:key-revocation` form too — since that sub-check used to run only
+/// as a byproduct of full §4 parsing. §5 has no §10 interim-form carve-out
+/// (unlike §4), so this must still be rejected. Proves the fix at the
+/// `RegistryServer` facade, not just inside `PublishValidator`'s own unit
+/// tests — see this file's header for why that distinction matters.
+#[test]
+fn did_key_interim_self_revocation_rejected_at_registry_server_level() {
+    let signing_key = SigningKey::from_bytes(&[6u8; 32]);
+    let fp = fingerprint_ed25519(&signing_key.verifying_key_bytes());
+    let producer = Producer::new_did_key(signing_key);
+
+    let req = producer
+        .publish_request()
+        .acdp_version("0.3.0")
+        .title("Key revocation — did:key interim-form self-revocation")
+        .context_type(ContextType::Custom(
+            ContextType::KEY_REVOCATION_INTERIM.into(),
+        ))
+        .visibility(Visibility::Public)
+        .metadata(json!({
+            "revoked_key_fingerprint": fp,
+            "compromised_since": COMPROMISED_SINCE,
+            "reason": "test compromise",
+        }))
+        .build()
+        .expect("builder does not resolve keys; the publish shape itself is valid");
+
+    let mut caps = caps_at("0.3.0");
+    caps.registry_did = REGISTRY_DID.into();
+    let server =
+        RegistryServer::try_new(InMemoryStore::new(), caps, REGISTRY_AUTHORITY).expect("server");
+
+    let err = server.publish_verified_did_key(&req, None).expect_err(
+        "an interim-form did:key revocation signed by the very key it revokes must \
+             still be rejected — §5 step 2 has no §10 interim-form carve-out",
+    );
+    assert!(
+        matches!(err, AcdpError::KeyNotAuthorized(_)),
+        "expected KeyNotAuthorized, got {err:?}"
+    );
+}
+
 // ── fail-closed on a malformed acdp_version ──────────────────────────────────
 
 /// `RegistryServer::try_new`/`try_new_for_test_authority` validate

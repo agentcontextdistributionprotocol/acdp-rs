@@ -288,6 +288,73 @@ impl KeyRevocation {
         self.revoked_key_fingerprint == key_fingerprint
     }
 
+    /// RFC-ACDP-0014 §5 step 2, decoupled from full §4 shape validation
+    /// (contrast [`Self::check_not_self_signed`], which needs an already
+    /// shape-validated [`KeyRevocation`]). §10's interim-form carve-out
+    /// is scoped explicitly to "§4 shape validation" — it says nothing
+    /// about §5, whose own MUST-reject text is gated on `acdp_version`
+    /// alone, not on which spelling of the context type was used. So a
+    /// registry on `[0.3.0, 0.5.0)` that must NOT §4-validate the
+    /// interim `acdp:key-revocation` form still MUST enforce this check
+    /// against it — this is the primitive that lets it do so without
+    /// pulling in the rest of §4.
+    ///
+    /// Tolerant by design: a missing or non-string
+    /// `metadata.revoked_key_fingerprint` can't be evaluated, so this
+    /// returns `Ok(())` rather than rejecting on shape grounds — full §4
+    /// validation (standard type) or §5.11 signature verification is
+    /// what catches those cases instead. `signing_key_fingerprint` is
+    /// the RFC-ACDP-0010 §6 fingerprint of the *resolved* signing key.
+    pub fn check_not_self_signed_lenient(
+        req: &PublishRequest,
+        signing_key_fingerprint: &str,
+    ) -> Result<(), AcdpError> {
+        let Some(fingerprint) = req
+            .metadata
+            .as_ref()
+            .and_then(|m| m.as_object())
+            .and_then(|m| m.get("revoked_key_fingerprint"))
+            .and_then(|v| v.as_str())
+        else {
+            return Ok(());
+        };
+        if fingerprint == signing_key_fingerprint {
+            return Err(AcdpError::KeyNotAuthorized(format!(
+                "revocation of key {fingerprint} is signed by that same key — a key is not \
+                 authorized to attest its own compromise; treat as unverified \
+                 (RFC-ACDP-0014 §5 step 2)"
+            )));
+        }
+        Ok(())
+    }
+
+    /// [`Self::check_not_self_signed_lenient`]'s did:key sub-case: the
+    /// signing key's fingerprint is derivable from `signature.key_id`
+    /// alone, with no DID resolution — the same synchronous check
+    /// `from_parts` used to run unconditionally as a side effect of full
+    /// §4 parsing (before the interim form was carved out of that), now
+    /// exposed standalone so a caller (like `PublishValidator`) can run
+    /// it on a body it deliberately is NOT §4-shape-validating.
+    ///
+    /// Tolerant by design: a non-did:key signer, an unresolvable
+    /// did:key `key_id`, or a fingerprint that fails to derive all leave
+    /// this a no-op — see [`Self::check_not_self_signed_lenient`] for
+    /// why that's the right default.
+    pub fn check_not_self_signed_did_key_lenient(req: &PublishRequest) -> Result<(), AcdpError> {
+        if !req.signature.key_id.starts_with("did:key:") {
+            return Ok(());
+        }
+        let Ok(material) = acdp_did::key::resolve_did_key_url(&req.signature.key_id) else {
+            return Ok(());
+        };
+        let Ok(signer_fingerprint) =
+            acdp_crypto::fingerprint::fingerprint_did_key_material(&material)
+        else {
+            return Ok(());
+        };
+        Self::check_not_self_signed_lenient(req, &signer_fingerprint)
+    }
+
     /// Registry-attestation binding (pure): `publisher` — the identity
     /// this revocation was actually published under — MUST equal both
     /// `did:web:<serving_authority>` (the authority the context was

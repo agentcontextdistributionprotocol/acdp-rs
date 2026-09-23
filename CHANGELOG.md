@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- *(server)* RFC-ACDP-0014 §5 step 2 (a revocation MUST NOT be signed by the very key
+  it revokes) and §5 rule 3 / §6 (controller binding) are enforced again for the §10
+  interim `acdp:key-revocation` form on registries advertising `acdp_version` in
+  `[0.3.0, 0.5.0)`. This closes a regression introduced by the fix for
+  [#295](https://github.com/agentcontextdistributionprotocol/acdp-rs/issues/295):
+  narrowing the §4 shape-validation gate to the standard `key-revocation` type only
+  also silently dropped the did:key self-sign sub-check and the controller-binding
+  check that used to run as a side effect of full §4 parsing — even though neither
+  rule has a §10 interim-form carve-out (unlike §4, whose carve-out text is scoped
+  explicitly to "§4 shape validation"). A did:key producer could self-sign a
+  revocation of its own key using the interim form and have it silently accepted by
+  `PublishValidator::validate_post_schema`; `RegistryServer::prove_publish_identity`
+  and `prove_publish_identity_pinned` had the same gap on the did:web/pinned-key
+  paths, since both forced the same full §4 parse to obtain a self-sign check.
+  New lenient, §4-shape-independent checks
+  (`KeyRevocation::check_not_self_signed_lenient`,
+  `check_not_self_signed_did_key_lenient`) restore both rules without re-imposing §4
+  shape validation on the interim form.
+
 ## [0.14.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.14.0...acdp-v0.14.1) - 2026-09-22
 
 ### Fixed

@@ -499,8 +499,8 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
         // revocation MUST NOT be signed by the very key it revokes.
         // `PublishValidator::validate_post_schema` (above) already
         // enforces this for a did:key signer offline, purely from the
-        // body (`KeyRevocation::from_parts`'s did:key sub-case) — but a
-        // did:web signer's fingerprint is not derivable without
+        // body (`KeyRevocation::check_not_self_signed_did_key_lenient`)
+        // — but a did:web signer's fingerprint is not derivable without
         // resolving its DID document. That resolution already happened
         // unconditionally just above, to verify the signature
         // (RFC-ACDP-0003 steps 7–8) — so this is NOT a new resolution.
@@ -512,7 +512,12 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
         // purely to derive a fingerprint from the key that already
         // verified — no new I/O, no new failure mode. Scoped to
         // key-revocation bodies at `acdp_version >= 0.3.0` so no other
-        // publish pays even that cached-lookup cost.
+        // publish pays even that cached-lookup cost. Uses
+        // `is_key_revocation()` (both context-type spellings) rather
+        // than the standard-type-only gate `validate_post_schema` uses
+        // for full §4 validation — §5 step 2 has no §10 interim-form
+        // carve-out, so it must still fire on the interim spelling; see
+        // `check_not_self_signed_lenient`'s doc comment.
         let revocation_check_needed = req.context_type.is_key_revocation()
             && key_revocation_gate_applies(&self.caps.acdp_version);
 
@@ -543,7 +548,7 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
                         .into(),
                 )
             })?;
-            KeyRevocation::from_publish_request(req)?.check_not_self_signed(fp)?;
+            KeyRevocation::check_not_self_signed_lenient(req, fp)?;
         }
 
         Ok(Proven {
@@ -848,7 +853,7 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
                         .into(),
                 )
             })?;
-            KeyRevocation::from_publish_request(req)?.check_not_self_signed(fp)?;
+            KeyRevocation::check_not_self_signed_lenient(req, fp)?;
         }
 
         Ok(Proven {

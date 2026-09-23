@@ -7,7 +7,7 @@ use acdp_primitives::error::AcdpError;
 use acdp_types::{
     body::Body,
     capabilities::CapabilitiesDocument,
-    primitives::{ContentHash, ContextType, CtxId, LineageId},
+    primitives::{AgentDid, ContentHash, ContextType, CtxId, LineageId},
     publish::PublishRequest,
     revocation::KeyRevocation,
 };
@@ -233,6 +233,28 @@ impl<'a> PublishValidator<'a> {
             )));
         }
 
+        // RFC-ACDP-0014 §5 step 2 (self-sign) and §5 rule 3 / §6
+        // (controller binding): version-gated MUSTs with NO §10
+        // interim-form carve-out — that carve-out text is scoped
+        // explicitly to "§4 shape validation" (see the comment on the
+        // standard-type-only gate just below), and says nothing about
+        // §5 or §6. So while a `[0.3.0, 0.5.0)` registry must not
+        // §4-shape-validate the interim `acdp:key-revocation` form, it
+        // still MUST enforce these two identity/trust rules against it.
+        // Run leniently here — tolerant of an otherwise-malformed body,
+        // since this registry has no license to reject the interim form
+        // on shape grounds — so a self-signed or misattributed interim
+        // revocation is still rejected even though its shape is never
+        // fully validated. The standard type gets the same guarantees,
+        // more strictly, from the full §4 gate immediately below, so
+        // this only needs to run for the interim spelling.
+        if is_interim_key_revocation_form(&req.context_type)
+            && key_revocation_gate_applies(&self.caps.acdp_version)
+        {
+            KeyRevocation::check_not_self_signed_did_key_lenient(req)?;
+            self.check_revocation_controller_lenient(req)?;
+        }
+
         // RFC-ACDP-0014 §4 publish-time gate: registries advertising
         // acdp_version >= 0.3.0 MUST reject malformed key-revocation
         // bodies with schema_violation. See `key_revocation_gate_applies`
@@ -321,6 +343,63 @@ impl<'a> PublishValidator<'a> {
         }
 
         Ok(())
+    }
+
+    /// [`Self::check_revocation_controller`]'s arms 4 and 5, decoupled
+    /// from full §4 shape validation — see the interim-form branch in
+    /// [`Self::validate_post_schema`] for why: §5 rule 3 / §6's
+    /// controller-binding obligation has no §10 interim-form carve-out,
+    /// so it must still be enforced against a body this registry is
+    /// otherwise not §4-shape-validating.
+    ///
+    /// Reads `metadata.revoked_key_controller` directly off `req`
+    /// (rather than a parsed [`KeyRevocation`], which the interim form
+    /// deliberately never produces here) and tolerates a value that
+    /// fails to parse as a DID — that's left for full §4 validation
+    /// (standard type) or signature verification to reject; this check
+    /// only fires on an unambiguous arm-4/arm-5 violation. Arms 1–3 need
+    /// no lenient counterpart: they're never a rejection.
+    fn check_revocation_controller_lenient(&self, req: &PublishRequest) -> Result<(), AcdpError> {
+        let controller_raw = req
+            .metadata
+            .as_ref()
+            .and_then(|m| m.as_object())
+            .and_then(|m| m.get("revoked_key_controller"))
+            .and_then(|v| v.as_str());
+
+        let agent_is_registry = req.agent_id.as_str() == self.caps.registry_did;
+
+        match controller_raw {
+            Some(raw) => {
+                let Ok(controller) = AgentDid::parse(raw) else {
+                    return Ok(());
+                };
+                if controller != req.agent_id && !agent_is_registry {
+                    // Arm 4.
+                    return Err(AcdpError::SchemaViolation(format!(
+                        "metadata.revoked_key_controller '{raw}' differs from agent_id '{}', \
+                         but agent_id is not this registry's own DID ('{}'); a controller \
+                         different from agent_id is only valid on a §6 registry-attested \
+                         revocation (RFC-ACDP-0014 §5, §6)",
+                        req.agent_id, self.caps.registry_did
+                    )));
+                }
+                Ok(())
+            }
+            None => {
+                if agent_is_registry {
+                    // Arm 5.
+                    return Err(AcdpError::SchemaViolation(format!(
+                        "key-revocation published under this registry's own DID ('{}') has \
+                         no metadata.revoked_key_controller; a registry-attested revocation \
+                         MUST name the affected producer's DID as the controller \
+                         (RFC-ACDP-0014 §6)",
+                        self.caps.registry_did
+                    )));
+                }
+                Ok(())
+            }
+        }
     }
 }
 
@@ -670,9 +749,7 @@ mod tests {
     use acdp_crypto::SigningKey;
     use acdp_producer::Producer;
     use acdp_types::{
-        capabilities::Limits,
-        primitives::{AgentDid, ContextType, Visibility},
-        revocation::RevocationTrustClass,
+        capabilities::Limits, primitives::Visibility, revocation::RevocationTrustClass,
     };
 
     fn test_caps() -> CapabilitiesDocument {
@@ -1419,6 +1496,157 @@ mod tests {
         );
         let raw_len = serde_json::to_vec(&req).unwrap().len();
         v.validate_post_schema(&req, raw_len).unwrap();
+    }
+
+    fn did_key_producer_fixture(seed: [u8; 32]) -> (SigningKey, String, String, String) {
+        let key = SigningKey::from_bytes(&seed);
+        let public_key = key.verifying_key_bytes();
+        let did = acdp_did::key::did_key_from_ed25519(&public_key);
+        let key_id = acdp_did::key::did_key_url(&did).unwrap();
+        let fingerprint = acdp_crypto::fingerprint::fingerprint_ed25519(&public_key);
+        (key, did, key_id, fingerprint)
+    }
+
+    fn caps_v030_with_did_key() -> CapabilitiesDocument {
+        CapabilitiesDocument {
+            acdp_version: "0.3.0".into(),
+            supported_did_methods: vec!["did:web".into(), "did:key".into()],
+            ..test_caps()
+        }
+    }
+
+    // Regression for a bug introduced by the #295 fix itself: narrowing
+    // the §4 gate to the standard type only (so it stops calling
+    // `KeyRevocation::from_publish_request`/`from_parts` for the
+    // interim form) also silently dropped `from_parts`'s embedded
+    // did:key §5-step-2 self-sign sub-check for that form — since §5
+    // has no §10 interim-form carve-out (unlike §4), that's a real
+    // regression, not a side effect of the fix's actual scope. Restored
+    // via `check_not_self_signed_did_key_lenient` in the interim-form
+    // branch above.
+    #[test]
+    fn revocation_interim_custom_type_did_key_self_signed_rejected_at_0_3_0() {
+        let (key, did, key_id, fingerprint) = did_key_producer_fixture([9u8; 32]);
+        let mut meta = valid_revocation_metadata();
+        meta["revoked_key_fingerprint"] = serde_json::json!(fingerprint);
+
+        let req = Producer::new(key, AgentDid::new(&did), key_id)
+            .publish_request()
+            .title("self-signed interim revocation")
+            .context_type(ContextType::Custom(
+                ContextType::KEY_REVOCATION_INTERIM.into(),
+            ))
+            .visibility(Visibility::Public)
+            .acdp_version("0.3.0")
+            .metadata(meta)
+            .build()
+            .unwrap();
+
+        let caps = caps_v030_with_did_key();
+        let v = PublishValidator::new(&caps);
+        let raw_len = serde_json::to_vec(&req).unwrap().len();
+        assert!(matches!(
+            v.validate_post_schema(&req, raw_len),
+            Err(AcdpError::KeyNotAuthorized(_))
+        ));
+    }
+
+    // Positive control for the test above: same did:key interim-form
+    // shape, but the signing key's fingerprint differs from the
+    // revoked one — accepted. Without this, the negative test could be
+    // passing for an unrelated reason (e.g. did:key producers being
+    // rejected outright on the interim form).
+    #[test]
+    fn revocation_interim_custom_type_did_key_different_key_accepted_at_0_3_0() {
+        let (key, did, key_id, _fingerprint) = did_key_producer_fixture([10u8; 32]);
+        // valid_revocation_metadata's fingerprint is all-'a', unrelated
+        // to the [10u8; 32] key.
+        let meta = valid_revocation_metadata();
+
+        let req = Producer::new(key, AgentDid::new(&did), key_id)
+            .publish_request()
+            .title("non-self-signed interim revocation")
+            .context_type(ContextType::Custom(
+                ContextType::KEY_REVOCATION_INTERIM.into(),
+            ))
+            .visibility(Visibility::Public)
+            .acdp_version("0.3.0")
+            .metadata(meta)
+            .build()
+            .unwrap();
+
+        let caps = caps_v030_with_did_key();
+        let v = PublishValidator::new(&caps);
+        let raw_len = serde_json::to_vec(&req).unwrap().len();
+        v.validate_post_schema(&req, raw_len)
+            .expect("did:key signer whose fingerprint differs from the revoked key must pass");
+    }
+
+    // Same regression class as the self-sign test above, but for §5
+    // rule 3 / §6's controller-binding obligation (arm 4): a
+    // `revoked_key_controller` naming neither the publisher nor a
+    // registry-attested relationship must still be rejected on the
+    // interim form, even though this registry never §4-shape-validates
+    // it. Restored via `check_revocation_controller_lenient`.
+    #[test]
+    fn revocation_interim_custom_type_mismatched_controller_rejected_at_0_3_0() {
+        let mut meta = valid_revocation_metadata();
+        meta["revoked_key_controller"] = serde_json::json!("did:web:someone-else.example.com");
+        let req = build_revocation_request_with_type(
+            REVOCATION_PRODUCER_DID,
+            meta,
+            "0.3.0",
+            ContextType::Custom(ContextType::KEY_REVOCATION_INTERIM.into()),
+        );
+        let caps = test_caps_v030();
+        let v = PublishValidator::new(&caps);
+        let raw_len = serde_json::to_vec(&req).unwrap().len();
+        assert!(matches!(
+            v.validate_post_schema(&req, raw_len),
+            Err(AcdpError::SchemaViolation(_))
+        ));
+    }
+
+    // Positive control: a registry-attested interim revocation (agent_id
+    // is this registry's own DID, controller names the affected
+    // producer) is still accepted — arm 3, not arm 4/5.
+    #[test]
+    fn revocation_interim_custom_type_registry_attested_controller_accepted_at_0_3_0() {
+        let caps = test_caps_v030();
+        let mut meta = valid_revocation_metadata();
+        meta["revoked_key_controller"] = serde_json::json!(REVOCATION_PRODUCER_DID);
+        let req = build_revocation_request_with_type(
+            &caps.registry_did,
+            meta,
+            "0.3.0",
+            ContextType::Custom(ContextType::KEY_REVOCATION_INTERIM.into()),
+        );
+        let v = PublishValidator::new(&caps);
+        let raw_len = serde_json::to_vec(&req).unwrap().len();
+        v.validate_post_schema(&req, raw_len)
+            .expect("registry-attested interim revocation with a named controller must pass");
+    }
+
+    // Arm 5 on the interim form: published under the registry's own DID
+    // with NO controller at all must still be rejected — §6 makes the
+    // controller REQUIRED on a registry-attested revocation, no §10
+    // carve-out applies.
+    #[test]
+    fn revocation_interim_custom_type_registry_attested_missing_controller_rejected_at_0_3_0() {
+        let caps = test_caps_v030();
+        let meta = valid_revocation_metadata();
+        let req = build_revocation_request_with_type(
+            &caps.registry_did,
+            meta,
+            "0.3.0",
+            ContextType::Custom(ContextType::KEY_REVOCATION_INTERIM.into()),
+        );
+        let v = PublishValidator::new(&caps);
+        let raw_len = serde_json::to_vec(&req).unwrap().len();
+        assert!(matches!(
+            v.validate_post_schema(&req, raw_len),
+            Err(AcdpError::SchemaViolation(_))
+        ));
     }
 
     // ── Phase 4 (#279+RFC-0014-wave): RFC-ACDP-0014 §10 — interim-form

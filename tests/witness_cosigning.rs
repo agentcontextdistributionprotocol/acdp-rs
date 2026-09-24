@@ -501,7 +501,7 @@ async fn wit_002_consistency_refusal_fixture() {
     use acdp::client::{mint_cosignature_checked, WitnessConsistencyCheck};
     use acdp::did::WebResolver;
     use acdp::registry::MerkleLog;
-    use acdp::types::log::{encode_sha256_hex, LogConsistencyProof, LogLeaf, LOG_LEAF_VERSION};
+    use acdp::types::log::{LogConsistencyProof, LogLeaf, LOG_LEAF_VERSION};
     use acdp::types::receipt::ReceiptSigner;
     use acdp::types::{ContentHash, CtxId};
     use common::{ed25519_did_doc, TlsTestServer};
@@ -641,5 +641,4 @@ async fn wit_002_consistency_refusal_fixture() {
             .unwrap_err(),
         AcdpError::InvalidLogProof(_)
     ));
-    let _ = encode_sha256_hex(&[0u8; 32]); // keep the import exercised
 }

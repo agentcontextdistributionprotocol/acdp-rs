@@ -1432,6 +1432,18 @@ impl VerifiedContext {
     /// rejection (`Ok((None, report))`) rather than an `Err`. A caller
     /// that needs to tell a flake from a genuine rejection should
     /// inspect `policy_phase_error`'s [`AcdpError::is_transient`].
+    ///
+    /// Stage-classification caveat: `verify_retrieved` (and therefore the
+    /// receipt/revocation/signature/historical-key phases it runs) is only
+    /// attempted once ALL top-level probes pass, `ctx_id_ok` included — see
+    /// `all_top_level_pass` below. So when `ctx_id_ok` is `false`,
+    /// `policy_phase_error` stays `None` even if the served body also
+    /// carries a receipt that would independently fail its own cross-check
+    /// (e.g. a receipt genuinely bound to the *served*, substituted body —
+    /// RFC-ACDP-0010 §8 step 3 — rather than the requested one). A caller
+    /// classifying a `ctx_id_ok: false` report should not read a `None`
+    /// `policy_phase_error` as "the receipt/signature phases passed" — they
+    /// were never attempted.
     pub async fn fetch_report_diagnose(
         client: &RegistryClient,
         resolver: &WebResolver,

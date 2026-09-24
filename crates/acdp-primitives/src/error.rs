@@ -553,10 +553,22 @@ impl From<std::io::Error> for AcdpError {
 #[cfg(feature = "reqwest")]
 impl From<reqwest::Error> for AcdpError {
     fn from(e: reqwest::Error) -> Self {
+        // reqwest's own `Display` prints only its outermost frame (e.g.
+        // "error sending request for url (...)"); the cause it wraps —
+        // notably a `SafeDnsResolver` SSRF rejection, which is otherwise
+        // silently dropped — lives in the `source()` chain. Walk it so
+        // that detail reaches the caller instead of vanishing into a
+        // generic "connection failed".
+        let mut msg = e.to_string();
+        let mut source: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(&e);
+        while let Some(s) = source {
+            msg.push_str(&format!(": {s}"));
+            source = s.source();
+        }
         if e.is_connect() || e.is_timeout() {
-            AcdpError::Http(format!("connection failed: {e}"))
+            AcdpError::Http(format!("connection failed: {msg}"))
         } else {
-            AcdpError::Http(e.to_string())
+            AcdpError::Http(msg)
         }
     }
 }

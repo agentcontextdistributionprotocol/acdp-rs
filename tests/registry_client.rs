@@ -629,6 +629,18 @@ async fn new_refuses_hostname_resolving_to_loopback_at_dns_time() {
     let client = RegistryClient::new(&url).unwrap();
     // ...but the request fails: localhost → 127.0.0.1 is filtered at DNS time.
     let err = client.capabilities().await.unwrap_err();
-    // Any non-success is acceptable; it must not connect to loopback.
-    let _ = err;
+    // A bare `is_err()` here would pass even if DNS-time SSRF filtering were
+    // completely disabled: `MockServer` only ever serves plain HTTP, so an
+    // `https://` request against it fails the TLS handshake regardless of
+    // which IP it resolved to. Assert on the SSRF rejection text itself
+    // (surfaced via the `reqwest::Error` source chain — see
+    // `AcdpError::from(reqwest::Error)`) so this test can only pass when the
+    // DNS-time filter is what actually fired.
+    let AcdpError::Http(msg) = &err else {
+        panic!("expected AcdpError::Http, got {err:?}");
+    };
+    assert!(
+        msg.contains("SSRF policy") && msg.contains("forbidden"),
+        "expected the DNS-time SSRF rejection to be visible in the error, got: {msg}"
+    );
 }

@@ -6598,7 +6598,7 @@ async fn budget_n2_both_knobs_set_byte_exhaustion_does_not_consume_request_slot(
 // ── Issue #257: the revocation cache (facts + markers) ──────────────────────
 //
 // D-A: the cache is TWO objects. Facts (verified `KeyRevocation`s) are always
-// unioned into classification, indefinitely, per RFC-ACDP-0014 §7:114 — an
+// unioned into classification, indefinitely, per RFC-ACDP-0014 §7:121 — an
 // anti-rollback security control. Freshness markers ("vantage V completed a
 // full, untruncated discovery for producer P at time T") are TTL-bounded,
 // per-vantage, and off by default (`freshness: Duration::ZERO`), because §8
@@ -6753,7 +6753,7 @@ fn plain_signed_body(
 /// Facts are keyed only by producer `agent_id` (never by vantage), so this
 /// works across two independent registries sharing nothing but the
 /// identity string — precisely the anti-rollback property RFC-ACDP-0014
-/// §7:114 licenses.
+/// §7:121 licenses.
 #[tokio::test]
 async fn cache_ac1_fact_survives_a_registry_that_stops_serving_it() {
     let id = cache_identity(0xC1, "cache-ac1");
@@ -7079,8 +7079,8 @@ async fn cache_ac5a_freshness_window_suppresses_repeat_lookup() {
 /// AC5b: a marker STOPS suppressing once its `freshness` elapses, so a
 /// revocation published after the marker was minted is still discovered.
 ///
-/// This is the half that closes RFC-ACDP-0014 §7:114's actual silence —
-/// §7:114 licenses caching a verified revocation indefinitely but says
+/// This is the half that closes RFC-ACDP-0014 §7:121's actual silence —
+/// §7:121 licenses caching a verified revocation indefinitely but says
 /// nothing about re-checking for NEW ones. A marker that never expired
 /// would reintroduce exactly that gap, so this test must stay able to
 /// fail: it goes RED if suppression becomes permanent.

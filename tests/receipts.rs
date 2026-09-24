@@ -535,14 +535,12 @@ async fn fed_009_missing_receipt_from_advertising_upstream_fails() {
 /// (RFC-ACDP-0006 §4.1 step 7, NORMATIVE), specifically its base scenario
 /// plus the `no_receipt_served` `additional_test_cases` entry — the
 /// receipt-less path is the only one `fetch_with_policy` (a receipt-less
-/// core-profile client) can exercise. This test does **not** cover the
-/// fixture's other two additional cases: `receipt_served_but_attests_returned_body`
-/// (a receipt present but bound to the wrong body — the dual
-/// `invalid_receipt` + `ContextIdMismatch` verdict; see `rcpt-*`/`rot-001`
-/// receipt-path tests for the receipt half) and
+/// core-profile client) can exercise. The `receipt_served_but_attests_returned_body`
+/// case (a receipt present but bound to the wrong body) is covered separately
+/// by `receipt_present_but_attests_wrong_body_still_refused_on_ctx_id` below.
+/// This test does **not** cover the fixture's third additional case,
 /// `uri_encoding_and_path_style_equivalence` (percent-encoding / path-style
-/// request forms that must compare equal and NOT trip this check) — neither
-/// is reproduced here.
+/// request forms that must compare equal and NOT trip this check).
 ///
 /// Reproduced under the exact gap this defence closes: default
 /// `ReceiptPolicy::VerifyIfPresent` with `registry_receipt: None` (no
@@ -624,6 +622,85 @@ async fn context_substitution_is_refused() {
     assert!(
         msg.contains(ctx_id_b.as_str()),
         "message must name the served id: {msg}"
+    );
+}
+
+/// `receipt_served_but_attests_returned_body` — the `additional_test_cases`
+/// entry of `fed-011-ctx-id-binding.json` that `context_substitution_is_refused`
+/// above deliberately does not cover. Unlike that test, receipts are NOT
+/// stripped here: context B is served (in response to a request for A)
+/// carrying B's own receipt — a receipt that is internally, cryptographically
+/// valid because it genuinely attests to the body it's shipped with.
+///
+/// The fixture requires BOTH checks to independently refuse this: RFC-ACDP-0010
+/// §8 step 3 (`receipt.ctx_id` must equal the *requested* ctx_id, which B's
+/// receipt fails since it legitimately names B) and RFC-ACDP-0006 §4.1 step 7
+/// (the unconditional body/requested ctx_id binding). "A consumer MUST NOT
+/// treat receipt verification success as a substitute for the unconditional
+/// step-7 check" — so this test's real purpose is to guard against a
+/// regression where a *validly-signed, internally self-consistent* receipt
+/// gets treated as sufficient proof of identity and the step-7 comparison is
+/// skipped or short-circuited in its favor. A receipt this convincing is
+/// exactly the case a weaker implementation could be fooled by.
+#[tokio::test]
+async fn receipt_present_but_attests_wrong_body_still_refused_on_ctx_id() {
+    let producer_key_a = SigningKey::from_bytes(&[7u8; 32]);
+    let producer_key_b = SigningKey::from_bytes(&[7u8; 32]);
+    let producer_pub = producer_key_a.verifying_key_bytes();
+    let registry_key_pub = SigningKey::from_bytes(&[0x11u8; 32]).verifying_key_bytes();
+
+    let h = start_harness(&registry_key_pub, &producer_pub).await;
+
+    let (ctx_id_a, ctx_json_a, _) =
+        publish_with_receipts_titled(&h, producer_key_a, "receipt context A").await;
+    let (ctx_id_b, ctx_json_b, receipt_b) =
+        publish_with_receipts_titled(&h, producer_key_b, "receipt context B").await;
+    assert_ne!(
+        ctx_id_a, ctx_id_b,
+        "the two publishes must mint distinct ctx_ids"
+    );
+
+    // Premise: B's own receipt is internally valid and genuinely attests to
+    // B, not to A — so if the ctx_id-binding check were ever skipped in
+    // favor of "the receipt verified", this substitution would sail through.
+    let typed_receipt_b = RegistryReceipt::from_value(&receipt_b).expect("B's receipt parses");
+    assert_eq!(
+        typed_receipt_b.ctx_id, ctx_id_b,
+        "premise: B's receipt attests to B, not A — this is what makes it a \
+         convincing (not just present) receipt for the substituted body"
+    );
+
+    let client = h.client();
+
+    // Positive control: A requested, A served (with A's own receipt) —
+    // must still succeed. Guards against the ctx_id check alone being
+    // enough to explain a failure below for the wrong reason.
+    h.serve_context(ctx_json_a);
+    VerifiedContext::fetch_with_policy(
+        &client,
+        &h.resolver,
+        &ctx_id_a,
+        &VerificationPolicy::default(),
+    )
+    .await
+    .expect("A requested, A served (receipted) must still succeed");
+
+    // Substitution: A requested, registry serves B — complete with B's own
+    // valid receipt. Must still be refused via ContextIdMismatch: the
+    // unconditional step-7 check runs first and is not superseded by the
+    // receipt's own internal validity.
+    h.serve_context(ctx_json_b);
+    let err = VerifiedContext::fetch_with_policy(
+        &client,
+        &h.resolver,
+        &ctx_id_a,
+        &VerificationPolicy::default(),
+    )
+    .await
+    .expect_err("A requested, B served (with B's valid receipt) must still be refused");
+    assert!(
+        matches!(err, AcdpError::ContextIdMismatch { .. }),
+        "receipt validity must not substitute for the step-7 binding check, got {err:?}"
     );
 }
 

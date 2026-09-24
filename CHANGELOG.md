@@ -28,6 +28,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `check_not_self_signed_did_key_lenient`) restore both rules without re-imposing §4
   shape validation on the interim form.
 
+- *(client)* `AcdpError::from(reqwest::Error)` (surfaced via `AcdpError::Http`) no
+  longer drops the error's `source()` chain. A DNS-time SSRF rejection from
+  `SafeDnsResolver` — or any other transport-level cause reqwest wraps — was
+  previously collapsed to a generic message like `connection failed: error sending
+  request for url (...)`, discarding the actual reason. The full chain is now
+  appended, so the specific cause (e.g. `"SSRF policy: DNS answer for '...' contains
+  a forbidden address..."`) is visible to callers instead of only `is_transient`.
+
 ## [0.14.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.14.0...acdp-v0.14.1) - 2026-09-22
 
 ### Fixed

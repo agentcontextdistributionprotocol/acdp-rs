@@ -33,7 +33,7 @@ use common::{did_doc_router, ed25519_did_doc, ed25519_did_doc_without_assertion,
 
 /// pub-001 — a PublishRequest whose signature value was produced by a
 /// key that is NOT the one published in the DID document MUST be
-/// rejected at signature verification (RFC-ACDP-0003 §2.1 step 8).
+/// rejected at signature verification (RFC-ACDP-0003 §2.1 step 7).
 ///
 /// Construction:
 ///   1. honest_key — published in the DID document

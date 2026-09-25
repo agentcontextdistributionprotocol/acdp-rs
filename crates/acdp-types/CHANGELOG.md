@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.2](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-types-v0.14.1...acdp-types-v0.14.2) - 2026-09-25
+
+### Fixed
+
+- *(server)* restore §5 self-sign/controller checks for the interim revocation form ([#301](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/301))
+
 ## [0.14.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-types-v0.14.0...acdp-types-v0.14.1) - 2026-09-22
 
 ### Fixed

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.2](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.14.1...acdp-v0.14.2) - 2026-09-25
+
+### Fixed
+
+- *(ci)* fire release-cascade consumer-bump dispatches on workflow_dispatch releases ([#305](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/305))
+- *(client)* preserve reqwest error source chain; close a test-audit gap ([#303](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/303))
+- *(server)* restore §5 self-sign/controller checks for the interim revocation form ([#301](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/301))
+
 ### Fixed
 
 - *(server)* RFC-ACDP-0014 §5 step 2 (a revocation MUST NOT be signed by the very key

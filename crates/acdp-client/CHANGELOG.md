@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.2](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-client-v0.14.1...acdp-client-v0.14.2) - 2026-09-25
+
+### Fixed
+
+- *(client)* preserve reqwest error source chain; close a test-audit gap ([#303](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/303))
+
 ## [0.14.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-client-v0.14.0...acdp-client-v0.14.1) - 2026-09-22
 
 ### Fixed

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.2](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-server-v0.14.1...acdp-server-v0.14.2) - 2026-09-25
+
+### Fixed
+
+- *(server)* restore §5 self-sign/controller checks for the interim revocation form ([#301](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/301))
+- *(server)* stop applying §4 shape validation to the interim revocation form below 0.5.0 ([#299](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/299))
+
 ## [0.14.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-server-v0.14.0...acdp-server-v0.14.1) - 2026-09-22
 
 ### Fixed

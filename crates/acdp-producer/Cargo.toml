@@ -13,11 +13,11 @@ categories  = ["web-programming", "cryptography"]
 rust-version = "1.86"
 
 [dependencies]
-acdp-primitives = { path = "../acdp-primitives", version = "=0.14.1" }
-acdp-types      = { path = "../acdp-types", version = "=0.14.1" }
-acdp-crypto     = { path = "../acdp-crypto", version = "=0.14.1" }
-acdp-did        = { path = "../acdp-did", version = "=0.14.1" }
-acdp-validation = { path = "../acdp-validation", version = "=0.14.1" }
+acdp-primitives = { path = "../acdp-primitives", version = "=0.14.2" }
+acdp-types      = { path = "../acdp-types", version = "=0.14.2" }
+acdp-crypto     = { path = "../acdp-crypto", version = "=0.14.2" }
+acdp-did        = { path = "../acdp-did", version = "=0.14.2" }
+acdp-validation = { path = "../acdp-validation", version = "=0.14.2" }
 serde      = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 chrono     = { version = "0.4", features = ["serde"] }

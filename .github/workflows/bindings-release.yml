@@ -2,10 +2,13 @@ name: bindings-release
 
 # Publishes the `acdp` Node.js SDK (NAPI prebuilts) to npm.
 #
-# Trigger: push a tag of the form `acdp-node-v0.3.0`. The job matrix
-# cross-builds the native `.node` for every target in
-# `bindings/acdp-node/package.json`'s `napi.triples`, then a single
-# publish job assembles the per-platform npm packages
+# Trigger: either push a tag of the form `acdp-node-v0.3.0`, or a
+# `workflow_dispatch` — the latter is how `release-plz.yml`'s SDK cascade
+# fires this workflow automatically whenever the core `acdp` crate
+# releases (see release-plz.yml's "Release SDK bindings at the acdp
+# version" step). The job matrix cross-builds the native `.node` for
+# every target in `bindings/acdp-node/package.json`'s `napi.triples`,
+# then a single publish job assembles the per-platform npm packages
 # (`acdp-darwin-arm64`, `acdp-linux-x64-gnu`, …) plus the loader package
 # (`acdp`) via `napi prepublish` and `npm publish`.
 #
@@ -220,6 +223,7 @@ jobs:
       # `--ignore-scripts` stops npm from re-running the `prepublishOnly` hook
       # (which is `napi prepublish`) and republishing the platform packages.
       - name: Publish root loader package
+        id: publish-root
         if: ${{ always() && (github.event_name == 'push' || !inputs.dry_run) }}
         # --provenance publishes a signed npm provenance statement generated
         # from this run's OIDC id-token (job perm `id-token: write`). Requires
@@ -231,27 +235,6 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: 'true'
-
-      # Notify the npm consumer (acdp-control-plane) so it opens an auto-bump PR
-      # via acdp-ci's bump-consume. App-authenticated (org secrets) — no PAT.
-      - name: Mint token for acdp-control-plane
-        id: dispatch-token
-        if: ${{ github.event_name == 'push' }}
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ secrets.ACDP_BOT_APP_ID }}
-          private-key: ${{ secrets.ACDP_BOT_PRIVATE_KEY }}
-          owner: agentcontextdistributionprotocol
-          repositories: acdp-control-plane
-      - name: Dispatch acdp-released (npm)
-        if: ${{ github.event_name == 'push' }}
-        env:
-          GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
-          REF: ${{ github.ref_name }}
-        run: |
-          VER="${REF#acdp-node-v}"
-          jq -nc --arg v "$VER" --arg e npm '{event_type:"acdp-released",client_payload:{version:$v,ecosystem:$e}}' \
-            | gh api repos/agentcontextdistributionprotocol/acdp-control-plane/dispatches --method POST --input -
 
       # Only a workflow_dispatch publish needs a tag created here — a tag
       # push already has the tag, and a dry_run never actually published.
@@ -269,3 +252,58 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -a "acdp-node-v${V}" -m "acdp-node v${V}"
           git push origin "acdp-node-v${V}"
+
+      # Notify the npm consumer (acdp-control-plane) so it opens an auto-bump PR
+      # via acdp-ci's bump-consume. App-authenticated (org secrets) — no PAT.
+      #
+      # `always() && steps.publish-root.outcome == 'success'` — deliberately NOT a bare
+      # `always()` (would fire even if "Publish root loader package" itself genuinely
+      # failed) and NOT the plain implicit success() a bare `if:` would carry (would
+      # skip this on the documented "Publish platform packages" already-published
+      # idempotent-retry recovery, since success() scans every prior step in the job,
+      # not just the one immediately before it — see plans/issues-302-304-release-
+      # dispatch-fix.md Phase 1 for the full reasoning). Anchoring on the root-publish
+      # step's own recorded outcome is what actually means "the release shipped".
+      # Ordered after "Tag the release" so the tag a bump PR might reference already
+      # exists by the time the consumer reacts; this step's own gate does not depend on
+      # "Tag the release" succeeding (see the plan's Edge cases for why that's correct).
+      - name: Mint token for acdp-control-plane
+        id: dispatch-token
+        if: ${{ always() && steps.publish-root.outcome == 'success' && (github.event_name == 'push' || !inputs.dry_run) }}
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.ACDP_BOT_APP_ID }}
+          private-key: ${{ secrets.ACDP_BOT_PRIVATE_KEY }}
+          owner: agentcontextdistributionprotocol
+          repositories: acdp-control-plane
+      - name: Dispatch acdp-released (npm)
+        if: ${{ always() && steps.publish-root.outcome == 'success' && (github.event_name == 'push' || !inputs.dry_run) }}
+        env:
+          GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
+          REF: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          # Prefer the dispatch input (always set, to a real resolved version, on the
+          # release-plz workflow_dispatch cascade — see release-plz.yml's "Release SDK
+          # bindings at the acdp version" step); fall back to the ref-derived tag suffix
+          # for a plain tag push, where `inputs.version` is unset. On workflow_dispatch,
+          # github.ref_name is the dispatched ref (e.g. "main"), never a version — the
+          # guard below exists specifically to catch that and fail loudly instead of
+          # dispatching {"version":"main"}.
+          if [ -n "${INPUT_VERSION}" ]; then
+            VER="${INPUT_VERSION}"
+          else
+            VER="${REF#acdp-node-v}"
+          fi
+          # Accepts anything shaped like <digits>.<digits>.<digits>[...] — a prefix
+          # check, not full semver validation (e.g. a trailing garbage suffix would
+          # still pass). That's sufficient here: it only needs to reject the one
+          # reachable non-version value (a bare ref name like "main" or an empty
+          # string), and VER is only ever passed through `jq --arg`, never
+          # shell-interpolated into a command.
+          case "$VER" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::refusing to dispatch acdp-released with version '$VER'" >&2; exit 1 ;;
+          esac
+          jq -nc --arg v "$VER" --arg e npm '{event_type:"acdp-released",client_payload:{version:$v,ecosystem:$e}}' \
+            | gh api repos/agentcontextdistributionprotocol/acdp-control-plane/dispatches --method POST --input -

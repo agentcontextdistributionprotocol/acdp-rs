@@ -226,7 +226,7 @@ jobs:
       # via acdp-ci's bump-consume. App-authenticated (org secrets) — no PAT.
       #
       # Deliberately no `if:` of its own on either step below: the containing `publish`
-      # job already carries a job-level gate (`if:` above, `:180`) that restricts the
+      # job already carries a job-level gate (`if:` above, `:183`) that restricts the
       # whole job — including these two steps — to a real tag push or a non-dry-run
       # workflow_dispatch. Adding a per-step `if: github.event_name == 'push'` (the
       # original bug — issue #304) re-narrowed that back down to tag-push only, which is

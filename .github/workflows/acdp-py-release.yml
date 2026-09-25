@@ -2,10 +2,13 @@ name: acdp-py-release
 
 # Publishes the `acdp` Python SDK (abi3 wheels) to PyPI.
 #
-# Trigger: push a tag of the form `acdp-py-v0.3.0`. The build matrix
-# cross-builds one cp39-abi3 wheel per OS/arch (matching the Node SDK's
-# platform set) plus a source distribution; the publish job uploads them
-# all to PyPI in one shot.
+# Trigger: either push a tag of the form `acdp-py-v0.3.0`, or a
+# `workflow_dispatch` — the latter is how `release-plz.yml`'s SDK cascade
+# fires this workflow automatically whenever the core `acdp` crate
+# releases (see release-plz.yml's "Release SDK bindings at the acdp
+# version" step). The build matrix cross-builds one cp39-abi3 wheel per
+# OS/arch (matching the Node SDK's platform set) plus a source
+# distribution; the publish job uploads them all to PyPI in one shot.
 #
 # Publishing uses PyPI Trusted Publishing (OIDC) — NO API token or secret.
 # One-time setup on PyPI (https://pypi.org/manage/account/publishing/):
@@ -202,27 +205,6 @@ jobs:
           # the PyPI release page and via the integrity API.
           attestations: true
 
-      # Notify the Python consumer (acdp-playground) so it opens an auto-bump PR
-      # via acdp-ci's bump-consume. App-authenticated (org secrets) — no PAT.
-      - name: Mint token for acdp-playground
-        id: dispatch-token
-        if: ${{ github.event_name == 'push' }}
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ secrets.ACDP_BOT_APP_ID }}
-          private-key: ${{ secrets.ACDP_BOT_PRIVATE_KEY }}
-          owner: agentcontextdistributionprotocol
-          repositories: acdp-playground
-      - name: Dispatch acdp-released (uv)
-        if: ${{ github.event_name == 'push' }}
-        env:
-          GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
-          REF: ${{ github.ref_name }}
-        run: |
-          VER="${REF#acdp-py-v}"
-          jq -nc --arg v "$VER" --arg e uv '{event_type:"acdp-released",client_payload:{version:$v,ecosystem:$e}}' \
-            | gh api repos/agentcontextdistributionprotocol/acdp-playground/dispatches --method POST --input -
-
       # Only a workflow_dispatch publish needs a tag created here — a tag
       # push already has the tag, and a dry_run never actually published.
       - name: Tag the release
@@ -239,3 +221,57 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -a "acdp-py-v${V}" -m "acdp-py v${V}"
           git push origin "acdp-py-v${V}"
+
+      # Notify the Python consumer (acdp-playground) so it opens an auto-bump PR
+      # via acdp-ci's bump-consume. App-authenticated (org secrets) — no PAT.
+      #
+      # Deliberately no `if:` of its own on either step below: the containing `publish`
+      # job already carries a job-level gate (`if:` above, `:180`) that restricts the
+      # whole job — including these two steps — to a real tag push or a non-dry-run
+      # workflow_dispatch. Adding a per-step `if: github.event_name == 'push'` (the
+      # original bug — issue #304) re-narrowed that back down to tag-push only, which is
+      # never true on the release-plz cascade. These steps now inherit the job-level gate
+      # plus the default implicit success() requirement over every step before them
+      # (including "Tag the release", now that they're ordered after it) — exactly how
+      # "Publish to PyPI" above already behaves with no extra gate of its own. See
+      # plans/issues-302-304-release-dispatch-fix.md Phase 2 for the full reasoning,
+      # including why this file does not need bindings-release.yml's
+      # `steps.<id>.outcome`-anchored predicate (no equivalent always()-gated recovery
+      # step exists in this job).
+      - name: Mint token for acdp-playground
+        id: dispatch-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.ACDP_BOT_APP_ID }}
+          private-key: ${{ secrets.ACDP_BOT_PRIVATE_KEY }}
+          owner: agentcontextdistributionprotocol
+          repositories: acdp-playground
+      - name: Dispatch acdp-released (uv)
+        env:
+          GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
+          REF: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          # Prefer the dispatch input (always set, to a real resolved version, on the
+          # release-plz workflow_dispatch cascade — see release-plz.yml's "Release SDK
+          # bindings at the acdp version" step); fall back to the ref-derived tag suffix
+          # for a plain tag push, where `inputs.version` is unset. On workflow_dispatch,
+          # github.ref_name is the dispatched ref (e.g. "main"), never a version — the
+          # guard below exists specifically to catch that and fail loudly instead of
+          # dispatching {"version":"main"}.
+          if [ -n "${INPUT_VERSION}" ]; then
+            VER="${INPUT_VERSION}"
+          else
+            VER="${REF#acdp-py-v}"
+          fi
+          # Accepts anything shaped like <digits>.<digits>.<digits>[...] — a prefix
+          # check, not full semver validation. Sufficient here: it only needs to reject
+          # the one reachable non-version value (a bare ref name like "main" or an empty
+          # string), and VER is only ever passed through `jq --arg`, never
+          # shell-interpolated into a command.
+          case "$VER" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::refusing to dispatch acdp-released with version '$VER'" >&2; exit 1 ;;
+          esac
+          jq -nc --arg v "$VER" --arg e uv '{event_type:"acdp-released",client_payload:{version:$v,ecosystem:$e}}' \
+            | gh api repos/agentcontextdistributionprotocol/acdp-playground/dispatches --method POST --input -

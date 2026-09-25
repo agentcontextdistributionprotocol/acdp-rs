@@ -99,22 +99,24 @@ release before the core crate is ready to cut, or recovering from a failed autom
 cascade. The automated tagging above is simply no longer the *only* path that produces
 a correctly-tagged release; it's the path the SDK cascade takes by default.
 
-Two deliberate scope limits on this automation, so this doc doesn't imply broader
-coverage than what actually shipped:
+One remaining scope limit on this automation, so this doc doesn't imply broader coverage
+than what actually shipped (a second, related limit — described in earlier revisions of
+this section as "consumer-bump notification stays manual-path-only" — was fixed as of
+2026-09-25; see below):
 
-- **Consumer-bump notification stays manual-path-only.** The new tag push does not
-  itself re-trigger the workflow that pushed it — a `GITHUB_TOKEN`-authored push does
-  not start new workflow runs. `release-plz.yml`'s own comment notes the opposite case:
-  `workflow_dispatch` is *exempt* from that "no recursive workflow runs" rule, which is
-  why the SDK cascade's dispatched runs execute at all — but a plain tag push (like the
-  one the new "Tag the release" step performs here) gets no such exemption, so it does
-  not start a new run. That means the push-gated
-  consumer-notification dispatch steps (`acdp-py-release.yml` / `bindings-release.yml`,
-  gated `if: github.event_name == 'push'`, which notify `acdp-playground` and
-  `acdp-control-plane` respectively) still only fire on an actual tag-push trigger,
-  never on the automated `workflow_dispatch` cascade. Downstream consumer-bump
-  notification remains a manual-path-only concern; this automation does not close that
-  separate gap.
+- **Fixed 2026-09-25 — consumer-bump notification no longer manual-path-only.** Through
+  2026-09-24, `acdp-py-release.yml` / `bindings-release.yml`'s consumer-notification
+  dispatch steps were gated `if: github.event_name == 'push'`, so they fired only on an
+  actual tag-push trigger, never on the automated `workflow_dispatch` cascade — meaning
+  every release-plz-driven release silently skipped notifying `acdp-playground` and
+  `acdp-control-plane` (a skipped step is green, so this went unnoticed for nine-plus
+  releases; see issues #302 and #304). Both workflows now fire the dispatch on the
+  `workflow_dispatch` path too — `acdp-py-release.yml`'s two notification steps lost
+  their now-redundant per-step `if:` entirely (the job already carries an equivalent
+  job-level gate); `bindings-release.yml`'s gained a wider predicate anchored on
+  `steps.publish-root.outcome`, since that file has no job-level gate of its own. Full
+  history, root-cause analysis, and the corrected design (including why the two files'
+  fixes differ in shape) are in `plans/issues-302-304-release-dispatch-fix.md`.
 - **A partial-failure recovery re-run correctly skips the tag step.** The "Tag the
   release" step uses a plain `if:` (carrying only its own gate above), which implicitly
   requires `success()` on everything before it in the job. If an earlier step in that

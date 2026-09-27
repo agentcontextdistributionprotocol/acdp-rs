@@ -117,6 +117,13 @@ this section as "consumer-bump notification stays manual-path-only" — was fixe
   `steps.publish-root.outcome`, since that file has no job-level gate of its own. Full
   history, root-cause analysis, and the corrected design (including why the two files'
   fixes differ in shape) are in `plans/issues-302-304-release-dispatch-fix.md`.
+- **Fixed 2026-09-27 — `acdp-wasm-release.yml` gained a consumer-bump notification too.**
+  Unlike the two workflows above, `acdp-wasm-release.yml` never had a consumer-dispatch
+  step at all (not merely mis-gated), so `acdp-ui-console` (the `acdp-wasm` npm consumer)
+  had no automated bump path. It now fires `repository_dispatch: acdp-released` to
+  `acdp-ui-console` on the same `steps.publish.outcome == 'success' && (push ||
+  !inputs.dry_run)` shape as `bindings-release.yml`'s dispatch. See
+  `plans/issue-307-wasm-release-dispatch-fix.md`.
 - **A partial-failure recovery re-run correctly skips the tag step.** The "Tag the
   release" step uses a plain `if:` (carrying only its own gate above), which implicitly
   requires `success()` on everything before it in the job. If an earlier step in that

@@ -44,7 +44,7 @@ jobs:
       # which supports the current rustdoc formats. Bumping this is not a
       # routine dependency bump: re-verify which cargo-semver-checks version
       # the target tag's action.yml installs before moving this pin again.
-      - uses: MarcoIeni/release-plz-action@aec534bbd8631793b9b3b8f1ee6cd886c322e17f # v0.5.133
+      - uses: MarcoIeni/release-plz-action@b8d6b54b02889ff2ae2bb82e8b57c3a8fc1683a5 # v0.5.139
         id: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

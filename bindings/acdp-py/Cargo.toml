@@ -48,7 +48,7 @@ chrono     = { version = "0.4", features = ["serde"] }
 zeroize    = "1"
 # `AcdpCanonicalizer.content_hash` hashes the JCS form. Versions match the
 # parent crate so the digest is byte-identical to the core content_hash.
-sha2       = "0.10"
+sha2       = "0.11"
 hex        = "0.4"
 
 [profile.release]

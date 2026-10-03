@@ -3819,6 +3819,9 @@ impl LineageServerHarnessBuilder {
                             // (not load-then-store): this route is hit
                             // concurrently by `tokio::try_join!`'d lookups
                             // (`acdp-client::verified`'s discovery block).
+                            // `fetch_update` is deprecated on newer stable in favour of
+                            // `try_update`, which is not available at the 1.86 MSRV.
+                            #[allow(deprecated)]
                             let fabricated = state.fabricated_pages.fetch_update(
                                 std::sync::atomic::Ordering::SeqCst,
                                 std::sync::atomic::Ordering::SeqCst,

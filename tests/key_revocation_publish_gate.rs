@@ -1,5 +1,5 @@
 //! RFC-ACDP-0014 §5 step 2 on the `did:web` publish path (issue #207,
-//! Phase 7 of `plans/issues-206-208-bindings-registry-release-gate.md`).
+//! Phase 7 of `plans/archive/issues-206-208-bindings-registry-release-gate.md`).
 //!
 //! `tests/key_revocation.rs` MUST NOT be edited by this file (it is a
 //! separate integration-test crate); it already pins §5 step 2 for a

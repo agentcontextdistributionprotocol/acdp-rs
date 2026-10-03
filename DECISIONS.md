@@ -1,6 +1,6 @@
 # DECISIONS
 
-Reconciliation log for `plans/rs-wave1-conformance-hardening.md` (RS-1, RS-2, RS-10). Each
+Reconciliation log for `plans/archive/rs-wave1-conformance-hardening.md` (RS-1, RS-2, RS-10). Each
 entry: the original assumption, the recommending agent's analysis, the user's verdict, and
 the resulting status.
 
@@ -98,7 +98,7 @@ Opus review of each against the actual current code (not just the original plan 
 
 ## anchors supersede-settability (RS-8 binding follow-up)
 
-- **Plan:** plans/rs8-bindings-anchors.md
+- **Plan:** plans/archive/rs8-bindings-anchors.md
 - **Assumption:** `anchors` exposed on both publish and supersede in both bindings,
   mirroring `data_refs` (not `derived_from`'s publish-only treatment).
 - **Recommendation (fresh Opus subagent):** confirm as-is. The decisive point: since
@@ -147,7 +147,7 @@ change, not a neutral no-op, so standing pat is the lower-churn option.
 **Status:** CONFIRMED (2026-08-30) — no code change; `ASSUMPTIONS.md` entry updated to
 CONFIRMED.
 
-## 2026-09-06 — Phase 9 dispositions (plans/issues-196-199-215-216-followups.md)
+## 2026-09-06 — Phase 9 dispositions (plans/archive/issues-196-199-215-216-followups.md)
 
 Four `UNCONFIRMED` entries carried a disposition already recorded in Phase 9's own table
 in the plan. Recorded here as the reconciliation log entry, with `ASSUMPTIONS.md`
@@ -758,7 +758,7 @@ publication to crates.io/PyPI/npm.
 
 **Disposition:** merged and released. Phase 7 (and the whole
 `issues-273-279-284-285-rfc0014-wave` plan) marked `Status: DONE` in
-`plans/issues-273-279-284-285-rfc0014-wave.md` and `plans/PROGRESS.md`. No code change
+`plans/archive/issues-273-279-284-285-rfc0014-wave.md` and `plans/archive/rs-wave1-PROGRESS.md`. No code change
 resulted from this entry (it's a release-process finding, not a code one) — noted here so
 a future release isn't surprised by the same `action_required`/OIDC-flake/propagation-lag
 shape if it recurs.

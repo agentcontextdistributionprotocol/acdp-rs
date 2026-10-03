@@ -234,7 +234,7 @@ jobs:
       # plus the default implicit success() requirement over every step before them
       # (including "Tag the release", now that they're ordered after it) — exactly how
       # "Publish to PyPI" above already behaves with no extra gate of its own. See
-      # plans/issues-302-304-release-dispatch-fix.md Phase 2 for the full reasoning,
+      # plans/archive/issues-302-304-release-dispatch-fix.md Phase 2 for the full reasoning,
       # including why this file does not need bindings-release.yml's
       # `steps.<id>.outcome`-anchored predicate (no equivalent always()-gated recovery
       # step exists in this job).

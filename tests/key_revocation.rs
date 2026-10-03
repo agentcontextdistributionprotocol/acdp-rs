@@ -7949,7 +7949,7 @@ async fn resolver_ac2_explicit_cache_with_zero_freshness_suppresses_nothing() {
 /// `resolve_inner`), preserve-vs-overwrite would have nothing to overwrite
 /// WITH, and this test could not fail under that mutation — exactly the
 /// kind of unfalsifiable AC this wave's own review process has twice
-/// caught before (see `plans/PROGRESS.md`'s #248/#257 notes).
+/// caught before (see `plans/archive/rs-wave1-PROGRESS.md`'s #248/#257 notes).
 ///
 /// Isolated with a positive control: the SAME resolver configuration
 /// (no revocation policy, i.e. `discover: None`, but WITH its own empty

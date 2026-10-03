@@ -1,7 +1,7 @@
 # ASSUMPTIONS
 
 ## Pin SHA for RS-1/RS-2 local verification
-- **Plan:** plans/rs-wave1-conformance-hardening.md
+- **Plan:** plans/archive/rs-wave1-conformance-hardening.md
 - **Assumed:** the user's literal instruction to pin the verification worktree to "the
   current spec main SHA" actually means the SHA already pinned in `ci.yml:75`
   (`f5b66b8f86f48ba16f79bba95eb246d6acb43989`), not today's live spec `main` HEAD
@@ -17,7 +17,7 @@
 - **Status:** CONFIRMED (2026-08-28) — see DECISIONS.md
 
 ## RS-2 KNOWN_FAMILIES / EXCUSED design (static vs. dynamic)
-- **Plan:** plans/rs-wave1-conformance-hardening.md
+- **Plan:** plans/archive/rs-wave1-conformance-hardening.md
 - **Assumed:** the RS-2 item's accept criterion ("dropping anc-001 fails the test until
   anc is executed or excused") requires a **static**, hand-maintained Rust-side
   `KNOWN_FAMILIES` list cross-checked against the **dynamic** canonical family list pulled
@@ -38,7 +38,7 @@
 - **Status:** CONFIRMED (2026-08-28) — see DECISIONS.md
 
 ## RS-1 exclusion contingency (not needed)
-- **Plan:** plans/rs-wave1-conformance-hardening.md
+- **Plan:** plans/archive/rs-wave1-conformance-hardening.md
 - **Assumed:** RS-1's own text permits excluding a specific test target from the
   `--workspace` invocation if it genuinely fails at the pinned SHA due to a 0.2.0-branch
   fixture family not yet merged to spec `main`.
@@ -52,7 +52,7 @@
 - **Status:** CONFIRMED (empirically, by test run — not a genuine open question)
 
 ## Reusing root deny.toml for bindings advisory scanning
-- **Plan:** plans/rs-wave1-conformance-hardening.md
+- **Plan:** plans/archive/rs-wave1-conformance-hardening.md
 - **Assumed:** the root `deny.toml`'s `[licenses]`/`[bans]`/`[sources]` policy is generic
   enough to reuse for the bindings' dependency graphs via `--config`, and its one
   `[advisories] ignore` entry (RUSTSEC-2025-0134, axum-server-specific) is harmless when
@@ -71,7 +71,7 @@
 - **Status:** CONFIRMED (2026-08-28) — see DECISIONS.md
 
 ## Not reversing the binding-lockfiles-gitignored policy
-- **Plan:** plans/rs-wave1-conformance-hardening.md
+- **Plan:** plans/archive/rs-wave1-conformance-hardening.md
 - **Assumed:** RS-10's scope is "wire up advisory scanning," not "make the bindings'
   dependency graphs reproducible" — so the existing `.gitignore` policy (bindings'
   `Cargo.lock`/`package-lock.json` are gitignored, build output) stays as-is, and the new
@@ -87,7 +87,7 @@
   not a flake to silence — but if it proves too noisy in practice, reversing this decision
   (committing the lockfiles) is a bigger, separate change.
 - **Status:** CONFIRMED (2026-08-28) — see DECISIONS.md
-- **Update (2026-09-06, plans/issues-196-199-215-216-followups.md Phase 2, superseded):**
+- **Update (2026-09-06, plans/archive/issues-196-199-215-216-followups.md Phase 2, superseded):**
   this plan's Phase 2 did exactly the reverse of what this entry confirmed — the three
   binding lockfiles (`bindings/{acdp-py,acdp-node,acdp-wasm}/Cargo.lock`) are now
   committed, and every binding build (`bindings.yml`, `bindings-release.yml`,
@@ -98,7 +98,7 @@
   and the unpinned release path was re-resolving on the order of ~217 packages fresh on
   every release build with no lockfile diff to review. This entry is left verbatim above as
   a record of the original decision and its reasoning at the time.
-- **Update (2026-09-10, plans/issues-240-242-seamb-wave.md Phase 1, superseded):** the npm
+- **Update (2026-09-10, plans/archive/issues-240-242-seamb-wave.md Phase 1, superseded):** the npm
   half of the 2026-09-06 update above ("no committed `package-lock.json`") is now also
   reversed. `bindings/acdp-node/package-lock.json` is committed, `.gitignore`'s acdp-node
   section no longer ignores it, and `@napi-rs/cli` is pinned to an exact `3.8.6` in both
@@ -112,7 +112,7 @@
   left open for the npm binding specifically.
 
 ## pyo3 version: bumped to 0.29 instead of the planned 0.24 line
-- **Plan:** plans/rs-wave1-conformance-hardening.md
+- **Plan:** plans/archive/rs-wave1-conformance-hardening.md
 - **Assumed:** discovered mid-implementation, not anticipated by the plan (which was
   researched before these advisories existed): `cargo deny check advisories` against the
   originally-planned pyo3 0.24.2 revealed **two additional 2026 RUSTSEC advisories**
@@ -153,7 +153,7 @@
   the PR description states the 0.24→0.29 deviation explicitly.
 
 ## bindings/acdp-wasm: pre-existing break discovered, excluded from new advisory job
-- **Plan:** plans/rs-wave1-conformance-hardening.md
+- **Plan:** plans/archive/rs-wave1-conformance-hardening.md
 - **Assumed:** not part of RS-10's scope to fix. Discovered while implementing Phase 3:
   `bindings/acdp-wasm/Cargo.toml:61` pins `getrandom = { version = "0.4", features =
   ["js"] }`, but `getrandom` 0.4 has no `js` feature (only `wasm_js` — see the correctly
@@ -242,7 +242,7 @@
   wire-behavior change, so the bump stands.
 
 ## anchors supersede-settability (RS-8 binding follow-up)
-- **Plan:** plans/rs8-bindings-anchors.md
+- **Plan:** plans/archive/rs8-bindings-anchors.md
 - **Assumed:** the plan's Open Question 1 had no explicit spec answer for whether
   `anchors` should be settable on a supersession request, only that a clearly-best
   default existed and was cheap to reverse.
@@ -271,7 +271,7 @@
   `BODY_FIELD_NAMES` gap) that landed in the same PR as a result.
 
 ## Byte equality for CtxId comparison in context-identity binding (fed-011)
-- **Plan:** plans/issues-189-191-client-binding-hardening.md
+- **Plan:** plans/archive/issues-189-191-client-binding-hardening.md
 - **Assumed:** byte equality on `CtxId` satisfies conformance fixture
   `fed-011-ctx-id-binding.json`'s requirement that ids be "compared as parsed `acdp://`
   URIs, never as raw strings."
@@ -289,7 +289,7 @@
   rather than accepting invalid ones). Fix would be relaxing the comparison at those two
   call sites — a pure behaviour change, no API break, since `ContextIdMismatch` already
   carries both textual forms.
-- **Update (2026-09-06, plans/issues-206-208-bindings-registry-release-gate.md Phase 2,
+- **Update (2026-09-06, plans/archive/issues-206-208-bindings-registry-release-gate.md Phase 2,
   #206):** the bindings' equivalent check, `acdp_verify::verify_ctx_id_binding`, makes the
   parse-then-compare step explicit rather than relying on the served side having already
   been canonicalized by an upstream `validate_identifiers` call (the bindings have no such
@@ -304,7 +304,7 @@
   fail-closed behavior, documented at both call sites (client and bindings) above.
 
 ## `String` (not `CtxId`) fields on `ContextIdMismatch` — corrected rationale
-- **Plan:** plans/issues-189-191-client-binding-hardening.md
+- **Plan:** plans/archive/issues-189-191-client-binding-hardening.md
 - **Assumed:** the outcome (`requested`/`served` typed as `String`, not `CtxId`) is
   correct, but the rationale as shipped — "a `CtxId` field would over-promise that it
   parsed" — is factually shaky: `CtxId` is an unvalidated `pub String` newtype today, and
@@ -327,7 +327,7 @@
   correction, zero blast radius, no code change.
 
 ## `semver-tool-health` is not a required status check
-- **Plan:** plans/issues-206-208-bindings-registry-release-gate.md (Phase 1)
+- **Plan:** plans/archive/issues-206-208-bindings-registry-release-gate.md (Phase 1)
 - **Assumed:** adding the job to `ci.yml` is sufficient to satisfy Phase 1's acceptance
   criterion 5 ("a tool-health check exists that is NOT continue-on-error").
 - **Chose:** ship the job without touching branch protection. `main`'s required contexts are
@@ -358,7 +358,7 @@
   would require it green on a PR the advisory `semver` job is deliberately reddening.
 
 ## Unpublished-crate baseline behaviour in cargo-semver-checks is untested
-- **Plan:** plans/issues-206-208-bindings-registry-release-gate.md (Phase 1)
+- **Plan:** plans/archive/issues-206-208-bindings-registry-release-gate.md (Phase 1)
 - **Assumed:** a workspace crate with no crates.io baseline (newly added, never published) is
   skipped by cargo-semver-checks rather than treated as an error.
 - **Chose:** ship without covering this branch. Not triggered by anything in this plan — Phases
@@ -375,7 +375,7 @@
   exactly which PR needs the exclusion/carve-out). No action needed until then.
 
 ## Binding lockfiles resolve independently of the root Cargo.lock
-- **Plan:** plans/issues-196-199-215-216-followups.md
+- **Plan:** plans/archive/issues-196-199-215-216-followups.md
 - **Assumed/Chose:** accept that the three binding lockfiles
   (`bindings/{acdp-py,acdp-node,acdp-wasm}/Cargo.lock`) resolve independently of the root
   `Cargo.lock` — each binding is its own standalone Cargo workspace, and 20-25 shared
@@ -396,7 +396,7 @@
   manifests — a dependency bump without regeneration surfaces as cargo's generic "cannot
   update the lock file" rather than an actionable "run `cargo generate-lockfile`". Known
   and accepted for now; no tripwire built in this phase.
-- **Update (2026-09-06, plans/issues-196-199-215-216-followups.md Phase 2, #196a):**
+- **Update (2026-09-06, plans/archive/issues-196-199-215-216-followups.md Phase 2, #196a):**
   `cargo-deny`'s advisory gate (`bindings-deny` in `.github/workflows/bindings.yml`) now
   runs `--locked`, so it audits the pinned graph that ships rather than a freshly-resolved
   one. Trade-off, stated honestly: this loses the early-warning property of the unpinned
@@ -411,7 +411,7 @@
   action.
 
 ## Two remaining implicit-resolution tool ranges left unpinned (napi-rs, maturin)
-- **Plan:** plans/issues-196-199-215-216-followups.md
+- **Plan:** plans/archive/issues-196-199-215-216-followups.md
 - **Assumed:** Phase 3's remit is pinning `taiki-e/install-action` tool versions and
   Action SHAs so the *installed* tool bytes are deterministic — not auditing every
   package-manager version range anywhere in the repo's release tooling. Two pre-existing,
@@ -456,7 +456,7 @@
   reasoning for deferring still stands as written; what has changed is the cost of NOT doing it,
   which is now two guards not running rather than a tidiness concern. Tracked in #240 with the
   concrete options; this entry stays UNCONFIRMED only because the fix itself has not been made.
-- **Update (2026-09-10, plans/issues-240-242-seamb-wave.md Phase 1):** item 1 (napi-rs) is
+- **Update (2026-09-10, plans/archive/issues-240-242-seamb-wave.md Phase 1):** item 1 (napi-rs) is
   now RESOLVED, item 2 (maturin) remains open/UNCONFIRMED. `bindings/acdp-node/package-lock.json`
   is committed, `@napi-rs/cli` is pinned to exact `3.8.6` in both `package.json` and the
   lockfile, and `bindings.yml` asserts the resolved version after `npm install`. Be precise
@@ -506,7 +506,7 @@
   `DECISIONS.md` record; the register entry outlived them by a day.
 
 ## `Swatinem/rust-cache` runs before the `--locked` gate in three workflows
-- **Plan:** plans/issues-196-199-215-216-followups.md (Phase 2, #196a)
+- **Plan:** plans/archive/issues-196-199-215-216-followups.md (Phase 2, #196a)
 - **Assumed:** that `Swatinem/rust-cache` cannot defeat the lockfile gate the way
   `cargo test` did (finding NEW-1, where an unlocked cargo invocation running *before* the
   gate silently repaired a stale lock, so the gate then passed).
@@ -554,7 +554,7 @@
   follow-up issue should be filed.**
 
 ## `cargo-vet` is knowingly installed from QuickInstall, not upstream
-- **Plan:** plans/issues-196-199-215-216-followups.md (Phase 3)
+- **Plan:** plans/archive/issues-196-199-215-216-followups.md (Phase 3)
 - **Assumed:** that no other `taiki-e/install-action` pin/version combination gets
   `cargo-vet` 0.10.2 from a verified upstream artifact, and that `fallback: none` — the
   policy applied to every other pinned tool in this repo — is not viable for this one
@@ -592,7 +592,7 @@
   needed here.
 
 ## `cargo-fuzz` is knowingly installed with an unconditional, undisableable QuickInstall fallback
-- **Plan:** plans/issues-196-199-215-216-followups.md (Phase 3)
+- **Plan:** plans/archive/issues-196-199-215-216-followups.md (Phase 3)
 - **Assumed:** that the `fuzz.yml` comments this phase set out to correct had the direction
   of the gap backwards — they claimed a missing `tool:` version at the pinned
   `install-action` SHA (`82fc4055…`) "already hard-fails the step with no silent
@@ -655,7 +655,7 @@
 - **Chose:** referred the call back to Fable, which is exactly the delegation the owner set
   up ("bindings go to 0.9.0" was the stated default to depart from only for a concrete
   reason, and this is a concrete reason). Decision and its rationale recorded in
-  plans/PROGRESS.md.
+  plans/archive/rs-wave1-PROGRESS.md.
 - **Blast radius:** version strings only, and only before publish — fully reversible until
   the release PR merges. After publish, npm/PyPI immutability makes it permanent.
 - **Status:** CONFIRMED (2026-09-06/07) — see DECISIONS.md. Resolved this session: Fable
@@ -675,7 +675,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
 - **Status:** CONFIRMED (self-corrected same session, before any commit)
 
 ## Phase 1 — verified.rs gate widened beyond the plan's named files
-- **Plan:** plans/issues-273-279-284-285-rfc0014-wave.md, Phase 1
+- **Plan:** plans/archive/issues-273-279-284-285-rfc0014-wave.md, Phase 1
 - **Assumed:** the plan named `acdp-client/src/verified.rs:1467,1600` as recompile-only
   (unconditional `verify_embedded_hash(dr)` calls needing no logic change).
 - **Chose:** on inspection, both sites were actually gated by
@@ -696,7 +696,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   forbidden. Both call sites match `data_ref.rs:240`'s already-fixed condition.
 
 ## Phase 1 — cargo-semver-checks environment mismatch, fell back to manual review
-- **Plan:** plans/issues-273-279-284-285-rfc0014-wave.md, Phase 1, acceptance criterion 8
+- **Plan:** plans/archive/issues-273-279-284-285-rfc0014-wave.md, Phase 1, acceptance criterion 8
 - **Assumed:** `cargo semver-checks -p acdp-types` would run and confirm the breaking flag.
 - **Chose:** it failed with `unsupported rustdoc format v60 (supported: v53, v55, v56)` — a
   local nightly-toolchain/tool-version mismatch, not a code issue. Used the acceptance
@@ -718,7 +718,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   now agree.
 
 ## Phase 2 (issues-273-279-284-285-rfc0014-wave) — pub-009 assertion widened beyond the plan's named files
-- **Plan:** plans/issues-273-279-284-285-rfc0014-wave.md, Phase 2
+- **Plan:** plans/archive/issues-273-279-284-285-rfc0014-wave.md, Phase 2
 - **Assumed:** the plan's Files section named only the two functions and their call sites as
   needing changes, plus new dk-driven tests to add.
 - **Chose:** found `did_web_enforcement_fixtures`'s existing "pub-009" assertion block
@@ -736,7 +736,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   text), and the `pub-009` fixture passes under `ACDP_REQUIRE_CONFORMANCE=1`.
 
 ## Phase 4 (issues-273-279-284-285-rfc0014-wave) — Arm 3's error-code gate needs opposite fail-closed polarity from §10's rejection gate
-- **Plan:** plans/issues-273-279-284-285-rfc0014-wave.md, Phase 4
+- **Plan:** plans/archive/issues-273-279-284-285-rfc0014-wave.md, Phase 4
 - **Assumed:** the plan's approach section suggested one `>= 0.5.0` version-gate function,
   reused for both the new §10 interim-form-retirement check and Arm 3's error-code
   selection, both fail-closed the same way `key_revocation_gate_applies` already is
@@ -776,7 +776,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   `crates/acdp-server/src/registry/validator.rs`.
 
 ## Phase 4 (issues-273-279-284-285-rfc0014-wave) — added direct unit-test coverage beyond the plan's Tests field
-- **Plan:** plans/issues-273-279-284-285-rfc0014-wave.md, Phase 4
+- **Plan:** plans/archive/issues-273-279-284-285-rfc0014-wave.md, Phase 4
 - **Assumed:** the plan's own Tests field states Phase 4's new code paths are "covered by
   Phase 6 (the rev-003 O/P/Q/R conformance fixtures) plus the six pre-existing
   key_revocation_publish_gate.rs tests as regression coverage" — implying Phase 4 itself
@@ -803,7 +803,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   intentional two-layer coverage, not accidental duplication.
 
 ## Phase 5 (issues-273-279-284-285-rfc0014-wave) — plan's E/F "already covered" claims needed correction
-- **Plan:** plans/issues-273-279-284-285-rfc0014-wave.md, Phase 5
+- **Plan:** plans/archive/issues-273-279-284-285-rfc0014-wave.md, Phase 5
 - **Assumed:** the plan's "reuse, don't duplicate" guidance stated scenario E is "essentially
   already covered by `rev_002_earliest_boundary_across_lineage`" and scenario F is "essentially
   already covered by `find_revocations_recovers_retracted_predecessor_across_lineage_supersession`" —
@@ -832,7 +832,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   fixture-sourced timestamps, not just discovery.
 
 ## Phase 6 (issues-273-279-284-285-rfc0014-wave) — scoped down from "18 new tests" to the gaps a two-layer analysis actually found
-- **Plan:** plans/issues-273-279-284-285-rfc0014-wave.md, Phase 6
+- **Plan:** plans/archive/issues-273-279-284-285-rfc0014-wave.md, Phase 6
 - **Assumed:** the plan's acceptance criteria could be read as wanting a new test for every one
   of rev-003's 18 scenario letters (A-R) plus rev-004's 3, and explicitly warns against assuming
   any of them is "already covered" without checking.
@@ -862,7 +862,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   The gap analysis holds under independent scrutiny, not just self-report.
 
 ## Phase 8 (issues-273-279-284-285-rfc0014-wave) — added a `recomputed_hash()` accessor not named in the plan's public API list
-- **Plan:** plans/issues-273-279-284-285-rfc0014-wave.md, Phase 8
+- **Plan:** plans/archive/issues-273-279-284-285-rfc0014-wave.md, Phase 8
 - **Assumed:** the plan's Files section lists `recomputed_hash: ContentHash` as a private
   field on `Proven<'a>` and names exactly three accessors (`agent_id()`, `key_fingerprint()`,
   `request()`) — no fourth accessor for the hash.

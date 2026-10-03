@@ -81,6 +81,11 @@ updates:
     schedule:
       interval: monthly
     open-pull-requests-limit: 5
+    ignore:
+      # Pinned to an exact version and asserted by a guard step in
+      # bindings.yml / bindings-release.yml; bump deliberately, together
+      # with those guards (see ASSUMPTIONS.md, #240).
+      - dependency-name: "@napi-rs/cli"
     groups:
       minor-and-patch:
         update-types: ["minor", "patch"]

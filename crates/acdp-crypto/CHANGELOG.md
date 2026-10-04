@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.4](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-crypto-v0.14.3...acdp-crypto-v0.14.4) - 2026-10-04
+
+### Fixed
+
+- *(crypto)* verify Ed25519 strictly, rejecting small-order keys and R ([#352](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/352))
+- *(crypto)* emit low-S ECDSA-P256 signatures and zeroize seed_bytes temp ([#347](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/347))
+
 ## [0.14.2](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-crypto-v0.14.1...acdp-crypto-v0.14.2) - 2026-09-25
 
 ### Other

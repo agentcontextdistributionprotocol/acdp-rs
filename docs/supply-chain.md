@@ -395,7 +395,7 @@ latest release, and no open advisory.
 | `ecdsa` | 0.17.0 | 0.16.9, 0.17.0 | audit (full, 2026-10-04; discretion note on a test-only fixture) | RustCrypto | Generic ECDSA under p256 |
 | `elliptic-curve` | 0.14.1 | 0.13.8, 0.14.1 | audit (full, 2026-10-04) | RustCrypto | Curve trait framework |
 | `rustls` | 0.23.45 | 0.23.40, 0.23.40 → 0.23.45 | audit (delta, 2026-10-04) | rustls | HTTPS transport (RFC-ACDP-0008) |
-| `ring` | 0.17.14 | 0.17.14 | audit (2026-07-05) | briansmith | rustls crypto provider in every production build (via reqwest's `rustls-tls`); `aws-lc-rs` is in the dev/test graph only |
+| `ring` | 0.17.14 | 0.17.14 | audit (2026-07-05) | briansmith | the only rustls crypto provider, in production (via reqwest's `rustls-tls`) and in the TLS test harness; `aws-lc-rs` is not in the graph (#339) |
 
 **`zeroize` 1.9.0 is exempt, not audited.** Its new safe
 `optimization_barrier` reads a possibly-uninitialized byte on targets without
@@ -422,7 +422,24 @@ are not on the guard list:
   `hyper-rustls`, `webpki-roots`, `untrusted`.
 
 Certifying them, and adding each one to the guard list as it is certified, is a
-planned follow-up. `aws-lc-rs` and `aws-lc-sys` are dev-only and also exempted.
+planned follow-up.
+
+**`aws-lc-rs` is not in the dependency graph (#339).** It used to come in only
+through the TLS test harness (`axum-server`'s `tls-rustls` feature and the dev
+`rustls` `aws-lc-rs` feature). Cargo unifies features, so that dev-only choice
+switched on the optional `aws-lc-rs` dependency of the *production* `rustls`
+that reqwest uses. `cargo vet` therefore saw `rustls -> aws-lc-rs` as a normal
+edge and required `safe-to-deploy` for `aws-lc-rs` and `aws-lc-sys`: moving
+their exemptions to `safe-to-run` failed `cargo vet --locked`. The harness now
+uses `axum-server`'s `tls-rustls-no-provider` feature and the `ring` provider,
+the same one production builds use (`tests/common/mod.rs` installs
+`rustls::crypto::ring::default_provider()`). `aws-lc-rs`, `aws-lc-sys`, and
+their build-only dependencies (`cmake`, `dunce`, `fs_extra`, `jobserver`,
+`pkg-config`) left `Cargo.lock`, and their exemptions were removed. Keep it this
+way: do not enable `tls-rustls`, `rustls/aws-lc-rs`, or `rustls`'s default
+features in any dev-dependency. Check with
+`cargo tree --workspace --all-features -e features -i aws-lc-rs`, which should
+report that the package is not found.
 
 **Coverage outside this repo's root lockfile.** The three bindings
 (`bindings/acdp-py`, `bindings/acdp-node`, `bindings/acdp-wasm`) have their

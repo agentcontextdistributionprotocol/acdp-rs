@@ -56,7 +56,9 @@ impl TlsTestServer {
         // rustls 0.23 requires a crypto provider to be installed
         // process-wide before the first TLS handshake. Install once
         // per process — subsequent attempts return Err which we ignore.
-        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        // `ring` matches the provider production builds use (reqwest
+        // `rustls-tls`); aws-lc-rs is deliberately not in the graph.
+        let _ = rustls::crypto::ring::default_provider().install_default();
 
         let cert_key = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
             .expect("rcgen self-signed cert");

@@ -636,11 +636,47 @@ async fn new_refuses_hostname_resolving_to_loopback_at_dns_time() {
     // (surfaced via the `reqwest::Error` source chain — see
     // `AcdpError::from(reqwest::Error)`) so this test can only pass when the
     // DNS-time filter is what actually fired.
-    let AcdpError::Http(msg) = &err else {
-        panic!("expected AcdpError::Http, got {err:?}");
+    //
+    // Issue #321: the refusal is a policy decision, so it classifies as the
+    // permanent `SchemaViolation` (the same variant the URL-time
+    // `SsrfPolicy::check_url` refusal uses), never the retryable `Http`.
+    let AcdpError::SchemaViolation(msg) = &err else {
+        panic!("expected AcdpError::SchemaViolation, got {err:?}");
     };
     assert!(
         msg.contains("SSRF policy") && msg.contains("forbidden"),
         "expected the DNS-time SSRF rejection to be visible in the error, got: {msg}"
     );
+    assert!(!err.is_transient(), "an SSRF refusal MUST NOT be transient");
+}
+
+/// Issue #321: `publish_with_retry` MUST NOT retry a DNS-time SSRF refusal
+/// — every attempt would be refused identically. `publish_with_retry`
+/// retries exactly when `is_transient()` is true, so asserting the returned
+/// error is the permanent SSRF refusal pins the no-retry decision; the mock
+/// server additionally confirms no request ever reached it (the refusal
+/// happens at DNS time, before any connect).
+#[tokio::test]
+async fn publish_with_retry_does_not_retry_ssrf_refusal() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/contexts"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let port = server.address().port();
+    let client = RegistryClient::new(&format!("https://localhost:{port}")).unwrap();
+
+    let err = client
+        .publish_with_retry(&sample_publish_request(), "ssrf-no-retry", 4)
+        .await
+        .unwrap_err();
+
+    assert!(
+        err.is_ssrf_policy_refusal(),
+        "expected a permanent SSRF SchemaViolation, got {err:?}"
+    );
+    assert!(!err.is_transient());
+    assert!(server.received_requests().await.unwrap().is_empty());
 }

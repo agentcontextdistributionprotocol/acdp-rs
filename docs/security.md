@@ -59,19 +59,27 @@ builds (`WebResolver`, `RegistryClient`, `HttpsDataRefFetcher`,
 DNS-rebinds to a forbidden range can never be connected to.
 
 A host whose answers fall in a forbidden range is refused before any connect.
-How that refusal surfaces depends on the client:
+The resolver returns a typed `acdp::error::SsrfDnsRefusal` marker, and every
+path recognizes it through one shared check (`acdp::error::is_ssrf_refusal`).
+Which variant you get depends on the path:
 
 | Path | Error | `is_transient()` |
 |---|---|---|
 | `WebResolver` (resolving a `did:web` document) | `AcdpError::KeyResolution` (wire `key_resolution_failed`, HTTP 400) | `false` |
-| `RegistryClient` (and any other path through `From<reqwest::Error>`) | `AcdpError::Http("connection failed: … SSRF policy … forbidden …")` | `true` |
-| `HttpsDataRefFetcher` | `AcdpError::Http(…)` carrying only reqwest's outer message | `true` |
+| `RegistryClient`, `HttpsDataRefFetcher`, and any other path through `From<reqwest::Error>` | `AcdpError::SchemaViolation("SSRF policy: …")`, the same shape as the URL-time `SsrfPolicy::check_url` refusal; test it with `AcdpError::is_ssrf_policy_refusal()` | `false` |
+| `CrossRegistryResolver` (any hop: pin-once DNS, capabilities, retrieval) | `AcdpError::CrossRegistryResolutionFailed` (wire `cross_registry_resolution_failed`, HTTP 502), as RFC-ACDP-0007 §5 and fixture `fed-007` require | `true` |
 
-On the `RegistryClient` path the refusal is visible only because
-`From<reqwest::Error>` appends the error's `source()` chain to the message. Because `Http` is
-transient, `RegistryClient::publish_with_retry` retries such a refusal until
-`max_attempts` runs out. If you need to stop early, check the message for
-`SSRF policy`.
+So `RegistryClient::publish_with_retry` returns an SSRF refusal on the first
+attempt. In every case the message carries the whole `source()` chain, so the
+SSRF detail is visible. See [errors.md](errors.md#retryability) for the retry
+predicate.
+
+Redirect-policy refusals (a cross-authority redirect, or more than 3
+redirects) are not SSRF refusals in this sense. On `RegistryClient` and
+`HttpsDataRefFetcher` they still surface as the transient `AcdpError::Http`;
+`CrossRegistryResolver` reports them as `CrossRegistryResolutionFailed` when
+they occur during the capabilities fetch; during retrieval the `Http` error
+passes through unchanged.
 
 ## SsrfPolicy
 

@@ -462,6 +462,19 @@ impl AcdpError {
     /// errors are conservatively treated as transient since they
     /// usually mean DNS or TCP-level glitches.
     ///
+    /// An SSRF-policy refusal is never `Http`: the DNS-time refusal raised
+    /// by `acdp_safe_http::SafeDnsResolver` (see [`SsrfDnsRefusal`]) is
+    /// classified by `From<reqwest::Error>` as the permanent
+    /// [`AcdpError::SchemaViolation`] — the same variant the URL-time
+    /// `SsrfPolicy::check_url` refusal already uses — so a retry loop such
+    /// as `RegistryClient::publish_with_retry` does not retry a policy
+    /// decision that will be identical on every attempt (issue #321).
+    /// `CrossRegistryResolver` is the one deliberate exception: RFC-ACDP-0007
+    /// §5 lists "DNS resolution refused" under
+    /// `cross_registry_resolution_failed` (fixture `fed-007`), so that
+    /// resolver re-maps the refusal to
+    /// [`AcdpError::CrossRegistryResolutionFailed`].
+    ///
     /// All cryptographic, schema, and authorization errors are NOT
     /// transient: a malformed body or invalid signature will not
     /// magically validate on retry.
@@ -482,6 +495,22 @@ impl AcdpError {
                 | AcdpError::RegistryInternal(_)
                 | AcdpError::Http(_)
         )
+    }
+
+    /// Whether this error is a client-local SSRF-policy refusal: an
+    /// [`AcdpError::SchemaViolation`] whose message starts with
+    /// [`SSRF_POLICY_PREFIX`].
+    ///
+    /// Covers the URL-time `SsrfPolicy::check_url` refusal, the pin-time
+    /// `SsrfPolicy::pin_resolved_ip` refusal, and the DNS-time
+    /// `SafeDnsResolver` refusal as classified by `From<reqwest::Error>`
+    /// (issue #321). Use this rather than matching message text yourself.
+    /// `WebResolver` surfaces its refusals as [`AcdpError::KeyResolution`]
+    /// and `CrossRegistryResolver` as
+    /// [`AcdpError::CrossRegistryResolutionFailed`]; neither is reported
+    /// here.
+    pub fn is_ssrf_policy_refusal(&self) -> bool {
+        matches!(self, AcdpError::SchemaViolation(m) if m.starts_with(SSRF_POLICY_PREFIX))
     }
 
     /// Map a wire-protocol [`crate::wire_error::WireError`] into a typed
@@ -550,22 +579,120 @@ impl From<std::io::Error> for AcdpError {
     }
 }
 
+/// Typed marker for an SSRF-policy refusal raised while resolving a
+/// hostname (RFC-ACDP-0006 §7.1 / RFC-ACDP-0008 §4.8 DNS-rebinding
+/// protection).
+///
+/// `acdp_safe_http::SafeDnsResolver` returns this as the error of a
+/// refused resolution. reqwest wraps it (as an `io::Error` /
+/// connector error) before it reaches the caller, so it surfaces only in
+/// the `source()` chain of the resulting `reqwest::Error`;
+/// [`is_ssrf_refusal`] finds it there by downcast. Its presence is what
+/// makes `From<reqwest::Error> for AcdpError` (and `WebResolver`)
+/// classify the failure as permanent instead of as a retryable
+/// transport error.
+///
+/// Not a wire code: this never appears in a registry response body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SsrfDnsRefusal {
+    message: String,
+}
+
+impl SsrfDnsRefusal {
+    /// Build a refusal carrying a human-readable explanation. The
+    /// message SHOULD start with [`SSRF_POLICY_PREFIX`] (every
+    /// `acdp-safe-http` refusal does) so it stays recognizable even after
+    /// a wrapper stringifies it.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+
+    /// The human-readable explanation.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl std::fmt::Display for SsrfDnsRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for SsrfDnsRefusal {}
+
+/// Prefix every SSRF-policy refusal message produced by this workspace
+/// starts with: the `acdp-safe-http` checks (`SsrfPolicy::check_url`,
+/// `check_ip`, `pin_resolved_ip`, `SafeDnsResolver`) and the
+/// [`AcdpError::SchemaViolation`] that `From<reqwest::Error>` builds for a
+/// refused request. Matched with `starts_with`, never `contains`, so a
+/// message that merely *mentions* the policy (a URL, an echoed registry
+/// error) does not classify.
+pub const SSRF_POLICY_PREFIX: &str = "SSRF policy:";
+
+/// Whether `err` — or any error in its `source()` chain — is an
+/// SSRF-policy refusal.
+///
+/// The single classification point shared by `From<reqwest::Error> for
+/// AcdpError`, `HttpsDataRefFetcher`, and `WebResolver` (issue #321), so
+/// the paths cannot drift. Primary detection is a downcast to the typed
+/// [`SsrfDnsRefusal`] marker; as a fallback, a chain link whose `Display`
+/// **starts with** [`SSRF_POLICY_PREFIX`] also counts (a wrapper that
+/// re-boxes the marker as a string still classifies the same way).
+pub fn is_ssrf_refusal(err: &(dyn std::error::Error + 'static)) -> bool {
+    let mut cur: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(e) = cur {
+        if e.downcast_ref::<SsrfDnsRefusal>().is_some()
+            || e.to_string().starts_with(SSRF_POLICY_PREFIX)
+        {
+            return true;
+        }
+        cur = e.source();
+    }
+    false
+}
+
+/// Render `err` followed by every error in its `source()` chain, joined by
+/// `": "`.
+///
+/// reqwest's own `Display` prints only its outermost frame (e.g. "error
+/// sending request for url (...)"); the cause it wraps — notably a
+/// `SafeDnsResolver` SSRF refusal — lives in the `source()` chain and
+/// would otherwise be silently dropped.
+pub fn error_chain_message(err: &(dyn std::error::Error + 'static)) -> String {
+    let mut msg = err.to_string();
+    let mut source = err.source();
+    while let Some(s) = source {
+        msg.push_str(": ");
+        msg.push_str(&s.to_string());
+        source = s.source();
+    }
+    msg
+}
+
 #[cfg(feature = "reqwest")]
 impl From<reqwest::Error> for AcdpError {
+    /// Classify a reqwest transport failure.
+    ///
+    /// - An SSRF-policy refusal anywhere in the `source()` chain
+    ///   ([`is_ssrf_refusal`]) → [`AcdpError::SchemaViolation`]
+    ///   (permanent; same variant as the URL-time `SsrfPolicy::check_url`
+    ///   refusal).
+    /// - A connect / timeout failure → [`AcdpError::Http`] prefixed
+    ///   `connection failed:` (transient).
+    /// - Anything else → [`AcdpError::Http`] (transient).
+    ///
+    /// In every case the message carries [`error_chain_message`], so the
+    /// underlying cause is never dropped. The SSRF message is prefixed
+    /// with [`SSRF_POLICY_PREFIX`] so [`AcdpError::is_ssrf_policy_refusal`]
+    /// recognizes it.
     fn from(e: reqwest::Error) -> Self {
-        // reqwest's own `Display` prints only its outermost frame (e.g.
-        // "error sending request for url (...)"); the cause it wraps —
-        // notably a `SafeDnsResolver` SSRF rejection, which is otherwise
-        // silently dropped — lives in the `source()` chain. Walk it so
-        // that detail reaches the caller instead of vanishing into a
-        // generic "connection failed".
-        let mut msg = e.to_string();
-        let mut source: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(&e);
-        while let Some(s) = source {
-            msg.push_str(&format!(": {s}"));
-            source = s.source();
-        }
-        if e.is_connect() || e.is_timeout() {
+        let msg = error_chain_message(&e);
+        if is_ssrf_refusal(&e) {
+            AcdpError::SchemaViolation(format!("{SSRF_POLICY_PREFIX} request refused: {msg}"))
+        } else if e.is_connect() || e.is_timeout() {
             AcdpError::Http(format!("connection failed: {msg}"))
         } else {
             AcdpError::Http(msg)
@@ -829,5 +956,103 @@ mod tests {
         // `SearchTruncated` above — never transient, and deliberately NOT
         // added to the `matches!` list in `is_transient`.
         assert!(!AcdpError::RevocationDiscoveryBudgetExceeded("x".into()).is_transient());
+    }
+
+    /// A wrapper error with an optional source, standing in for the
+    /// io/connector frames reqwest puts around a resolver error.
+    #[derive(Debug)]
+    struct Wrap(
+        &'static str,
+        Option<Box<dyn std::error::Error + Send + Sync>>,
+    );
+    impl std::fmt::Display for Wrap {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+    impl std::error::Error for Wrap {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.1
+                .as_deref()
+                .map(|e| e as &(dyn std::error::Error + 'static))
+        }
+    }
+
+    /// Issue #321: the typed marker is found by downcast however deep it
+    /// sits, independent of its message text.
+    #[test]
+    fn is_ssrf_refusal_finds_typed_marker_in_source_chain() {
+        let marker = SsrfDnsRefusal::new("forbidden address (no marker text)");
+        assert!(is_ssrf_refusal(&marker));
+        let nested = Wrap(
+            "error sending request",
+            Some(Box::new(Wrap(
+                "client error (Connect)",
+                Some(Box::new(marker)),
+            ))),
+        );
+        assert!(is_ssrf_refusal(&nested));
+        assert_eq!(
+            error_chain_message(&nested),
+            "error sending request: client error (Connect): forbidden address (no marker text)"
+        );
+    }
+
+    /// Fallback: a wrapper that stringified the marker still classifies.
+    #[test]
+    fn is_ssrf_refusal_falls_back_to_message_text() {
+        let stringified = Wrap(
+            "outer",
+            Some(Box::new(Wrap("SSRF policy: DNS answer is forbidden", None))),
+        );
+        assert!(is_ssrf_refusal(&stringified));
+    }
+
+    /// The text fallback is anchored: a link that merely *mentions* the
+    /// policy (e.g. an echoed URL or registry message) does not classify.
+    #[test]
+    fn is_ssrf_refusal_fallback_requires_prefix() {
+        let mention = Wrap(
+            "upstream said: SSRF policy: blocked",
+            Some(Box::new(Wrap("see SSRF policy docs", None))),
+        );
+        assert!(!is_ssrf_refusal(&mention));
+    }
+
+    /// `AcdpError::is_ssrf_policy_refusal` recognizes exactly the
+    /// prefixed `SchemaViolation` shape every SSRF path produces.
+    #[test]
+    fn is_ssrf_policy_refusal_matches_prefixed_schema_violation_only() {
+        assert!(
+            AcdpError::SchemaViolation("SSRF policy: request refused: x".into())
+                .is_ssrf_policy_refusal()
+        );
+        assert!(!AcdpError::SchemaViolation("title too long".into()).is_ssrf_policy_refusal());
+        assert!(!AcdpError::SchemaViolation("note: SSRF policy: x".into()).is_ssrf_policy_refusal());
+        assert!(!AcdpError::Http("SSRF policy: x".into()).is_ssrf_policy_refusal());
+        assert!(!AcdpError::KeyResolution("SSRF policy: x".into()).is_ssrf_policy_refusal());
+    }
+
+    /// An ordinary transport failure is NOT an SSRF refusal.
+    #[test]
+    fn is_ssrf_refusal_false_for_plain_transport_errors() {
+        let plain = Wrap(
+            "error sending request",
+            Some(Box::new(Wrap(
+                "tcp connect error: Connection refused",
+                None,
+            ))),
+        );
+        assert!(!is_ssrf_refusal(&plain));
+        let io = std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out");
+        assert!(!is_ssrf_refusal(&io));
+    }
+
+    /// The variant an SSRF refusal classifies to is permanent; the
+    /// generic transport variant stays transient.
+    #[test]
+    fn ssrf_refusal_classification_is_not_transient() {
+        assert!(!AcdpError::SchemaViolation("SSRF policy: x".into()).is_transient());
+        assert!(AcdpError::Http("connection failed: tcp reset".into()).is_transient());
     }
 }

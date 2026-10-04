@@ -523,11 +523,19 @@ impl reqwest::dns::Resolve for SafeDnsResolver {
             // ENTIRE resolution is rejected — never silently filter, or an
             // attacker bypasses the filter by mixing one public and one
             // private answer in a single DNS response. reqwest bubbles
-            // this up as a transport error and the caller's error mapper
-            // (e.g. WebResolver) translates it.
+            // this up as a transport error; returning the typed
+            // `SsrfDnsRefusal` marker lets every caller's error mapper
+            // (`From<reqwest::Error>`, `WebResolver`) recognize it via
+            // `acdp_primitives::error::is_ssrf_refusal` and classify it as
+            // permanent rather than as a retryable transport error.
             if let Err(e) = reject_if_any_forbidden(&policy, &host, &candidates) {
-                let msg: String = e.to_string();
-                return Err(msg.into());
+                let msg = match e {
+                    AcdpError::SchemaViolation(m) => m,
+                    other => other.to_string(),
+                };
+                let refusal: Box<dyn std::error::Error + Send + Sync> =
+                    Box::new(acdp_primitives::error::SsrfDnsRefusal::new(msg));
+                return Err(refusal);
             }
 
             let addrs: reqwest::dns::Addrs = Box::new(candidates.into_iter());
@@ -645,6 +653,34 @@ mod tests {
             result.is_err(),
             "default policy must refuse a loopback target"
         );
+    }
+
+    /// Issue #321: the refusal reaches the caller with the typed
+    /// `SsrfDnsRefusal` marker still downcastable somewhere in the
+    /// `reqwest::Error` source chain — so classification does not depend
+    /// on the message-text fallback.
+    #[cfg(feature = "client")]
+    #[tokio::test]
+    async fn dns_refusal_carries_typed_marker_through_reqwest() {
+        let client =
+            safe_client(&SsrfPolicy::default(), std::time::Duration::from_secs(2)).unwrap();
+        let err = client
+            .get("https://localhost:9/")
+            .send()
+            .await
+            .expect_err("default policy must refuse localhost");
+        let mut cur: Option<&(dyn std::error::Error + 'static)> = Some(&err);
+        let mut found = false;
+        while let Some(e) = cur {
+            if let Some(r) = e.downcast_ref::<acdp_primitives::error::SsrfDnsRefusal>() {
+                assert!(r.message().contains("SSRF policy"), "{}", r.message());
+                found = true;
+                break;
+            }
+            cur = e.source();
+        }
+        assert!(found, "typed SsrfDnsRefusal missing from chain: {err:?}");
+        assert!(acdp_primitives::error::is_ssrf_refusal(&err));
     }
 
     /// allow_test_loopback permits loopback so tests can POST to a local

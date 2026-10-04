@@ -177,16 +177,21 @@ impl DataRefFetcher for HttpsDataRefFetcher {
         };
 
         // SSRF policy gate — RFC-ACDP-0006 §7.1/§7.2.
-        self.ssrf_policy
-            .check_url(uri)
-            .map_err(|e| AcdpError::SchemaViolation(format!("SSRF policy on data_ref: {e}")))?;
+        self.ssrf_policy.check_url(uri).map_err(|e| {
+            AcdpError::SchemaViolation(format!(
+                "{} data_ref location refused: {e}",
+                acdp_primitives::error::SSRF_POLICY_PREFIX
+            ))
+        })?;
 
         let mut resp = self
             .http
             .get(uri)
             .send()
             .await
-            .map_err(|e| AcdpError::Http(e.to_string()))?;
+            // `From<reqwest::Error>` keeps the source chain and classifies
+            // a DNS-time SSRF refusal as permanent (issue #321).
+            .map_err(AcdpError::from)?;
 
         if !resp.status().is_success() {
             return Err(AcdpError::Http(format!(
@@ -198,11 +203,7 @@ impl DataRefFetcher for HttpsDataRefFetcher {
         // Cap response size as we stream — defends against a producer
         // that claimed a small size_bytes but the server returns more.
         let mut buf = Vec::with_capacity(8 * 1024);
-        while let Some(chunk) = resp
-            .chunk()
-            .await
-            .map_err(|e| AcdpError::Http(e.to_string()))?
-        {
+        while let Some(chunk) = resp.chunk().await.map_err(AcdpError::from)? {
             if (buf.len() as u64).saturating_add(chunk.len() as u64) > self.max_bytes {
                 return Err(AcdpError::PayloadTooLarge(format!(
                     "data_ref response exceeded {} bytes",
@@ -393,6 +394,28 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, AcdpError::SchemaViolation(_)));
+    }
+
+    /// Issue #321: a hostname that passes `check_url` but resolves into a
+    /// forbidden range (`localhost` → loopback) is refused at DNS time by
+    /// `SafeDnsResolver`. That refusal MUST surface as the permanent
+    /// `SchemaViolation` with the SSRF detail intact — not as a transient
+    /// `Http` carrying only reqwest's outer "error sending request" frame.
+    #[tokio::test]
+    async fn https_fetcher_classifies_dns_time_ssrf_refusal_as_permanent() {
+        let f = HttpsDataRefFetcher::new();
+        let err = f
+            .fetch(&Location::Uri("https://localhost:9/data.csv".into()))
+            .await
+            .unwrap_err();
+        let AcdpError::SchemaViolation(msg) = &err else {
+            panic!("expected SchemaViolation for a DNS-time SSRF refusal, got {err:?}");
+        };
+        assert!(
+            msg.contains("SSRF policy") && msg.contains("forbidden"),
+            "the SSRF detail from the source chain MUST reach the message, got: {msg}"
+        );
+        assert!(!err.is_transient());
     }
 
     /// Structured locators surface NotImplemented from the HTTPS fetcher

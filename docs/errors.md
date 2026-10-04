@@ -102,7 +102,7 @@ for the variants the spec marks retryable:
 | `RateLimited` | back off and retry (RFC-ACDP-0008 §4.3) |
 | `CrossRegistryResolutionFailed` | a foreign hop failed transiently (RFC-ACDP-0006 §7) |
 | `RegistryInternal` | the registry hit an internal error (HTTP 5xx) |
-| `Http` | a connect/timeout/transport error — **including** a DNS-rebinding refusal on the `RegistryClient` path (see the note below) |
+| `Http` | a connect/timeout/transport error (never an SSRF-policy refusal; see the note below) |
 | `RevocationDiscoveryFailed { source }` | a wrapper, not a wire code: it delegates to `source.is_transient()` |
 
 Everything else — `InvalidSignature`, `SchemaViolation`, `HashMismatch`,
@@ -116,14 +116,15 @@ publish-request validation, which surfaces as `KeyResolution` rather than
 request/byte budget ran out; retrying reproduces it) — is
 **permanent**. Retrying won't help; fix the request or the key.
 
-> **DNS-rebinding refusals map differently per path.** `SafeDnsResolver`
-> refuses a hostname that resolves into a forbidden range at DNS time. On the
-> `WebResolver` (`did:web`) path that refusal is classified as
-> `KeyResolution`, which is permanent. On `RegistryClient` (which goes through
-> `From<reqwest::Error>`), the same refusal arrives as
-> `Http("connection failed: … SSRF policy … forbidden …")`, which is
-> **transient**, so `publish_with_retry` will retry it until `max_attempts`.
-> See [security.md](security.md#dns-rebinding-protection-is-active).
+> **DNS-rebinding refusals are never `Http`.** `SafeDnsResolver` refuses a
+> hostname that resolves into a forbidden range at DNS time. For direct
+> callers that refusal is permanent: `KeyResolution` on the `WebResolver`
+> (`did:web`) path, and `SchemaViolation` on `RegistryClient` and
+> `HttpsDataRefFetcher` (detect it with `AcdpError::is_ssrf_policy_refusal()`).
+> So `publish_with_retry` returns it on the first attempt. The exception is
+> `CrossRegistryResolver`, which reports it as `CrossRegistryResolutionFailed`
+> because the spec mandates that code. The per-path table is in
+> [security.md](security.md#dns-rebinding-protection-is-active).
 
 `RegistryClient::publish_with_retry(req, idempotency_key, max_attempts)` uses
 exactly this predicate, with bounded backoff (250 ms → 500 ms → 1 s → 2 s):
@@ -155,10 +156,11 @@ match &err {
 
 `From` conversions are provided for `serde_json::Error` (→ `Serialization`),
 `std::io::Error` (→ `Http`), and `reqwest::Error` (→ `Http`, prefixed
-`connection failed:` for connect/timeout errors), so `?` works naturally in
-client code. The `reqwest::Error` conversion appends the error's whole
-`source()` chain to the message. Without that, reqwest's own `Display` would
-hide the underlying cause, such as a `SafeDnsResolver` SSRF refusal.
+`connection failed:` for connect/timeout errors; → `SchemaViolation` for an
+SSRF-policy refusal), so `?` works naturally in client code. The
+`reqwest::Error` conversion appends the error's whole `source()` chain to the
+message. Without that, reqwest's own `Display` would hide the underlying
+cause, such as a `SafeDnsResolver` SSRF refusal.
 
 ## Adding a new wire error code
 

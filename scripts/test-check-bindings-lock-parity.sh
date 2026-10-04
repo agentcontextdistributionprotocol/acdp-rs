@@ -34,6 +34,10 @@ new_case() {
     printf '%s' "$d"
 }
 
+# Distinct crate names in the real guard list (comment lines and markers
+# ignored), so the expected "all N" count follows the list as it grows.
+list_count=$(awk '$1 !~ /^#/ && NF { print $1 }' "$script_dir/crypto-critical.txt" | sort -u | wc -l | tr -d ' ')
+
 run_guard() {
     local d=$1
     set +e
@@ -98,7 +102,7 @@ set -e
 if [ "$rc" -eq 0 ]; then ok "real tree: exits 0"; else bad "real tree: rc=$rc"; sed 's/^/    /' "$tmp/real.out" >&2; fi
 
 # 0b. Unmodified scratch copies pass too (the harness itself is sound).
-expect "$(new_case clean-copy)" 0 "all 11 crypto-critical crates"
+expect "$(new_case clean-copy)" 0 "all $list_count crypto-critical crates"
 
 # (a) sha2 bumped in the py lock (version and checksum): names crate and binding.
 d=$(new_case a-sha2-bumped-py)
@@ -159,7 +163,7 @@ expect "$d" 2 "malformed lockfile"
 #     a marker containing `#` is not a comment; a trailing ` # x` is.
 d=$(new_case g-list-comments)
 printf '# a comment line naming no-such-crate\n   # indented comment\nsubtle   # trailing comment\nzeroize allow-exempt:#322-pending\n' >>"$d/list.txt"
-expect "$d" 0 "all 11 crypto-critical crates"
+expect "$d" 0 "all $list_count crypto-critical crates"
 
 # (h) a list with no crates.
 d=$(new_case h-empty-list)

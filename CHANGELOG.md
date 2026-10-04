@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.4](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.14.3...acdp-v0.14.4) - 2026-10-04
+
+### Added
+
+- *(server)* split lifecycle retract/republish into prove and commit ([#348](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/348))
+
+### Fixed
+
+- *(crypto)* verify Ed25519 strictly, rejecting small-order keys and R ([#352](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/352))
+- *(crypto)* emit low-S ECDSA-P256 signatures and zeroize seed_bytes temp ([#347](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/347))
+- *(client)* classify DNS-time SSRF refusals as permanent on every path ([#329](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/329))
+
+### Other
+
+- gate Dependabot auto-merge on the crypto-critical list ([#344](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/344)) ([#351](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/351))
+- *(supply-chain)* enforce crypto-critical lock parity for the bindings ([#340](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/340)) ([#346](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/346))
+- *(supply-chain)* audit rustls and close out #322 docs (#322 part 5/5) ([#345](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/345))
+- *(supply-chain)* audit elliptic-curve, ecdsa and p256 (#322 part 4/5) ([#336](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/336))
+- *(supply-chain)* audit ed25519-dalek and curve25519-dalek (#322 part 3/5) ([#335](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/335))
+- *(supply-chain)* audit signature and sha2, keep zeroize exempt (#322 part 2/5) ([#334](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/334))
+- *(supply-chain)* add crypto-critical vet guard and review tooling (#322 part 1/5) ([#332](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/332))
+- *(registry)* state the rate-limit MUST by requirement; defer profile list to the spec ([#330](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/330))
+- compile guide snippets under cargo test --doc; fix stale spec-pin comments ([#327](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/327))
+- state a version-free support policy; log docs-refresh reconcile decisions ([#326](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/326))
+- refresh docs for v0.11–v0.14.3 and link sibling-owned content ([#325](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/325))
+- point plan references at plans/archive/ ([#320](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/320))
+- *(deps)* bump the minor-and-patch group with 3 updates ([#315](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/315))
+
 ## [0.14.3](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.14.2...acdp-v0.14.3) - 2026-09-27
 
 ### Fixed

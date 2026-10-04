@@ -123,3 +123,26 @@ pub use types::{
     PublishRequest, PublishResponse, RegistryState, RevocationTrustClass, SearchParams,
     SearchResponse, Status, Visibility, WireError, WitnessSigner, WitnessedCheckpoint,
 };
+
+// ── Guide doctests ────────────────────────────────────────────────────────────
+// Compiles (and, unless fenced `no_run`/`ignore`, runs) the Rust snippets in
+// README.md and docs/*.md under `cargo test --doc`, so guide examples cannot
+// silently rot (issue #324). Only built for doctests; never public API.
+// A guide that is wholly about one feature is gated on it here; mixed
+// guides gate individual snippets with a hidden `# #[cfg(feature = ...)]`.
+#[cfg(doctest)]
+mod doc_guides {
+    #[doc = include_str!("../README.md")]
+    struct Readme;
+    #[doc = include_str!("../docs/getting-started.md")]
+    struct GettingStarted;
+    #[doc = include_str!("../docs/producing.md")]
+    struct Producing;
+    #[cfg(feature = "client")]
+    #[doc = include_str!("../docs/consuming.md")]
+    struct Consuming;
+    #[doc = include_str!("../docs/registry.md")]
+    struct Registry;
+    #[doc = include_str!("../docs/errors.md")]
+    struct Errors;
+}

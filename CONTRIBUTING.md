@@ -65,6 +65,14 @@ behavior MUST:
 - Integration tests go in `tests/`.
 - HTTP-mocked tests use [`wiremock`](https://docs.rs/wiremock).
 - Property tests use [`proptest`](https://docs.rs/proptest).
+- Rust snippets in `README.md` and the `docs/*.md` guides are doctests: the
+  `#[cfg(doctest)] mod doc_guides` harness at the bottom of `src/lib.rs`
+  pulls each guide in with `include_str!`, so `cargo test --doc` compiles
+  them. Make a snippet self-contained with hidden `# ` setup lines; fence it
+  `rust,no_run` only when it needs the network, and diagrams or pseudo-code
+  `text` (a bare fence is compiled as Rust). Gate feature-specific snippets
+  with a hidden `# #[cfg(feature = "...")]`. A new guide with Rust snippets
+  must be added to `doc_guides`.
 
 ## Adding a new wire error code
 

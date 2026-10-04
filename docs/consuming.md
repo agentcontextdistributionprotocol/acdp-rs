@@ -539,7 +539,7 @@ defenses as the registry client.
 use acdp::client::{fetch_and_verify_data_ref, HttpsDataRefFetcher};
 
 let fetcher = HttpsDataRefFetcher::default();
-let bytes = fetch_and_verify_data_ref(&fetcher, data_ref).await?;
+let bytes = fetch_and_verify_data_ref(data_ref, &fetcher).await?;
 # Ok(()) }
 ```
 

@@ -167,8 +167,10 @@ Since 0.2.0 the builder **emits `acdp_version` explicitly by default**
 for 0.2.0+ builders. Consumers still treat an absent field as `"0.1.0"`
 (RFC-ACDP-0001 §6). To reproduce the 0.1.x omitted form, opt out:
 
-```rust,ignore
+```rust
+# fn opt_out(builder: acdp::producer::RequestBuilder<'_>) -> acdp::producer::RequestBuilder<'_> {
 builder.omit_acdp_version() // drops the field, matching the 0.1.x wire form
+# }
 ```
 
 **Note:** absent and explicit forms produce **different `content_hash` values**

@@ -25,9 +25,9 @@
 # Tier A (#322).
 ed25519-dalek     allow-exempt:#322-pending
 curve25519-dalek  allow-exempt:#322-pending
-signature         allow-exempt:#322-pending
-sha2              allow-exempt:#322-pending
-zeroize           allow-exempt:#322-pending
+signature
+sha2              allow-exempt:DECISIONS#322-sha2
+zeroize           allow-exempt:DECISIONS#322-zeroize
 subtle
 p256              allow-exempt:#322-pending
 ecdsa             allow-exempt:#322-pending

@@ -1059,3 +1059,62 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   that facts can be re-derived).
 - **Blast radius if wrong:** small. It affects the Phase 2 and Phase 3 notes only.
 - **Status:** UNCONFIRMED
+
+## #322 Phase 2: worksheet location and the `Method:` line
+- **Plan:** plans/supply-chain-recertify-322.md (Policy 4; Phase 2 Acceptance)
+- **Assumed:** the plan wants the per-crate worksheet in the PR body. It also wants the
+  `Method:` line to cite the PR URL, with the draft PR opened before `certify`. This phase
+  was run with "do not push or open a PR", so no URL exists.
+- **Chose:** the worksheets are committed as `supply-chain/worksheets/<crate>-<version>.md`.
+  cargo-vet ignores extra files there; `cargo vet --locked` and `cargo vet fmt` are
+  unaffected. The `signature` note reads `Method: Reviewed with Claude (Opus) assistance;
+  worksheet in supply-chain/worksheets/signature-3.0.0.md (issue #322 Phase 2 PR)`.
+- **Alternatives:**
+  - Open a draft PR first and cite its URL. Not allowed in this run.
+  - Keep the worksheets only in the PR body. They would then be lost from the tree.
+- **Blast radius if wrong:** small. `/ship` can rewrite the one `Method:` line to the PR
+  URL, and paste the worksheets into the PR body, before the maintainer's review.
+- **Status:** UNCONFIRMED
+
+## #322 Phase 2: concern rule applied to sha2 for an opt-in nightly-only backend
+- **Plan:** plans/supply-chain-recertify-322.md (Policy 6; Phase 2)
+- **Assumed:** Policy 6 has no severity or reachability threshold. Any unsound `unsafe`
+  found blocks certification.
+- **Chose:**
+  - sha2 0.11.0 is kept exempt (`322-sha2`). The trigger is an out-of-allocation
+    `ptr::add` in the `riscv-zknh` backend. That backend is reachable only with an
+    explicit `--cfg` plus nightly, so it is unreachable in every ACDP build.
+  - zeroize 1.9.0 is kept exempt (`322-zeroize`). The trigger is the uninit `u8` read in
+    `optimization_barrier`'s non-asm fallback, a safe API that wasm32 builds use.
+  - The aarch64 `&K32[t]` 16-byte load (Stacked-Borrows-only) was judged
+    **non-blocking**, because it is in bounds of an immutable static and is the same
+    pattern as the audited 0.10.9.
+- **Alternatives:** certify sha2 with a scope line excluding the riscv-zknh backend. That
+  is option 1 in DECISIONS `322-sha2`, left to Fable.
+- **Blast radius if wrong:** reversible. Certifying later is one `cargo vet certify` from
+  the existing worksheet.
+- **Status:** UNCONFIRMED
+
+## #322 Phase 2: zeroize method is full, not delta
+- **Plan:** plans/supply-chain-recertify-322.md (Policy 2)
+- **Assumed:** the ratio of 0.72 is below 0.75, so the numeric rule says delta.
+- **Chose:** full, under the rewrite clause. The delta replaces `compiler_fence` with the
+  new `optimization_barrier` at every volatile-write site, and adds the crate's only
+  `asm!`. The full read is 1,061 lines. This matches the plan's table.
+- **Alternatives:** a delta on the 1.8.2 base, whose notes are one line.
+- **Blast radius if wrong:** none for this phase, since zeroize was not certified.
+- **Status:** UNCONFIRMED
+
+## #322 Phase 2: guard self-test fixtures updated
+- **Plan:** plans/supply-chain-recertify-322.md (Phase 1 Tests)
+- **Assumed:** cases c1 and c5 of `scripts/test-check-crypto-vet.sh` relied on
+  DECISIONS.md *not* containing `322-zeroize`. Phase 2 added that anchor. Case (b) relied
+  on sha2 carrying the pending marker.
+- **Chose:**
+  - c1 and c5 now strip the anchor from their scratch DECISIONS.md copy.
+  - (b) sets sha2's marker to `allow-exempt:#322-pending` explicitly.
+  - All 16 cases pass, and shellcheck is clean.
+- **Alternatives:** switch the fixture crate to one still pending, for example p256. That
+  would need editing again in Phase 4.
+- **Blast radius if wrong:** test-only.
+- **Status:** UNCONFIRMED

@@ -55,6 +55,23 @@ criteria = "safe-to-deploy"
 version = "2.2.0"
 notes = "RustCrypto 'signature' trait crate. Pure trait/marker defs used by ed25519/ecdsa; no unsafe, no I/O, no build script. Canonical upstream, latest 2.x. cargo audit clean 2026-07-05."
 
+[[audits.signature]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "3.0.0"
+notes = """
+Scope: full audit of 3.0.0 (delta 2.2.0 -> 3.0.0 is 11 files, +632/-431 = 1.33x the 798 src lines, so full per the #322 method rule).
+Source: crates.io tarball sha256 28d567dcbaf0049cb8ac2608a76cd95ff9e4412e1899d389ee400918ca7537f5 == Cargo.lock checksum.
+unsafe: 0 sites; #![forbid(unsafe_code)] unconditional at src/lib.rs:8.
+asm/SIMD: none.
+build.rs / proc-macro: none (build = false; not a proc-macro; the optional signature_derive proc-macro dependency of 2.x was removed).
+Powerful imports: none (#![no_std]; alloc only behind the `alloc` feature; only include_str!("../README.md") for docs).
+Trait surface: Signer/Verifier families (multipart, digest, randomized, async, hazmat prehash), Keypair, SignatureEncoding, opaque non_exhaustive Error with optional boxed source; blanket impls only forward; default infallible methods panic via expect on try_* errors (documented).
+New deps: digest 0.10 -> 0.11 and rand_core 0.6 -> 0.10 (both optional, default-features = false; Tier B, still exempted); removed signature_derive, dev hex-literal/sha2. ACDP features: alloc, digest, rand_core.
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/signature-3.0.0.md (issue #322 Phase 2 PR)."""
+
 [[audits.subtle]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"
 criteria = "safe-to-deploy"

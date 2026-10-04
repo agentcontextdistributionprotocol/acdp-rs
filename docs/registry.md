@@ -23,7 +23,7 @@ The single most important invariant: **never persist a context before its
 signature is verified** (RFC-ACDP-0003 §2.1). `RegistryServer::publish_verified`
 encodes the full, ordered pipeline:
 
-```
+```text
 publish_verified(req, idempotency_key, resolver):
   1. rate-limit gate           ← before any expensive work (RFC-ACDP-0008 §4.3)
   2. schema + size validation  ← PublishValidator::validate_post_schema

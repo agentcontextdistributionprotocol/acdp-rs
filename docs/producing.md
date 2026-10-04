@@ -19,6 +19,7 @@ the key id are derived from the public key itself.
 ```rust
 use acdp::{crypto::SigningKey, producer::Producer, types::AgentDid};
 
+# let seed = [7u8; 32];
 let key = SigningKey::from_bytes(&seed);          // or SigningKey::generate()
 let producer = Producer::new(
     key,
@@ -44,6 +45,12 @@ Load the 32-byte seed from secure storage in production rather than calling
 ```rust
 use acdp::types::{ContextType, Visibility};
 
+# use acdp::{crypto::SigningKey, producer::Producer, types::AgentDid};
+# let producer = Producer::new(
+#     SigningKey::from_bytes(&[7u8; 32]),
+#     AgentDid::new("did:web:agents.example.com:my-agent"),
+#     "did:web:agents.example.com:my-agent#key-1",
+# );
 let req = producer
     .publish_request()
     .title("Q1 2026 revenue snapshot")          // required, 1..=500 chars
@@ -55,6 +62,7 @@ let req = producer
     .summary("Q1 2026 revenue snapshot.")
     .metadata(serde_json::json!({ "currency": "USD" }))
     .build()?;
+# Ok::<(), acdp::AcdpError>(())
 ```
 
 `.build()` performs four steps in order (`crates/acdp-producer/src/builder.rs`):
@@ -97,6 +105,9 @@ building the struct by hand; they set the encoding and shape correctly.
 
 ```rust
 use acdp::types::{DataRef, DataRefType};
+# let content_hash = acdp::types::ContentHash::parse(
+#     "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+# )?;
 
 // By URI (most common)
 DataRef::uri(DataRefType::PrimaryResult, "https://data.example.com/q1.parquet");
@@ -106,8 +117,9 @@ DataRef::uri_verified(DataRefType::PrimaryResult, "https://…", content_hash);
 
 // Embedded inline — pick the encoding that matches your payload
 DataRef::embedded_json(DataRefType::PrimaryResult, serde_json::json!({ "rows": 42 }));
-DataRef::embedded_utf8(DataRefType::Metadata, "free-form text");
-DataRef::embedded_base64(DataRefType::SecondaryData, "SGVsbG8=");
+DataRef::embedded_utf8(DataRefType::SupportingInfo, "free-form text");
+DataRef::embedded_base64(DataRefType::RawData, "SGVsbG8=");
+# Ok::<(), acdp::AcdpError>(())
 ```
 
 Convenience shorthands exist too: `DataRef::primary_result_uri(uri)`,
@@ -143,6 +155,10 @@ preferred entry point is `supersede_body`, which propagates the version number
 and lineage id from the retrieved previous `Body` (RFC-ACDP-0003 §3.1):
 
 ```rust
+# fn supersede(
+#     producer: &acdp::producer::Producer,
+#     previous: &acdp::types::Body,
+# ) -> Result<(), acdp::AcdpError> {
 // `previous` is the Body you retrieved for the current version.
 let v2 = producer
     .supersede_body(&previous)        // sets supersedes, version+1, expected_lineage_id
@@ -150,6 +166,7 @@ let v2 = producer
     .context_type(previous.context_type.clone())
     .summary("Updated with corrected April figures.")
     .build()?;
+# Ok(()) }
 ```
 
 | Method | Use when |
@@ -184,7 +201,9 @@ different line. Conformant consumers treat an absent field as `"0.1.0"`
 `sig-001` golden vector was signed with, opt out:
 
 ```rust
+# fn opt_out(builder: acdp::producer::RequestBuilder<'_>) -> acdp::producer::RequestBuilder<'_> {
 builder.omit_acdp_version()   // drops the field, matching the 0.1.x wire form
+# }
 ```
 
 > ⚠️ **The absent and explicit forms produce different `content_hash`
@@ -199,9 +218,21 @@ builder.omit_acdp_version()   // drops the field, matching the 0.1.x wire form
 populated. Serialize it and POST it:
 
 ```rust
+# use acdp::{crypto::SigningKey, producer::Producer, types::AgentDid};
+# let producer = Producer::new(
+#     SigningKey::from_bytes(&[7u8; 32]),
+#     AgentDid::new("did:web:agents.example.com:my-agent"),
+#     "did:web:agents.example.com:my-agent#key-1",
+# );
+# let req = producer
+#     .publish_request()
+#     .title("Q1 2026 revenue snapshot")
+#     .context_type(acdp::types::ContextType::DataSnapshot)
+#     .build()?;
 let json = serde_json::to_string_pretty(&req)?;   // the publish body
 println!("{}", req.content_hash);                 // sha256:<hex>
 println!("{} / {}", req.signature.algorithm, req.signature.key_id);
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 To actually publish over HTTP, see

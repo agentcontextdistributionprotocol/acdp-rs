@@ -58,3 +58,10 @@ pkcs8
 sec1
 primefield
 digest
+# Batch B3:
+untrusted
+cpubits
+hyper-rustls
+group
+tokio-rustls
+primeorder

@@ -1206,3 +1206,52 @@ assistance, maintainer approval required before merge.
 
 **Status:** AUTHORED. Pending the maintainer's approving review naming the worksheets read
 (Policy 4); never auto-merged.
+
+## #339 Tier B batch B3: untrusted, cpubits, hyper-rustls, group, tokio-rustls, primeorder certified (2026-10-04)
+
+Batch B3 of issue #339 (plan P6), under the "#322 supply-chain audit policy" unchanged:
+built-in `safe-to-deploy` only, no claim of cryptographic correctness or constant-time
+behaviour, `who = "Ajit Koti <ajitkoti@zer07labs.com>"`, reviewed with Claude (Opus)
+assistance, maintainer approval required before merge.
+
+| Crate | Version | Method | Worksheet |
+|---|---|---|---|
+| `untrusted` | 0.9.0 | full (no prior audit); discretion on packaged CI scripts | `supply-chain/worksheets/untrusted-0.9.0.md` |
+| `cpubits` | 0.1.1 | full (no prior audit); observation CB-1 | `supply-chain/worksheets/cpubits-0.1.1.md` |
+| `hyper-rustls` | 0.27.9 | full (no prior audit) | `supply-chain/worksheets/hyper-rustls-0.27.9.md` |
+| `group` | 0.14.0 | full (no prior audit); observation G-1 | `supply-chain/worksheets/group-0.14.0.md` |
+| `tokio-rustls` | 0.26.4 | full (no prior audit); test-fixture discretion | `supply-chain/worksheets/tokio-rustls-0.26.4.md` |
+| `primeorder` | 0.14.0 | full (no prior audit) | `supply-chain/worksheets/primeorder-0.14.0.md` |
+
+- None of the six has a `forbid(unsafe_code)` attribute or `Cargo.toml` lint (the
+  "no-attribute" batch). For each, the evidence is a grep of the full source, tests
+  included: 0 `unsafe` sites, no `asm!`, no build script, no proc-macro.
+- **TLS adapters.** `hyper-rustls` and `tokio-rustls` do network I/O by design, but only on
+  the caller's connector or stream. Neither builds a certificate verifier, touches
+  `dangerous()` or installs a key-log hook. Both pass the caller's `rustls::ClientConfig`
+  through unchanged, apart from ALPN. ACDP compiles `hyper-rustls` with `http1`, `ring`,
+  `tls12`, `webpki-roots` and `webpki-tokio`, and `tokio-rustls` with `ring` and `tls12`.
+  Their default `aws-lc-rs`, `native-tokio` / `rustls-native-certs`, `logging` and
+  `early-data` features are off. hyper-rustls passes `http://` through in cleartext
+  (`force_https: false` on reqwest's path). ACDP's HTTPS-only rule is enforced by
+  `SsrfPolicy::check_url` (`crates/acdp-safe-http/src/lib.rs:204`), not by this crate. No
+  concern was found, so neither was kept exempt.
+- `cpubits` (`#[macro_export]` macros expanding in `crypto-bigint`) and `primeorder` (generic
+  curve arithmetic, monomorphized in `p256`) had every macro arm and every feature-gated file
+  read. `primeorder`'s `dev` macro is compiled only with `dev`, which is off.
+- Observations, neither a vet concern: **CB-1**, cpubits's single-size `16 => {..}` arm fails
+  to compile (a stray comma; compile-time only, unused, still on upstream master). **G-1**,
+  group's wNAF helper misbehaves at window sizes 0 and 64 (a panic or wrong result; no
+  caller in ACDP's graph). Reporting either upstream is the maintainer's call.
+- `untrusted`, `hyper-rustls` and `tokio-rustls` are lock-only in the py and node bindings
+  (not compiled into their builds) and absent from wasm. `cpubits`, `group` and `primeorder`
+  are compiled into all three bindings. Every binding lockfile that has them locks the same
+  versions and checksums as the root, so `scripts/check-bindings-lock-parity.sh` passes
+  with 29 crates.
+- The six crates were added to `scripts/crypto-critical.txt` (block `# Batch B3:`) with no
+  marker: 29 guarded crates, of which only `zeroize` keeps a marker. Remaining Tier B: 17
+  crates.
+- No concern was found; nothing in this batch was kept exempt.
+
+**Status:** AUTHORED. Pending the maintainer's approving review naming the worksheets read
+(Policy 4); never auto-merged.

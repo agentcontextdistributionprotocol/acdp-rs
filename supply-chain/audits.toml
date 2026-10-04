@@ -8,7 +8,7 @@ version = "0.2.2"
 notes = """
 Scope: full audit of 0.2.2 (no prior audit, ours or imported; 853 src lines, every file read).
 Source: crates.io tarball sha256 ce6e4c961d6cd6c9a86db418387425e8bdeaf05b3c8bc1411e6dca4c252f1453 == Cargo.lock checksum.
-unsafe: 0 sites; #![forbid(unsafe_code)] unconditional at src/lib.rs:8.
+unsafe: 0 sites (full-source grep; forbid is capped by --cap-lints for registry deps, so the grep is the evidence); #![forbid(unsafe_code)] is at src/lib.rs:8.
 asm/SIMD: none.
 build.rs / proc-macro: none.
 Powerful imports: none directly (#![no_std]). OS entropy by delegation: with the `getrandom` feature (on in ACDP via elliptic-curve) Generate::try_generate/generate read getrandom::SysRng (src/generate.rs:28-45; generate panics on OS RNG failure, documented). Explicit key-generation API; the syscall lives in getrandom (Tier B, still exempted). ACDP passes its own SysRng to generate_from_rng and does not call these.
@@ -74,12 +74,12 @@ version = "3.0.0"
 notes = """
 Scope: full audit of 3.0.0 (no prior audit, ours or imported; 947 src lines, every src file read, plus tests/ for imports and fixtures).
 Source: crates.io tarball sha256 29fcf32e6c73d1079f83ab4d782de2d81620346a5f38c6237a86a22f8368980a == Cargo.lock checksum.
-unsafe: 0 sites; #![forbid(unsafe_code)] unconditional at src/lib.rs:6.
+unsafe: 0 sites (full-source grep; forbid is capped by --cap-lints for registry deps, so the grep is the evidence); #![forbid(unsafe_code)] is at src/lib.rs:6.
 asm/SIMD: none.
 build.rs / proc-macro: none (optional zerocopy derives are off; on repr(C)/repr(transparent) u8 arrays with no padding they would be layout-sound).
 Powerful imports: none (#![no_std]; alloc only behind `alloc`; include_str! README for docs only).
 Discretion: binary test fixtures tests/examples/{pkcs8-v1,pkcs8-v2,pubkey}.der (48/116/44 bytes), each byte-identical to the base64 body of its sibling .pem; read only by tests/pkcs8.rs via include_bytes!; not compiled into any non-test build.
-Behaviour: Signature is an unvalidated 64-byte R||s container (from_slice length check, hex Display/FromStr with mixed-case rejection, optional serde/zeroize); optional RFC 8410 PKCS#8/SPKI KeypairBytes/PublicKeyBytes with OID and nested OCTET STRING checks. ACDP uses only Signature::from_slice via ed25519-dalek (crates/acdp-crypto/src/verify.rs:38); all verification checks are in ed25519-dalek/curve25519-dalek (audited). Hygiene note (feature-gated, off): without `zeroize`, KeypairBytes Drop does not clear the secret, and to_pkcs8_der skips its zeroize on early-return errors.
+Behaviour: Signature is an unvalidated 64-byte R||s container (from_slice length check, hex Display/FromStr with mixed-case rejection, optional serde/zeroize); optional RFC 8410 PKCS#8/SPKI KeypairBytes/PublicKeyBytes with OID and nested OCTET STRING checks. ACDP uses only the Signature container (from_slice / to_bytes / from_components): from_slice on verify (crates/acdp-crypto/src/verify.rs:38), to_bytes on sign (crates/acdp-crypto/src/sign.rs:67-68,104-105), and ed25519-dalek's own from_components/to_bytes conversions (ed25519-dalek-3.0.0/src/signature.rs:167,173); all verification checks are in ed25519-dalek/curve25519-dalek (audited; safe-to-deploy only; correctness not claimed). Hygiene note (feature-gated, off): without `zeroize`, KeypairBytes Drop does not clear the secret, and to_pkcs8_der skips its zeroize on early-return errors.
 New deps: signature 3 (audited 3.0.0); optional pkcs8 0.11, serdect 0.4, zeroize 1, zerocopy 0.8. ACDP features: none (ed25519-dalek uses default-features = false and ACDP leaves ed25519-dalek/alloc off; root and py/node/wasm bindings identical).
 Advisories: cargo deny check advisories clean on 2026-10-04.
 Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
@@ -138,7 +138,7 @@ version = "0.14.0"
 notes = """
 Scope: full audit of 0.14.0 (no prior audit, ours or imported; 771 src lines, every src file read). The optional ff_derive proc-macro (feature `derive`) is not in ACDP's Cargo.lock and was not reviewed.
 Source: crates.io tarball sha256 a1f686ab92a9fb0eaf188f6c6c87b89490baa6fdb0db4544ba4dc47f7942489f == Cargo.lock checksum.
-unsafe: 0 sites; #![forbid(unsafe_code)] unconditional at src/lib.rs:7.
+unsafe: 0 sites (full-source grep; forbid is capped by --cap-lints for registry deps, so the grep is the evidence); #![forbid(unsafe_code)] is at src/lib.rs:7.
 asm/SIMD: none.
 build.rs / proc-macro: none (not a proc-macro; optional ff_derive dependency is off and absent from the lock).
 Powerful imports: none (#![no_std]; alloc only behind `alloc`).
@@ -258,7 +258,7 @@ version = "0.8.0"
 notes = """
 Scope: full audit of 0.8.0 (no prior audit, ours or imported; 828 src lines, every src file read, plus tests/ and benches/ for imports and fixtures).
 Source: crates.io tarball sha256 1d9efca8738c78ee9484207732f728b1ef517bbb1833d6fc0879ca898a522f6f == Cargo.lock checksum.
-unsafe: 0 sites; #![forbid(unsafe_code)] unconditional at src/lib.rs:8.
+unsafe: 0 sites (full-source grep; forbid is capped by --cap-lints for registry deps, so the grep is the evidence); #![forbid(unsafe_code)] is at src/lib.rs:8.
 asm/SIMD: none.
 build.rs / proc-macro: none (optional `arbitrary` derive is off).
 Powerful imports: filesystem only behind the `std` feature (off in every ACDP build): DecodePublicKey::read_public_key_{der,pem}_file and EncodePublicKey::write_public_key_{der,pem}_file (src/traits.rs:55-70,105-122) take a caller-supplied Path and delegate to der::Document; explicit, documented API, not ambient I/O. No net/process/env.
@@ -282,7 +282,7 @@ version = "0.14.1"
 notes = """
 Scope: full audit of 0.14.1 (no prior audit, ours or imported; 718 src lines, every file read).
 Source: crates.io tarball sha256 795ca18b3fdb5e62bf982199278341ddcf7ebf7d32e25e212ad05d496e95f6fa == Cargo.lock checksum.
-unsafe: 0 sites; #![forbid(unsafe_code)] unconditional at src/lib.rs:8.
+unsafe: 0 sites (full-source grep; forbid is capped by --cap-lints for registry deps, so the grep is the evidence); #![forbid(unsafe_code)] is at src/lib.rs:8.
 asm/SIMD: none.
 build.rs / proc-macro: none (build = false; not a proc-macro).
 Powerful imports: none (#![no_std]; alloc only behind `alloc`; include_str! README for docs only).
@@ -305,11 +305,11 @@ version = "1.5.0"
 notes = """
 Scope: full audit of 1.5.0 (no prior audit, ours or imported; src/lib.rs is the only source file, 870 lines incl. the cfg(test) module, read in full).
 Source: crates.io tarball sha256 3c50655cbb0fe3fc43170059e702f1ce5e19b84cec58dc87b037a09935c2f328 == Cargo.lock checksum.
-unsafe: 0 sites; #![forbid(unsafe_code)] unconditional at src/lib.rs:4. The generated code contains no unsafe either (every quote! block read).
+unsafe: 0 sites (full-source grep; forbid is capped by --cap-lints for registry deps, so the grep is the evidence); #![forbid(unsafe_code)] is at src/lib.rs:4. The generated code contains no unsafe either (every quote! block read).
 asm/SIMD: none.
 build.rs / proc-macro: no build.rs. proc-macro = true: derives Zeroize and ZeroizeOnDrop. Pure token-to-token codegen with syn/quote: reads only the input item and its #[zeroize(drop|bound|skip)] attributes, emits Zeroize/Drop/ZeroizeOnDrop impls that call zeroize's public traits; no fs/net/process/env, no env!/include_*!, no tracked access, no static state; malformed input fails via panic!/assert! (compile errors).
 Powerful imports: none.
-ACDP use: zeroize `derive` feature (acdp-crypto); one #[derive(ZeroizeOnDrop)] on SigningKey(ed25519_dalek::SigningKey) (crates/acdp-crypto/src/sign.rs:26), whose generated Drop is a no-op because the field is itself ZeroizeOnDrop. Erasure semantics belong to zeroize 1.9.0, still exempt under DECISIONS 322-zeroize; this audit does not cover zeroize.
+ACDP use: zeroize `derive` feature (acdp-crypto); one #[derive(ZeroizeOnDrop)] on SigningKey(ed25519_dalek::SigningKey) (crates/acdp-crypto/src/sign.rs:26), whose generated Drop is a no-op because ed25519_dalek::SigningKey implements ZeroizeOnDrop but not Zeroize (ed25519-dalek-3.0.0/src/signing.rs:719-726); a field implementing Zeroize (with or without ZeroizeOnDrop) instead takes the AssertZeroize path and has zeroize() called. Erasure semantics belong to zeroize 1.9.0, still exempt under DECISIONS 322-zeroize; this audit does not cover zeroize.
 New deps: proc-macro2 1, quote 1, syn 2 (full, extra-traits, visit); host-only. ACDP features: default (none defined); root and py/node/wasm bindings identical.
 Advisories: cargo deny check advisories clean on 2026-10-04.
 Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance, or that zeroization clears memory.

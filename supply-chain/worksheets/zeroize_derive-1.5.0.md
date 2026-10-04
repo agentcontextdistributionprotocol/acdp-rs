@@ -28,7 +28,7 @@ Reproduce the facts with `scripts/vet-facts.sh zeroize_derive 1.5.0`.
 
 | Item | Finding |
 |---|---|
-| `unsafe` code lines | 0. `#![forbid(unsafe_code)]` at `src/lib.rs:4`, unconditional. The **generated** code contains no `unsafe` either (every `quote!` block was read: `:61-85`, `:105-119`, `:378-391`, `:419-422`). |
+| `unsafe` code lines | 0 sites (full-source grep; forbid is capped by --cap-lints for registry deps, so the grep is the evidence). `#![forbid(unsafe_code)]` is at `src/lib.rs:4`. The **generated** code contains no `unsafe` either (every `quote!` block was read: `:61-85`, `:105-119`, `:378-391`, `:419-422`). |
 | asm / SIMD / intrinsics | none |
 | build.rs | none |
 | proc-macro | **yes** (`[lib] proc-macro = true`). Two derives: `Zeroize` (`:33-36`) and `ZeroizeOnDrop` (`:94-97`), helper attribute `zeroize`. |
@@ -51,12 +51,16 @@ Reproduce the facts with `scripts/vet-facts.sh zeroize_derive 1.5.0`.
   each non-skipped field, plus the marker `impl ::zeroize::ZeroizeOnDrop for T {}`
   (`:99-120`, `:416-423`). `zeroize_or_on_drop` is resolved by autoref specialization over
   `zeroize::__internal::{AssertZeroize, AssertZeroizeOnDrop}`
-  (`zeroize-1.9.0/src/lib.rs:828-850`): a no-op for a field that is itself `ZeroizeOnDrop`
-  (it zeroizes in its own `Drop`), else `Zeroize::zeroize`. A field that is neither fails to
-  compile.
+  (`zeroize-1.9.0/src/lib.rs:828-850`). Method lookup tries the by-value receiver first, so
+  a field that implements `Zeroize` (whether or not it is also `ZeroizeOnDrop`) takes the
+  `AssertZeroize` path and has `zeroize()` called. Only a field that is `ZeroizeOnDrop` but
+  not `Zeroize` falls through to the autoref `AssertZeroizeOnDrop` impl, which is a no-op
+  (the field zeroizes in its own `Drop`). A field that is neither fails to compile.
 - **ACDP's one use** is `#[derive(ZeroizeOnDrop)] pub struct SigningKey(DalekSigningKey)`
-  (`crates/acdp-crypto/src/sign.rs:26-27`). `ed25519_dalek::SigningKey` is `ZeroizeOnDrop`, so
-  the generated `Drop` is a no-op and erasure happens in ed25519-dalek's own `Drop` (audited).
+  (`crates/acdp-crypto/src/sign.rs:26-27`). `ed25519_dalek::SigningKey` implements
+  `ZeroizeOnDrop` but not `Zeroize` (`ed25519-dalek-3.0.0/src/signing.rs:719-726`), so the
+  generated `Drop` is a no-op and erasure happens in ed25519-dalek's own `Drop` (audited;
+  safe-to-deploy only).
 
 ## Interplay with `zeroize` 1.9.0 (still exempt, DECISIONS.md `322-zeroize`)
 

@@ -33,7 +33,7 @@ was read (only cargo's `.cargo-ok` marker differs). Reproduce the facts with
 
 | Item | Finding |
 |---|---|
-| `unsafe` code lines | 0. `#![forbid(unsafe_code)]` at `src/lib.rs:7`, unconditional. |
+| `unsafe` code lines | 0 sites (full-source grep; forbid is capped by --cap-lints for registry deps, so the grep is the evidence). `#![forbid(unsafe_code)]` is at `src/lib.rs:7`. |
 | asm / SIMD / intrinsics | none |
 | build.rs | none |
 | proc-macro | no (the optional `ff_derive` dependency is one; off in ACDP and absent from the lock) |

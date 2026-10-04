@@ -402,7 +402,7 @@ stable `asm!`. The `bindings/acdp-wasm` wasm32 build is one of those targets
 path, and no known ACDP call site triggers the fault. **Exit criterion:**
 delta-audit zeroize 1.9.1 when it is released (RustCrypto/utils#1535 removes the
 crate's internal callers of `optimization_barrier`). Its guard line carries
-`allow-exempt:DECISIONS#322-zeroize`.
+`allow-exempt:DECISIONS#322-zeroize@1.9.0`, which pins the exemption to 1.9.0.
 
 **Supporting crypto crates are exempted, not audited.** #322 covered only the
 eleven crates above. The 35 support crates on the same signing, hashing, key
@@ -467,16 +467,23 @@ exemption to a bumped version no longer turns CI green.
 The guard is now **enforcing**: since #322 closed, ten of the eleven listed
 crates carry no marker. The list file documents two markers:
 
-- `allow-exempt:DECISIONS#322-<crate>` is for a crate kept exempt under the
-  #322 concern rule. It needs a DECISIONS.md entry carrying that anchor.
-  **Only `zeroize` uses it** (`322-zeroize`).
+- `allow-exempt:DECISIONS#322-<crate>@<version>` is for a crate kept exempt
+  under the #322 concern rule. **Only `zeroize` uses it**
+  (`allow-exempt:DECISIONS#322-zeroize@1.9.0`). It must meet three conditions:
+  - DECISIONS.md must contain the anchor `322-<crate>` as a whole token.
+  - The `@<version>` is required.
+  - Every unaudited locked version, and every
+    `[[exemptions.<crate>]]` version in `supply-chain/config.toml`, must equal
+    the pinned version. Otherwise the guard fails with "re-audit, or update the
+    DECISIONS.md entry and the marker".
+
+  This means moving zeroize's exemption to a newer release no longer passes.
+  The `322-zeroize` exit criterion is a delta audit of 1.9.1.
 - `allow-exempt:#322-pending` was the in-progress marker. No line uses it any
   more. Adding it back needs a DECISIONS.md entry.
 
 A marker left on a crate that is now fully audited also fails ("stale marker —
-remove it"). A DECISIONS marker accepts an exemption at **any** version, so the
-guard does not stop someone moving zeroize's exemption to a newer release.
-Don't do that: the `322-zeroize` exit criterion is a delta audit of 1.9.1. Run
+remove it"). Run
 the guard locally with `scripts/check-crypto-vet.sh`, and run its self-tests
 with `scripts/test-check-crypto-vet.sh` (add `--with-network` to also exercise
 `vet-facts.sh`). Both need `jq`.
@@ -526,13 +533,14 @@ catches either case. When a bump turns `cargo-vet` red:
    Instead:
    - keep or add the exemption, with a `KEPT EXEMPT (#322)` note;
    - add a DECISIONS.md entry anchored `322-<crate>` that lists the options;
-   - set the guard marker to `allow-exempt:DECISIONS#322-<crate>`.
-7. **Push to the Dependabot branch and turn auto-merge off**
-   (`gh pr merge --disable-auto <n>`).
-   - `dependabot-auto-merge.yml` turns on auto-merge for every patch or minor
-     bump, including the `crypto` group.
-   - In a 0.x crate, a breaking bump counts as "minor".
-   - So once your audit turns CI green, the PR would merge with no human review.
+   - set the guard marker to `allow-exempt:DECISIONS#322-<crate>@<version>`.
+7. **Push to the Dependabot branch.** `dependabot-auto-merge.yml` never turns
+   on auto-merge for the `crypto` group: it checks `fetch-metadata`'s
+   `dependency-group != 'crypto'`. One case slips past that check. A
+   transitive crypto-critical crate can move inside another group's PR (for
+   example `minor-and-patch`), and that PR may already have auto-merge on. In
+   that case, turn it off before pushing an audit (`gh pr merge --disable-auto
+   <n>`).
 8. **Get sign-off.** The maintainer posts an approving review that says which
    worksheet they read. Only then is the PR merged.
 

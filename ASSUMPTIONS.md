@@ -1282,4 +1282,20 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   status". No script change.
 - **Alternatives:** pin the DECISIONS marker to a version (a guard change, out of scope).
 - **Blast radius if wrong:** none. Documentation only.
+- **Status:** SUPERSEDED (verifier finding, same phase): the guard now requires
+  `allow-exempt:DECISIONS#322-<crate>@<version>`. It fails when an unaudited locked
+  version, or a `config.toml` exemption, differs from the pin. Self-tests g–g4 cover it.
+
+## #322 Phase 5: crypto-group Dependabot PRs never auto-merge
+- **Plan:** Long-term posture ("Making the auto-merge workflow skip the `crypto` group is a
+  candidate follow-up"); verifier finding
+- **Assumed:** `dependabot/fetch-metadata` at the pinned SHA `25dd0e3…` (v3.1.0) exposes a
+  `dependency-group` output. This was checked in that SHA's `action.yml`: it is an empty
+  string when the PR has no group.
+- **Chose:** add `&& steps.meta.outputs.dependency-group != 'crypto'` to the auto-merge
+  step, with the OR clause in parentheses. The action pin is unchanged. A transitive
+  crypto crate moving inside another group's PR is still auto-merge eligible; this is
+  documented as a manual check and a DECISIONS follow-up.
+- **Blast radius if wrong:** reversible. In the worst case a crypto PR would need a manual
+  merge.
 - **Status:** UNCONFIRMED

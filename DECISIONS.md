@@ -835,7 +835,8 @@ under the concern rule below.
      evidence (`file:line`), and the options: accept the exemption, pin an older audited
      version, or report upstream. It must contain the anchor text `322-<crate>`
      verbatim.
-   - Change the guard marker to `allow-exempt:DECISIONS#322-<crate>`.
+   - Change the guard marker to `allow-exempt:DECISIONS#322-<crate>@<version>` (the
+     `@<version>` pin was added 2026-10-04 in Phase 5; see item 7).
    - The phase still closes, with that crate listed as an exception.
 7. **Guard and marker semantics.** The `cargo-vet` required check runs
    `scripts/check-crypto-vet.sh` after `cargo vet --locked`. The guard reads
@@ -843,8 +844,13 @@ under the concern rule below.
    `cargo metadata --locked --all-features`.
    - **No marker:** every locked version must be in `vetted_fully`.
    - **`allow-exempt:#322-pending`:** passes while the crate is still exempted.
-   - **`allow-exempt:DECISIONS#322-<crate>`:** the anchor must be exactly `322-<crate>`
-     for that line's crate, and DECISIONS.md must contain it as a whole token.
+   - **`allow-exempt:DECISIONS#322-<crate>@<version>`:** the anchor must be exactly
+     `322-<crate>` for that line's crate, and DECISIONS.md must contain it as a whole token.
+     **Amended 2026-10-04 (Phase 5, verifier finding):** the `@<version>` is required.
+     Every unaudited locked version, and every `[[exemptions.<crate>]]` version in
+     `supply-chain/config.toml`, must equal it. Otherwise the guard fails ("re-audit, or
+     update the DECISIONS.md entry and the marker"). Without the pin, a bump could be met
+     by moving the exemption.
    - Both markers fail as **stale** once every locked version is fully vetted, which
      forces each phase to remove its own markers.
    - Any other marker fails, as does a listed crate that is not in `Cargo.lock`.
@@ -982,7 +988,8 @@ volatile-write site and adds the crate's only `asm!`.
 ## #322 completion status (2026-10-04)
 
 Closing entry for issue #322 (plan `plans/supply-chain-recertify-322.md`, Phase 5). All
-five phases are done. Each one is a separate PR, never auto-merged, and needs the
+five phases are authored; PRs #334, #335, #336 (and the Phase 5 PR) are pending the
+maintainer's approving review. Each one is a separate PR, never auto-merged, and needs the
 maintainer's approving review naming the worksheet they read (Policy 4).
 
 **Audited at the locked version (10 of the 11 Tier A crates).** Each has a
@@ -1021,8 +1028,9 @@ powerful imports were reasoned about at the exact bytes in `Cargo.lock`.
   - Z-1: the safe `optimization_barrier` reads a possibly-uninitialized byte on non-`asm!`
     targets, and the published wasm32 binding builds that path.
   - Exit criterion: delta-audit 1.9.1.
-  - The guard's DECISIONS marker accepts an exemption at any version. So a bump to 1.9.1
-    must be audited, not met by moving the exemption (`docs/supply-chain.md`).
+  - The guard marker `allow-exempt:DECISIONS#322-zeroize@1.9.0` pins the exemption to
+    1.9.0. A bump to 1.9.1 fails the guard until 1.9.1 is audited, or until this entry
+    and the marker are deliberately updated.
 - **The 35 supporting crypto crates (Tier B)** were out of scope for #322. Each is covered
   by an exemption only, and none is on the guard list:
   - RustCrypto support: `ed25519`, `curve25519-dalek-derive`, `digest`, `crypto-common`,
@@ -1039,11 +1047,15 @@ powerful imports were reasoned about at the exact bytes in `Cargo.lock`.
 **Guard state.**
 - `scripts/check-crypto-vet.sh` is enforcing in the required `cargo-vet` check.
 - `scripts/crypto-critical.txt` has no `#322-pending` line. The only marker left is
-  `zeroize allow-exempt:DECISIONS#322-zeroize`.
+  `zeroize allow-exempt:DECISIONS#322-zeroize@1.9.0`. The guard requires DECISIONS
+  markers to carry a version and fails on a version mismatch (self-tests g–g4).
 - The `#322-pending` marker type is still parsed, because the self-tests exercise it, but
   it is unused.
+- `dependabot-auto-merge.yml` never enables auto-merge for the `crypto` group
+  (`steps.meta.outputs.dependency-group != 'crypto'`, an output of the pinned
+  `dependabot/fetch-metadata` v3.1.0).
 - The upgrade workflow is in `docs/supply-chain.md` "Upgrading a crypto-critical crate":
-  `vet-facts.sh` -> worksheet -> `certify` -> turn auto-merge off -> maintainer review.
+  `vet-facts.sh` -> worksheet -> `certify` -> maintainer review.
 
 **Findings for ACDP (not vet concerns; owned by the maintainer).**
 - **E-1 (ed25519-dalek).** ACDP verifies with `VerifyingKey::verify`, not `verify_strict`,
@@ -1078,8 +1090,12 @@ powerful imports were reasoned about at the exact bytes in `Cargo.lock`.
    repo's `audits.toml`.
 4. zeroize 1.9.1 delta audit once released (the `322-zeroize` exit criterion).
 5. ACDP-side follow-ups for E-1 and P-1/P-3 above.
-6. Optional: have `dependabot-auto-merge.yml` skip the `crypto` group
-   (`fetch-metadata` exposes `dependency-group`), so step 7 of the upgrade workflow is
-   enforced rather than manual.
+6. Optional: transitive crypto-critical crates can still move inside a non-`crypto`
+   Dependabot group, which is auto-merge eligible. Consider gating auto-merge on the
+   guard list rather than on the group name.
 
-**Status:** DONE (issue #322 closes on this entry once the Phase 5 PR merges).
+(Done in Phase 5, no longer a follow-up: `dependabot-auto-merge.yml` skips the `crypto`
+group.)
+
+**Status:** AUTHORED. Issue #322 closes on this entry once PRs #334, #335, #336 and the
+Phase 5 PR merge after the maintainer's approving reviews.

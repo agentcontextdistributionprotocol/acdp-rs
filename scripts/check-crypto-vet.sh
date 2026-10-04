@@ -89,6 +89,20 @@ fully_vetted() {
         "$tmp/vet.json" >/dev/null
 }
 
+config_file="${store_path:-$repo_root/supply-chain}/config.toml"
+
+# Versions of <crate> exempted in config.toml (`[[exemptions.<crate>]]`
+# followed by `version = "..."`), one per line.
+exempted_versions() {
+    [ -f "$config_file" ] || return 0
+    awk -v hdr="[[exemptions.$1]]" '
+        /^\[/ { inside = ($0 == hdr); next }
+        inside && /^version[[:space:]]*=/ {
+            v = $0; sub(/^version[[:space:]]*=[[:space:]]*"/, "", v); sub(/".*$/, "", v); print v
+        }
+    ' "$config_file" | sort -u
+}
+
 failures=0
 fail() {
     echo "check-crypto-vet: FAIL: $*" >&2
@@ -140,16 +154,28 @@ while read -r name marker <&3 || [ -n "${name:-}" ]; do
             fi
             ;;
         'allow-exempt:#322-pending' | allow-exempt:DECISIONS#?*)
+            # (A DECISIONS marker is allow-exempt:DECISIONS#322-<crate>@<version>.)
             if [ "$vetted" -eq "$total" ]; then
                 fail "$name: stale marker '$marker' -- remove it: every locked version ($versions) is now fully audited."
                 continue
             fi
             case "$marker" in
                 allow-exempt:DECISIONS#*)
+                    # Format: allow-exempt:DECISIONS#322-<crate>@<version>.
+                    # The @<version> pins the one exempted version the DECISIONS
+                    # entry was written for, so a bump cannot be met by moving
+                    # the exemption.
+                    anchor=${marker#allow-exempt:DECISIONS#}
+                    case "$anchor" in
+                        *@?*) pinned=${anchor##*@}; anchor=${anchor%@*} ;;
+                        *)
+                            fail "$name: marker '$marker' must pin the exempted version: 'allow-exempt:DECISIONS#322-$name@<version>'."
+                            continue
+                            ;;
+                    esac
                     # The anchor must be exactly `322-<crate>`, and DECISIONS.md
                     # must contain it as a whole token (not as a prefix of a
                     # longer name such as `322-<crate>-x`).
-                    anchor=${marker#allow-exempt:DECISIONS#}
                     if [ "$anchor" != "322-$name" ]; then
                         fail "$name: marker '$marker' must name anchor '322-$name' exactly (got '$anchor')."
                         continue
@@ -159,12 +185,28 @@ while read -r name marker <&3 || [ -n "${name:-}" ]; do
                         fail "$name: marker '$marker' names anchor '$anchor', which does not appear in $(basename "$decisions_file")."
                         continue
                     fi
+                    mismatch=0
+                    for v in $unvetted; do
+                        if [ "$v" != "$pinned" ]; then
+                            fail "$name: locked version $v is not fully audited and differs from the version pinned by '$marker' ($pinned):" \
+                                "re-audit $name $v, or update the DECISIONS.md '$anchor' entry and the marker."
+                            mismatch=1
+                        fi
+                    done
+                    for v in $(exempted_versions "$name"); do
+                        if [ "$v" != "$pinned" ]; then
+                            fail "$name: supply-chain/config.toml exempts version $v, which differs from the version pinned by '$marker' ($pinned):" \
+                                "re-audit $name $v, or update the DECISIONS.md '$anchor' entry and the marker."
+                            mismatch=1
+                        fi
+                    done
+                    [ "$mismatch" -eq 0 ] || continue
                     ;;
             esac
             echo "check-crypto-vet: ok: $name ($unvetted) allowed exempt by '$marker'"
             ;;
         *)
-            fail "$name: unknown marker '$marker' (allowed: none, 'allow-exempt:#322-pending', 'allow-exempt:DECISIONS#322-<crate>')."
+            fail "$name: unknown marker '$marker' (allowed: none, 'allow-exempt:#322-pending', 'allow-exempt:DECISIONS#322-<crate>@<version>')."
             ;;
     esac
 done 3<"$list_file"

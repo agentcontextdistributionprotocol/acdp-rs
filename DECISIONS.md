@@ -762,3 +762,17 @@ publication to crates.io/PyPI/npm.
 resulted from this entry (it's a release-process finding, not a code one) — noted here so
 a future release isn't surprised by the same `action_required`/OIDC-flake/propagation-lag
 shape if it recurs.
+
+## Reconcile: docs-refresh-2026-10 (PR #325) — 2026-10-03
+Eight assumptions, all reversible. Analyzed by a fresh Opus agent against `main`; seven settled by Opus, one (public support policy) decided by the maintainer.
+
+| Entry | Decision | Decided by | Evidence |
+|---|---|---|---|
+| CLAUDE.md edits left uncommitted | CONFIRMED | Opus | `CLAUDE.md` and `plans/` are in `.gitignore`; force-adding would change repo policy. |
+| SECURITY.md support window | CONFIRMED with change: "latest minor release only", no version numbers | Maintainer | A public commitment to security reporters. Hardcoded `0.14.x` goes stale each minor bump; reworded in the follow-up PR. |
+| Embedded-ref root `content_hash` not checked | CONFIRMED | Opus | `verify_embedded_hash` checks `embedded.content_hash` only; pinned by `verify_embedded_hash_ignores_root_only_content_hash`. |
+| LIM-2 pointer to rustdoc | CONFIRMED | Opus | `RevocationPolicy` rustdoc names LIM-2; a link into ignored `plans/` would 404. |
+| `HttpsDataRefFetcher` third mapping | CONFIRMED | Opus | `data_ref.rs` maps via `AcdpError::Http(e.to_string())`, flattening the source chain (issue #321). |
+| Verification stage table order | CONFIRMED | Opus | Matches `verify_retrieved` order in `crates/acdp-client/src/verified.rs`. |
+| Runbook history deleted, not archived | CONFIRMED | Opus | `git show 115ce3d:docs/release-runbook.md` resolves; `plans/` is untracked. |
+| Audited crypto versions kept in table | CONFIRMED | Opus | Audited column makes the exemption-only coverage visible; the plan's `0.23.40` grep was the error. Re-certification tracked in #322. |

@@ -228,11 +228,6 @@ criteria = "safe-to-deploy"
 version = "0.4.2"
 criteria = "safe-to-deploy"
 
-[[exemptions.curve25519-dalek]]
-version = "5.0.0"
-criteria = "safe-to-deploy"
-notes = "allow-exempt:#322-pending (issue #322)"
-
 [[exemptions.curve25519-dalek-derive]]
 version = "0.1.1"
 criteria = "safe-to-deploy"
@@ -277,11 +272,6 @@ notes = "allow-exempt:#322-pending (issue #322)"
 [[exemptions.ed25519]]
 version = "3.0.0"
 criteria = "safe-to-deploy"
-
-[[exemptions.ed25519-dalek]]
-version = "3.0.0"
-criteria = "safe-to-deploy"
-notes = "allow-exempt:#322-pending (issue #322)"
 
 [[exemptions.either]]
 version = "1.18.0"

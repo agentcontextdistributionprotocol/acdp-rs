@@ -371,15 +371,16 @@ release, and no open RUSTSEC advisory (checked with `cargo audit`). See
 Most of these crates have since moved to a new major or minor version.
 `cargo vet` does not carry an audit across versions, so **the versions now in
 `Cargo.lock` are covered by `[[exemptions.*]]` entries in
-`supply-chain/config.toml`, not by our audits**. Only `subtle`, `ring`, `signature`,
-and `sha2` (re-certified in #322 Phase 2) are covered by an audit at the locked
-version. Re-certifying the rest is tracked in #322. The per-crate review
+`supply-chain/config.toml`, not by our audits**. Only `subtle`, `ring`, `signature`
+and `sha2` (re-certified in #322 Phase 2), and `ed25519-dalek` and
+`curve25519-dalek` (re-certified in #322 Phase 3) are covered by an audit at the
+locked version. Re-certifying the rest is tracked in #322. The per-crate review
 worksheets are in `supply-chain/worksheets/`.
 
 | Crate | Locked (`Cargo.lock`) | Audited (`audits.toml`) | Locked version covered by | Upstream | Role in ACDP |
 |---|---|---|---|---|---|
-| `ed25519-dalek` | 3.0.0 | 2.2.0 | exemption | dalek-cryptography | Mandatory signature primitive (RFC-ACDP-0002) |
-| `curve25519-dalek` | 5.0.0 | 4.1.3 | exemption | dalek-cryptography | Curve arithmetic under ed25519 |
+| `ed25519-dalek` | 3.0.0 | 2.2.0, 2.2.0 → 3.0.0 | audit (delta, 2026-10-04) | dalek-cryptography | Mandatory signature primitive (RFC-ACDP-0002) |
+| `curve25519-dalek` | 5.0.0 | 4.1.3, 4.1.3 → 5.0.0 | audit (delta, 2026-10-04; discretion note on the nightly-only `docsrs` path) | dalek-cryptography | Curve arithmetic under ed25519 |
 | `signature` | 3.0.0 | 2.2.0, 3.0.0 | audit (full, 2026-10-04) | RustCrypto | Signature traits |
 | `sha2` | 0.11.0 | 0.10.9, 0.11.0 | audit (full, 2026-10-04; discretion notes, DECISIONS.md `322-sha2`) | RustCrypto | `content_hash` / `lineage_id` (RFC-ACDP-0001 §5.7) |
 | `zeroize` | 1.9.0 | 1.8.2 | exemption, kept under the #322 concern rule (DECISIONS.md `322-zeroize`) | RustCrypto | Secret-key zeroing (`SigningKey` `ZeroizeOnDrop`) |

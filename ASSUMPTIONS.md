@@ -1118,3 +1118,57 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   would need editing again in Phase 4.
 - **Blast radius if wrong:** test-only.
 - **Status:** UNCONFIRMED
+
+## #322 Phase 3: curve25519-dalek stays a delta despite an imprecise base note
+- **Plan:** plans/supply-chain-recertify-322.md (Phase 3 Edge cases)
+- **Assumed:** the plan says that if the 4.1.3 base fails a spot-check of its "unsafe
+  confined to gated SIMD backends" claim, we switch to a full audit or apply the concern
+  rule. The claim is imprecise: 4.1.3 also has 3 non-SIMD sites, namely the serial
+  u32/u64 `scalar.rs` `read_volatile` `black_box` and the `constants.rs:88` Ristretto
+  table cast.
+- **Chose:** keep the delta. All 3 sites were re-read and are sound, so the base's
+  conclusion holds and only its wording was loose. Every one of the 33 `unsafe` sites in
+  5.0.0 was verdicted independently, and powerful imports were scanned over the full
+  5.0.0 source. So the delta inherits no `unsafe` or I/O reasoning from the base. The
+  note's Scope line records this.
+- **Alternatives:**
+  - A full audit of 5.0.0 (34.6k lines). That would claim a full read of the safe
+    arithmetic code, which was not done.
+  - The concern rule. Rejected: no unsound code was found.
+- **Blast radius if wrong:** reversible. It is one `audits.toml` entry, which can be
+  re-scoped or replaced by a full audit.
+- **Status:** UNCONFIRMED
+
+## #322 Phase 3: curve25519-dalek docsrs visibility recorded as a Discretion line, no DECISIONS entry
+- **Plan:** DECISIONS.md "#322 supply-chain audit policy" item 6 carve-out
+- **Assumed:** under `--cfg docsrs`, `pub mod backend` exposes safe `avx2`
+  target-feature wrappers. That is UB on a non-AVX2 CPU. `docsrs` forces
+  `#![feature(doc_cfg)]`, so it is nightly-only (E0554 on stable).
+- **Chose:** certify, with a `Discretion:` note line (C-1 in the worksheet). The amended
+  carve-out says "certify and record the discretion in the audit notes". So no
+  `322-curve25519-dalek` DECISIONS entry and no Fable escalation were made. The same
+  pattern existed in the audited 4.1.3.
+- **Alternatives:** a concern-rule entry `322-curve25519-dalek` that keeps the exemption.
+- **Blast radius if wrong:** reversible. Re-adding the exemption and a DECISIONS entry is
+  mechanical.
+- **Status:** UNCONFIRMED
+
+## #322 Phase 3: diff stats from vet-facts.sh, not the plan's table
+- **Plan:** plans/supply-chain-recertify-322.md (Phase 3 Delivers; Phase 2 Edge cases)
+- **Assumed:** the plan quotes curve25519-dalek as 62 files, +4031/-1157, and
+  ed25519-dalek as +813/-293. Those figures come from `cargo vet suggest`.
+- **Chose:** the `scripts/vet-facts.sh` figures, per "if the size estimates differ, use
+  the script's numbers": 73 files, +5045/-2187, and 17 files, +770/-264. The ratio is
+  0.21 or 0.29 either way, so the method is still delta.
+- **Alternatives:** none material.
+- **Blast radius if wrong:** none. These are note text only.
+- **Status:** UNCONFIRMED
+
+## #322 Phase 3: Method line names the worksheet path, not a PR URL
+- **Plan:** DECISIONS.md "#322 supply-chain audit policy" item 4
+- **Assumed:** no PR can be opened in this phase, because pushing was not allowed.
+- **Chose:** the Phase 2 convention: `worksheet in supply-chain/worksheets/<crate>.md
+  (issue #322 Phase 3 PR)`.
+- **Alternatives:** open a draft PR first, then re-run `certify`.
+- **Blast radius if wrong:** text only. It can be amended before merge.
+- **Status:** UNCONFIRMED

@@ -7,6 +7,24 @@ criteria = "safe-to-deploy"
 version = "4.1.3"
 notes = "Canonical dalek-cryptography Curve25519 arithmetic underpinning ed25519-dalek. Reviewed 4.1.3: audited unsafe confined to gated SIMD backends; constant-time subtle-based ops; no I/O. 4.1.3 carries the fix for the <=4.1.2 timing issue. Latest 4.x; cargo audit clean 2026-07-05."
 
+[[audits.curve25519-dalek]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+delta = "4.1.3 -> 5.0.0"
+notes = """
+Scope: delta 4.1.3 -> 5.0.0 (73 files, +5045/-2187 per scripts/vet-facts.sh; 7232 changed / 34619 src lines = 0.21, so delta per the #322 method rule; ~1100 lines are mod.rs -> foo.rs moves, each pair diffed). Base 4.1.3 spot-check: its "unsafe confined to gated SIMD backends" wording was imprecise (3 non-SIMD sites: serial u32/u64 scalar.rs read_volatile black_box, constants.rs Ristretto table cast); all re-read and sound, and every 5.0.0 unsafe site was verdicted independently, so no unsafe reasoning is inherited from the base.
+Source: crates.io tarball sha256 b5eed333089e2e1c1ac8c6c0398e5e2497b4c9926ca6d0365ed1e099afa5bc23 == Cargo.lock checksum.
+unsafe: 33 code lines (was 35); reviewed each. packed_simd.rs (15), avx2/field.rs (8), ifma/field.rs (9, one test-only): register-to-register core::arch::x86_64 intrinsics only (no load/store/pointer intrinsics anywhere under backend/vector), plus two const transmutes [u64;4]/[u32;8] -> __m256i (same size, all bit patterns valid). They sit in #[unsafe_target_feature] safe wrappers (curve25519-dalek-derive); soundness rests on every entry into backend::vector being in src/backend.rs behind get_selected_backend() cpufeatures detection (avx512ifma+avx512vl, then avx2, else serial), with backend pub(crate). constants.rs:85 casts &EdwardsBasepointTable to the #[repr(transparent)] RistrettoBasepointTable ('static). The 4.1.3 serial read_volatile black_box (RUSTSEC-2024-0344 barrier) was removed in favour of subtle conditional_select (subtle 2.6.1 Choice::from keeps its read_volatile barrier).
+asm/SIMD: no asm!. build.rs selects bits from pointer width and backend: serial, or simd (AVX2) on x86_64 64-bit; IFMA (avx512) now stable on rustc >= 1.89 but only when the target statically enables avx512ifma+avx512vl (formerly cfg(nightly)), still runtime-dispatched. ACDP builds: x86_64 = AVX2 runtime dispatch + serial u64 fallback (no target-feature/target-cpu flags anywhere, so IFMA is not compiled); aarch64 = serial u64 (no NEON backend exists; build output confirmed); wasm32 binding = serial u32; fiat only under a forced cfg.
+Discretion: under --cfg docsrs, src/lib.rs:89-92 makes backend pub, exposing the safe avx2 target-feature wrappers (packed_simd u64x4/u32x8) to external safe code, which would be UB on a CPU without AVX2. docsrs also enables #![feature(doc_cfg)] (lib.rs:13), rejected on stable (E0554), so it is nightly- and docs-only and unreachable in any stable build of any ACDP artifact (Policy 6 carve-out); the same pattern was present in 4.1.3.
+build.rs / proc-macro: build.rs reads only CARGO_CFG_TARGET_{ARCH,POINTER_WIDTH,FEATURE} and CARGO_CFG_CURVE25519_DALEK_{BITS,BACKEND}, runs $RUSTC -vV via rustc_version (as in 4.1.3), and emits only rustc-cfg lines plus one warning; no fs/network. Not a proc-macro; depends on the curve25519-dalek-derive proc-macro (Tier B, still exempted) on x86_64.
+Powerful imports: none in src (#![no_std]; include_str! for docs only). No binary blobs; vendor/ristretto.sage and tests/build_tests.sh are not built.
+Zeroize: every Zeroize impl targets fully initialized integer arrays or IterMut over them (no Option/MaybeUninit/padded types), so zeroize 1.9.0's Z-1 (DECISIONS 322-zeroize, still exempt) is not triggered by this crate; barrier efficacy is zeroize's property, not claimed.
+New deps: digest 0.10 -> 0.11 (block-api), ff/group 0.13 -> 0.14 (optional), rand_core 0.6.4 -> 0.10, subtle 2.3 -> 2.6 (const-generics), cpufeatures 0.2.6 -> 0.3, fiat-crypto 0.2.1 -> 0.3.0 (forced cfg only); group-bits feature removed, lizard added. ACDP features: digest, precomputed-tables, rand_core, zeroize (alloc off). Tier B digest/rand_core/cpufeatures/curve25519-dalek-derive/rustc_version still exempted.
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness (serial, fiat, AVX2, IFMA, new hash_to_curve), constant-time behaviour, side-channel resistance. Behavioural evidence only: ACDP sig-001 golden vector pins Ed25519 output.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/curve25519-dalek-5.0.0.md (issue #322 Phase 3 PR)."""
+
 [[audits.ecdsa]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"
 criteria = "safe-to-deploy"
@@ -18,6 +36,23 @@ who = "Ajit Koti <ajitkoti@zer07labs.com>"
 criteria = "safe-to-deploy"
 version = "2.2.0"
 notes = "Canonical dalek-cryptography Ed25519 impl. Mandatory ACDP signature primitive (RFC-ACDP-0002); acdp-crypto sign/verify builds on it. Reviewed 2.2.0: no build.rs, unsafe only via vetted curve25519-dalek backends, zeroizes secret material, no network/fs/process access. Latest 2.x; no open RUSTSEC advisory (cargo audit clean 2026-07-05)."
+
+[[audits.ed25519-dalek]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+delta = "2.2.0 -> 3.0.0"
+notes = """
+Scope: delta 2.2.0 -> 3.0.0 (17 files, +770/-264; 1034 changed / 3552 src lines = 0.29, so delta per the #322 method rule). Base 2.2.0 spot-checked: forbid(unsafe_code) outside tests, no build.rs, Drop zeroizes secrets.
+Source: crates.io tarball sha256 6ebaa1a2bf1290ab3bfe5a7b771d050ebffab2711c19a81691c683a5144a25de == Cargo.lock checksum.
+unsafe: 0 sites in every feature configuration. forbid(unsafe_code) is now conditional: src/lib.rs:246 #![cfg_attr(not(any(test, feature = "batch")), forbid(unsafe_code))]; ACDP does not enable batch (features: default, fast, rand_core, signature, zeroize in the root workspace and the py/node/wasm bindings), so the lint is active in every ACDP build.
+asm/SIMD: none (sha2/asm feature removed).
+build.rs / proc-macro: none.
+Powerful imports: none (#![no_std]; std only under cfg(test); the std feature was removed).
+Changes read: multipart Signer/Verifier forwarding (single-slice hash input byte-identical), closure-based DigestSigner/DigestVerifier, KeySizeUser/TryKeyInit/Generate impls, rand_core 0.10 CryptoRng in generate, pkcs8 SignatureAlgorithmIdentifier, vendored Merlin transcript over strobe-rs for batch. verify (used by ACDP) is unchanged: canonical-s check (from_canonical_bytes; legacy_compatibility off), R compared by encoding; it accepts small-order keys/R, which verify_strict rejects (worksheet finding E-1, ACDP-side follow-up, not a vet concern). SigningKey/ExpandedSecretKey Drop zeroize unchanged, all on initialized [u8;32]/Scalar.
+New deps: curve25519-dalek 4 -> 5.0.0, ed25519 2.2 -> 3, sha2 0.10 -> 0.11, signature 2 -> 3, rand_core 0.6.4 -> 0.10; merlin removed; keccak 0.2 and strobe-rs 0.13 added (optional, batch only, not in ACDP's graph). Tier B ed25519/rand_core/digest still exempted.
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance. Behavioural evidence only: ACDP sig-001 golden vector pins Ed25519 signature bytes.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/ed25519-dalek-3.0.0.md (issue #322 Phase 3 PR)."""
 
 [[audits.elliptic-curve]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"

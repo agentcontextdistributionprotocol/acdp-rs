@@ -23,8 +23,8 @@
 # and rewrites its files (dropping comments).
 
 # Tier A (#322).
-ed25519-dalek     allow-exempt:#322-pending
-curve25519-dalek  allow-exempt:#322-pending
+ed25519-dalek
+curve25519-dalek
 signature
 sha2
 zeroize           allow-exempt:DECISIONS#322-zeroize

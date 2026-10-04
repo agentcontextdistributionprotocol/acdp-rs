@@ -42,6 +42,24 @@ Advisories: cargo deny check advisories clean on 2026-10-04.
 Not claimed: cryptographic correctness (serial, fiat, AVX2, IFMA, new hash_to_curve), constant-time behaviour, side-channel resistance. Behavioural evidence only: ACDP sig-001 golden vector pins Ed25519 output.
 Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/curve25519-dalek-5.0.0.md (issue #322 Phase 3 PR)."""
 
+[[audits.digest]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "0.11.3"
+notes = """
+Scope: full audit of 0.11.3 (no prior audit of 0.11.x; 2857 src lines, all files read, including every arm of the #[macro_export] buffer_fixed!/buffer_ct_variable!/buffer_xof! macros, which expand in caller crates such as sha2 and hmac where this crate's forbid(unsafe_code) does not apply).
+Source: crates.io tarball sha256 f1dd6dbb5841937940781866fa1281a1ff7bd3bf827091440879f9994983d5c2 == Cargo.lock checksum.
+unsafe: 0 sites, including all macro bodies; #![forbid(unsafe_code)] unconditional at src/lib.rs:4.
+asm/SIMD: none.
+build.rs / proc-macro: none (build = false; not a proc-macro).
+Powerful imports: none in compiled ACDP code (#![no_std]; alloc only behind alloc; include_str! for README docs). The three include_bytes! (src/dev.rs:36, 71; src/dev/mac.rs:147) are inside test-generating macros of the dev module (feature dev, off in ACDP).
+Discretion: binary test fixture tests/data/fixed_hash_serialization.bin (16 bytes, a serialized dummy hash state) is read only by the tests/dummy_fixed.rs integration test; not compiled into any non-test build. src/dev/variable.rs is not declared as a module and is never compiled.
+Behaviour: generated buffer_* impls are safe forwards to the core type and block-buffer; Mac::verify_truncated_* reject n == 0 or n > OutputSize before slicing; CtOutWrapper truncation is bounded by the IsLessOrEqual type bound; CtOutput Drop zeroizes only with the zeroize feature (off).
+New deps: crypto-common 0.2; optional blobby 0.4 (dev), block-buffer 0.12, const-oid 0.10, ctutils 0.4, zeroize 1.7. ACDP features: alloc, block-api, default, mac, oid, rand_core (root and py/node/wasm bindings identical). Dependencies block-buffer, crypto-common, const-oid, ctutils are Tier B crates covered by their own vet entries; this audit is per crate.
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/digest-0.11.3.md (issue #339 Tier B batch B2 PR)."""
+
 [[audits.ecdsa]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"
 criteria = "safe-to-deploy"
@@ -148,6 +166,24 @@ Advisories: cargo deny check advisories clean on 2026-10-04.
 Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
 Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/ff-0.14.0.md (https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/355, issue #339 batch B1)."""
 
+[[audits.hmac]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "0.13.0"
+notes = """
+Scope: full audit of 0.13.0 (no prior audit; 466 src lines, all files read, including the digest::buffer_fixed! expansions it invokes at src/lib.rs:34-52).
+Source: crates.io tarball sha256 6303bc9732ae41b04cb554b844a762b4115a61bfaa81e3e83050991eeb56863f == Cargo.lock checksum.
+unsafe: 0 sites (grep; Cargo.toml lints forbid unsafe_code, but cargo caps lints for registry deps, so the grep is the evidence).
+asm/SIMD: none.
+build.rs / proc-macro: none (build = false; not a proc-macro).
+Powerful imports: none (#![no_std], no alloc; include_str! for README docs only).
+Discretion: binary test fixtures tests/data/*.blb (11 blobby RFC 2104/4231, Wycheproof and GOST vector files) are read only by the tests/mod.rs integration-test macro; not compiled into any non-test build.
+Behaviour: get_der_key (src/utils.rs:9-32) bounds every copy by the length comparisons; new_from_slice always returns Ok, so the KeyInit::new expect is unreachable; Debug impls print no key material. Key-derived blocks and core states are not zeroized (zeroize feature off in ACDP); hygiene only, outside safe-to-deploy.
+New deps: digest 0.11.2 (mac). ACDP features: none (root and py/node/wasm bindings identical). Reached via rfc6979 -> ecdsa signing.
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/hmac-0.13.0.md (issue #339 Tier B batch B2 PR)."""
+
 [[audits.p256]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"
 criteria = "safe-to-deploy"
@@ -172,6 +208,58 @@ New deps: ecdsa 0.17, elliptic-curve 0.14.1, primeorder 0.14, sha2 0.11, serdect
 Advisories: cargo deny check advisories clean on 2026-10-04.
 Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance. Behavioural evidence only: ACDP sig-002 conformance tests.
 Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/p256-0.14.0.md (issue #322 Phase 4 PR)."""
+
+[[audits.pkcs8]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "0.11.0"
+notes = """
+Scope: full audit of 0.11.0 (no prior audit; 1153 src lines, all files read).
+Source: crates.io tarball sha256 451913da69c775a56034ea8d9003d27ee8948e12443eae7c038ba100a4f21cb7 == Cargo.lock checksum.
+unsafe: 0 sites; #![forbid(unsafe_code)] unconditional at src/lib.rs:8.
+asm/SIMD: none.
+build.rs / proc-macro: none (build = false; not a proc-macro).
+Powerful imports: filesystem only, behind std (enabled in ACDP): std::path::Path (src/traits.rs:21-22) for the explicit caller-invoked trait helpers read_pkcs8_der_file / write_pkcs8_der_file (src/traits.rs:90-93, 170-173), delegating to der::SecretDocument; PEM variants need pem (off). Unused by the crate and by ACDP. No network, process or env access; getrandom::SysRng is behind the getrandom feature (off).
+Discretion: binary test fixtures tests/examples/*.der (13 small ASN.1 test keys) and .pem are read only by tests/; not compiled into any non-test build.
+Behaviour: PrivateKeyInfo::decode_value (src/private_key_info.rs:217-248) accepts version 0/1 only, rejects a version/public-key mismatch and delegates all parsing to der's bounded reader; Debug omits the private key. encrypted_private_key_info.rs compiles only with pkcs5 (off).
+New deps: der 0.8 (oid), spki 0.8; optional ctutils, getrandom, pkcs5, rand_core (all off). ACDP features: alloc, std (root and py/node/wasm bindings identical). Reached via elliptic-curve 0.14.1.
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/pkcs8-0.11.0.md (issue #339 Tier B batch B2 PR)."""
+
+[[audits.primefield]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "0.14.0"
+notes = """
+Scope: full audit of 0.14.0 (no prior audit; 2501 src lines, all files read, including every #[macro_export] macro body, which expands in caller crates such as p256 where this crate's forbid(unsafe_code) does not apply).
+Source: crates.io tarball sha256 c555a6e4eb7d4e158fcb028c835c3b8642206ddc279b5c6b202ef9a8bdb592f4 == Cargo.lock checksum.
+unsafe: 0 sites, including all macro bodies (monty_field_params!, monty_field_element!, monty_field_arithmetic!, monty_field_reduce!, field_op!, fiat_monty_field_arithmetic!, fiat_bernstein_yang_invert!, test/bench macros); #![forbid(unsafe_code)] unconditional at src/lib.rs:8.
+asm/SIMD: none.
+build.rs / proc-macro: none (build = false; not a proc-macro).
+Powerful imports: none (#![no_std], no alloc; include_str! for README docs only; dev.rs bench macros reference ::criterion and compile only where a bench invokes them).
+Behaviour: from_bytes/from_uint range-check against the modulus and return CtOption; const-fn constructors assert only at compile-time constant evaluation; arithmetic and subtle/ctutils impls forward to crypto-bigint ConstMontyForm; the macro-emitted DefaultIsZeroes zeroizes fully initialized values, so zeroize 1.9.0's Z-1 (DECISIONS 322-zeroize) is not triggered.
+New deps: crypto-bigint 0.7.5, crypto-common 0.2, ff 0.14, rand_core 0.10, subtle 2.6, zeroize 1.7. No features defined. Reached via p256 0.14.0, primeorder 0.14.0, wnaf 0.14.1.
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/primefield-0.14.0.md (issue #339 Tier B batch B2 PR)."""
+
+[[audits.rfc6979]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "0.6.0"
+notes = """
+Scope: full audit of 0.6.0 (no prior audit; 513 src lines, all files read).
+Source: crates.io tarball sha256 b4a459cddafb3fe76b31fd8f1108007566c40301feb64dc7b54656eb7388172b == Cargo.lock checksum.
+unsafe: 0 sites (grep; Cargo.toml lints forbid unsafe_code, but cargo caps lints for registry deps, so the grep is the evidence).
+asm/SIMD: none.
+build.rs / proc-macro: none (build = false; not a proc-macro).
+Powerful imports: none (#![no_std], no alloc; include_str! for README docs only).
+Behaviour: KGenerator::new slices the scratch buffer to x.len() (safe panic if the secret is longer than the modulus encoding; ecdsa passes d.to_repr() of exactly that length); fill_next_k rejection-samples 0 < k < q; HmacDrbg over hmac::SimpleHmac, whose new_from_slice is infallible, so its expect is unreachable. DRBG K/V state is not zeroized (no zeroize dependency), as already noted in the ecdsa 0.17.0 audit; hygiene only, outside safe-to-deploy.
+New deps: crypto-bigint 0.7.5 (default-features = false), hmac 0.13. No features defined. Reached via ecdsa 0.17.0 RFC 6979 signing (P-256).
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness (including RFC 6979 conformance), constant-time behaviour, side-channel resistance.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/rfc6979-0.6.0.md (issue #339 Tier B batch B2 PR)."""
 
 [[audits.ring]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"
@@ -203,6 +291,24 @@ New deps: none (lock dependency set identical); requirement floors aws-lc-rs 1.1
 Advisories: cargo deny check advisories clean on 2026-10-04 (RUSTSEC-2026-0285 patched >= 0.23.45).
 Not claimed: TLS protocol correctness (including completeness of the RUSTSEC-2026-0285 fix), certificate-validation correctness, cryptographic correctness, constant-time behaviour, side-channel resistance.
 Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/rustls-0.23.45.md (issue #322 Phase 5 PR)."""
+
+[[audits.sec1]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "0.8.1"
+notes = """
+Scope: full audit of 0.8.1 (no prior audit; 1274 src lines, all files read).
+Source: crates.io tarball sha256 d56d437c2f19203ce5f7122e507831de96f3d2d4d3be5af44a0b0a09d8a80e4d == Cargo.lock checksum.
+unsafe: 0 sites; #![forbid(unsafe_code)] unconditional at src/lib.rs:8.
+asm/SIMD: none.
+build.rs / proc-macro: none (build = false; not a proc-macro).
+Powerful imports: filesystem only, behind std (enabled in ACDP): std::path::Path (src/traits.rs:7-8) for the explicit caller-invoked trait helpers read_sec1_der_file / write_sec1_der_file (src/traits.rs:36-39, 66-69), delegating to der::SecretDocument; PEM variants need pem (off). Unused by the crate and by ACDP. No network, process or env access.
+Discretion: binary test fixture tests/examples/p256-priv.der (121 bytes, ASN.1 test key) and .pem are read only by tests/; not compiled into any non-test build.
+Behaviour: EncodedPoint::from_bytes (src/point.rs:82-102), which ACDP reaches with untrusted input via p256 VerifyingKey::from_sec1_bytes, validates the tag and requires the exact encoded length before copying into a max-size array; every constructor keeps bytes[0] a valid tag, so the expect calls in tag()/coordinates() are unreachable. The compact tag 0x05 is accepted (p256 worksheet finding P-2, informational). EcPrivateKey decode requires version 1; Debug omits the private key.
+New deps: optional base16ct 1, ctutils 0.4, der 0.8, hybrid-array 0.4.6, serdect 0.4, subtle 2, zeroize 1. ACDP features: alloc, ctutils, default, der, point, std, subtle, zeroize (root and py/node/wasm bindings identical). Reached via elliptic-curve 0.14.1.
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/sec1-0.8.1.md (issue #339 Tier B batch B2 PR)."""
 
 [[audits.sha2]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"

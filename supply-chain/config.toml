@@ -236,10 +236,6 @@ criteria = "safe-to-deploy"
 version = "10.0.0"
 criteria = "safe-to-run"
 
-[[exemptions.digest]]
-version = "0.11.3"
-criteria = "safe-to-deploy"
-
 [[exemptions.displaydoc]]
 version = "0.2.7"
 criteria = "safe-to-deploy"
@@ -335,10 +331,6 @@ criteria = "safe-to-deploy"
 [[exemptions.hermit-abi]]
 version = "0.5.2"
 criteria = "safe-to-run"
-
-[[exemptions.hmac]]
-version = "0.13.0"
-criteria = "safe-to-deploy"
 
 [[exemptions.http]]
 version = "1.5.0"
@@ -520,10 +512,6 @@ criteria = "safe-to-run"
 version = "0.2.17"
 criteria = "safe-to-deploy"
 
-[[exemptions.pkcs8]]
-version = "0.11.0"
-criteria = "safe-to-deploy"
-
 [[exemptions.plotters]]
 version = "0.3.7"
 criteria = "safe-to-run"
@@ -538,10 +526,6 @@ criteria = "safe-to-run"
 
 [[exemptions.potential_utf]]
 version = "0.1.6"
-criteria = "safe-to-deploy"
-
-[[exemptions.primefield]]
-version = "0.14.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.primeorder]]
@@ -636,10 +620,6 @@ criteria = "safe-to-run"
 version = "0.12.28"
 criteria = "safe-to-deploy"
 
-[[exemptions.rfc6979]]
-version = "0.6.0"
-criteria = "safe-to-deploy"
-
 [[exemptions.rustc-hash]]
 version = "2.1.3"
 criteria = "safe-to-deploy"
@@ -678,10 +658,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.scopeguard]]
 version = "1.2.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.sec1]]
-version = "0.8.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.serde]]

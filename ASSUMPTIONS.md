@@ -1216,3 +1216,70 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   Left to the maintainer: it is a spec / producer question.
 - **Blast radius if wrong:** none for the audits.
 - **Status:** UNCONFIRMED
+
+## #322 Phase 5: rustls certified as a forward delta from 0.23.40
+- **Plan:** plans/supply-chain-recertify-322.md Phase 5 Delivers 1 / Approach
+- **Assumed:** every hunk of the 0.23.40 -> 0.23.45 diff was read (40 files, +732/-135,
+  matching the plan). There is no `unsafe`. The only powerful import, `KeyLogFile`, is
+  opt-in and unused (`ClientConfig` defaults to `NoKeyLog`; reqwest 0.12.28 and
+  hyper-rustls 0.27.9 never set `key_log`; ACDP never constructs it). `build.rs` is
+  unchanged. Every delta change to verification or negotiation fails closed. That
+  includes the RUSTSEC-2026-0285 fix: the deframer's `is_aligned` became "no pending
+  data", and `conn.rs` re-derives it per taken message. None of this needs a judgement on
+  TLS correctness.
+- **Chose:** `cargo vet certify rustls 0.23.40 0.23.45 --accept-all`, which removes the
+  exemption by itself (`config.toml` lost only that block). `imports.lock` is unchanged,
+  and the rustls `#322-pending` marker was removed.
+- **Alternatives:** the BA-import path (rejected by the plan: `imports.lock` churn), or
+  keeping the exemption (no concern found).
+- **Blast radius if wrong:** reversible. Re-adding the exemption and marker is mechanical.
+- **Status:** UNCONFIRMED
+
+## #322 Phase 5: base 0.23.40 provenance bound to this repo's historical lockfile
+- **Plan:** Phase 5 / Policy 3 (`Source:` line)
+- **Assumed:** besides the crates.io index `cksum`, the 0.23.40 tarball sha256
+  (`ef86cd58…168b`) equals the `Cargo.lock` checksum this repo locked before `8c7a21b`
+  (2026-07-06). That is when the 0.23.40 base audit was written (`git show 8c7a21b~1:Cargo.lock`).
+- **Chose:** state both bindings in the note and worksheet.
+- **Blast radius if wrong:** none. The index binding alone satisfies the policy.
+- **Status:** UNCONFIRMED
+
+## #322 Phase 5: the `#322-pending` marker type stays parseable but unused
+- **Plan:** Phase 5 acceptance (`grep -c '322-pending' scripts/crypto-critical.txt` -> `0`)
+- **Assumed:** the criterion targets marker lines. The guard script and its self-test (b)
+  still accept or exercise the `allow-exempt:#322-pending` marker type. Removing it from
+  the script is out of Phase 5 scope and would break the self-test.
+- **Chose:** no list line carries the marker (`grep -v '^\s*#' … | grep -c 322-pending` ->
+  0). The list file's header comment still documents the marker, now noting it is unused
+  and that a new use needs a DECISIONS.md entry. A literal `grep -c` returns 1 for that
+  comment line.
+- **Alternatives:** delete the marker type from `check-crypto-vet.sh` and its self-tests
+  (a follow-up if wanted).
+- **Blast radius if wrong:** reversible. It is a one-line comment, or a small script change.
+- **Status:** UNCONFIRMED
+
+## #322 Phase 5: "not merely exempted" overclaims reworded outside docs/
+- **Plan:** Phase 5 Files (docs, DECISIONS, CONTRIBUTING); the task asked to remove any
+  remaining overclaim paths
+- **Assumed:** the CI step name "Crypto-critical crates are audited, not exempted" and its
+  comment, the matching `docs/supply-chain.md` command comment, and the Dependabot comment
+  ("once that crate's pending marker is removed") were overclaims or stale, because
+  zeroize stays exempt. Renaming a CI **step** does not affect the required check, which is
+  keyed on the job name `cargo-vet`.
+- **Chose:** reword the `ci.yml` step name and comment and the `dependabot.yml` comment
+  (comments and step name only, no behaviour change). Add a one-paragraph
+  CONTRIBUTING.md pointer to "Upgrading a crypto-critical crate".
+- **Alternatives:** leave `.github/` untouched.
+- **Blast radius if wrong:** none functionally.
+- **Status:** UNCONFIRMED
+
+## #322 Phase 5: the guard does not stop moving zeroize's exemption
+- **Plan:** Policy 7 (guard semantics)
+- **Assumed:** `allow-exempt:DECISIONS#322-zeroize` passes an exemption at any zeroize
+  version. A Dependabot bump to 1.9.1 turns `cargo vet` red, but a hand-moved exemption
+  would turn it green again without the planned delta audit.
+- **Chose:** document this in `docs/supply-chain.md` and DECISIONS.md "#322 completion
+  status". No script change.
+- **Alternatives:** pin the DECISIONS marker to a version (a guard change, out of scope).
+- **Blast radius if wrong:** none. Documentation only.
+- **Status:** UNCONFIRMED

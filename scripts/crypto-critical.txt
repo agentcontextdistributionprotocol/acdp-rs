@@ -12,6 +12,8 @@
 #   allow-exempt:#322-pending         re-certification still in progress (#322);
 #                                     passes while exempted, FAILS once the crate
 #                                     is fully vetted ("stale marker -- remove it").
+#                                     #322 is complete: no line uses it any more,
+#                                     and a new use needs a DECISIONS.md entry.
 #   allow-exempt:DECISIONS#322-<crate>  kept exempt under the #322 concern rule;
 #                                     the anchor must be exactly 322-<crate> and
 #                                     appear as a whole token in DECISIONS.md;
@@ -32,5 +34,5 @@ subtle
 p256
 ecdsa
 elliptic-curve
-rustls            allow-exempt:#322-pending
+rustls
 ring

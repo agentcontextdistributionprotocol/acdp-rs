@@ -424,9 +424,37 @@ planned follow-up. `aws-lc-rs` and `aws-lc-sys` are dev-only and also exempted.
 
 **Coverage outside this repo's root lockfile.** The three bindings
 (`bindings/acdp-py`, `bindings/acdp-node`, `bindings/acdp-wasm`) have their
-own `Cargo.lock` files and **no `cargo vet` gate**. Today they resolve the same
-crypto-critical versions as the root, so the audits apply to them by version,
-but nothing enforces that parity.
+own `Cargo.lock` files and **no `cargo vet` gate**. The root audits cover them
+by version only, and
+[`scripts/check-bindings-lock-parity.sh`](../scripts/check-bindings-lock-parity.sh)
+(#340) enforces that parity. For every crate in `crypto-critical.txt`, each
+registry `(version, checksum)` pair in a binding lockfile must also appear in
+the root `Cargo.lock`:
+
+- A listed crate absent from a binding is fine.
+- A listed crate absent from the root lockfile fails, as a list typo would.
+- A binding version the root does not lock fails, and so does the same version
+  with a different checksum.
+
+Exit status is 0 on pass, 1 on a violation, and 2 on a missing, empty, or
+malformed lockfile. The check needs only POSIX awk, so it runs the same under
+BSD awk (macOS) and GNU awk (CI). It runs in the required `cargo-vet` CI job
+after the crypto-critical guard, preceded by its self-test
+[`scripts/test-check-bindings-lock-parity.sh`](../scripts/test-check-bindings-lock-parity.sh).
+
+**When it fails**, re-lock the binding to the root version rather than
+auditing a second version:
+
+```sh
+cargo update -p <crate> --precise <root-version> --manifest-path bindings/acdp-<py|node|wasm>/Cargo.toml
+scripts/check-bindings-lock-parity.sh
+```
+
+Bump the root first if the binding genuinely needs the newer version, so the
+audit lands at the root and the bindings follow. The check covers only the
+guard list. Support crates such as `der` and `tokio-rustls` are not on it, but
+the bindings were re-locked to the root's `der` 0.8.1 and `tokio-rustls` 0.26.4
+in the same change (they had drifted to 0.8.2 and 0.26.5).
 
 ### Contributor workflow
 

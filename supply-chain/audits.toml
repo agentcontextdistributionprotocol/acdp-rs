@@ -5,7 +5,7 @@
 who = "Ajit Koti <ajitkoti@zer07labs.com>"
 criteria = "safe-to-deploy"
 version = "4.1.3"
-notes = "Canonical dalek-cryptography Curve25519 arithmetic underpinning ed25519-dalek. Reviewed 4.1.3: audited unsafe confined to gated SIMD backends; constant-time subtle-based ops; no I/O. 4.1.3 carries the fix for the <=4.1.2 timing issue. Latest 4.x; cargo audit clean 2026-07-05."
+notes = "Canonical dalek-cryptography Curve25519 arithmetic underpinning ed25519-dalek. Reviewed 4.1.3: audited unsafe in gated SIMD backends plus 3 sound non-SIMD sites (serial scalar read_volatile black_box x2, Ristretto table cast; corrected 2026-10 during the 5.0.0 delta review); constant-time subtle-based ops; no I/O. 4.1.3 carries the fix for the <=4.1.2 timing issue. Latest 4.x; cargo audit clean 2026-07-05."
 
 [[audits.curve25519-dalek]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"

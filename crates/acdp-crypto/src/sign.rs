@@ -120,6 +120,12 @@ impl std::fmt::Debug for SigningKey {
 /// for 88 characters — matching the verify path in
 /// [`crate::verify::verify_ecdsa_p256`]. DER-encoded signatures
 /// are NOT compatible with the ACDP registry entry for `ecdsa-p256`.
+///
+/// Signatures are emitted in **low-S** form (`s <= n/2`). ECDSA is
+/// malleable — `(r, s)` and `(r, n - s)` both verify — so the signer
+/// normalizes to give every signed value one canonical encoding. The
+/// verifier ([`crate::verify::verify_ecdsa_p256`]) still accepts high-S
+/// signatures from other producers; signature bytes are not identities.
 pub struct P256SigningKey(p256::ecdsa::SigningKey);
 
 impl P256SigningKey {
@@ -165,10 +171,21 @@ impl P256SigningKey {
     ///
     /// Uses RFC 6979 deterministic ECDSA (no `rng` parameter required).
     /// Returns the signature as standard base64 of the 64-byte IEEE 1363
-    /// `r‖s` wire form (88 chars including padding).
+    /// `r‖s` wire form (88 chars including padding), with `s` normalized
+    /// to low-S (see the type-level docs).
     pub fn sign_content_hash(&self, hash: &ContentHash) -> String {
+        self.sign_bytes_low_s(hash.as_str().as_bytes())
+    }
+
+    /// RFC 6979 sign, normalize to low-S, and encode as base64 of the
+    /// 64-byte IEEE 1363 `r‖s` form. Shared by every P-256 sign path so
+    /// none can skip the normalization.
+    fn sign_bytes_low_s(&self, msg: &[u8]) -> String {
         use p256::ecdsa::{signature::Signer as _, Signature};
-        let sig: Signature = self.0.sign(hash.as_str().as_bytes());
+        let sig: Signature = self.0.sign(msg);
+        // `normalize_s` replaces `s` with `n - s` when `s > n/2`
+        // (constant-time conditional assign); a no-op for low-S.
+        let sig = sig.normalize_s();
         // `Signature::to_bytes()` returns the fixed-size 64-byte IEEE 1363
         // form, exactly the wire shape ACDP requires.
         STANDARD.encode(sig.to_bytes())
@@ -185,7 +202,9 @@ impl P256SigningKey {
     /// The scalar is private-key material — treat it as a secret and
     /// route persistence through a key vault or HSM.
     pub fn seed_bytes(&self) -> [u8; 32] {
-        let fb = self.0.to_bytes();
+        // Wrap the temporary so the scalar copy is wiped on drop; only
+        // the returned array (owned by the caller) keeps the secret.
+        let fb = zeroize::Zeroizing::new(self.0.to_bytes());
         let mut out = [0u8; 32];
         // `AsRef<[u8]>` rather than the deprecated `GenericArray::as_slice`.
         out.copy_from_slice(fb.as_ref());
@@ -201,10 +220,10 @@ impl P256SigningKey {
     /// the ACDP registry's bearer-token challenge flow when the
     /// producer's key is ECDSA-P256; the registry verifies with
     /// [`crate::verify::verify_ecdsa_p256`]`(&sec1, &sig, input)`.
+    ///
+    /// Like [`Self::sign_content_hash`], the output is low-S.
     pub fn sign_string(&self, input: &str) -> String {
-        use p256::ecdsa::{signature::Signer as _, Signature};
-        let sig: Signature = self.0.sign(input.as_bytes());
-        STANDARD.encode(sig.to_bytes())
+        self.sign_bytes_low_s(input.as_bytes())
     }
 
     /// SEC1-uncompressed public key (65 bytes: `0x04 || x || y`).
@@ -611,6 +630,74 @@ mod tests {
         verify_ecdsa_p256(&sec1, &sig_b64, signing_input).unwrap();
         verify_ecdsa_p256(&sec1, &sig_b64, "different-input")
             .expect_err("sign_string output MUST be specific to the signed input");
+    }
+
+    // ── ECDSA-P256 low-S (#343) ──────────────────────────────────────────
+
+    /// `n / 2` for P-256, big-endian. A signature is low-S iff
+    /// `s <= HALF_N`; a byte-wise comparison of fixed-width big-endian
+    /// arrays is a numeric comparison.
+    const P256_HALF_N: [u8; 32] = [
+        0x7f, 0xff, 0xff, 0xff, 0x80, 0x00, 0x00, 0x00, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xde, 0x73, 0x7d, 0x56, 0xd3, 0x8b, 0xcf, 0x42, 0x79, 0xdc, 0xe5, 0x61, 0x7e, 0x31,
+        0x92, 0xa8,
+    ];
+
+    fn s_bytes(sig_b64: &str) -> [u8; 32] {
+        let raw = STANDARD.decode(sig_b64).unwrap();
+        raw[32..64].try_into().unwrap()
+    }
+
+    /// Re-encode a wire signature with `s` replaced by `n - s` — the
+    /// third-party malleation #343 describes. Validity is unaffected.
+    fn flip_s(sig_b64: &str) -> String {
+        use p256::ecdsa::Signature;
+        let raw = STANDARD.decode(sig_b64).unwrap();
+        let sig = Signature::from_slice(&raw).unwrap();
+        let flipped = Signature::from_scalars(sig.r(), -sig.s()).unwrap();
+        STANDARD.encode(flipped.to_bytes())
+    }
+
+    /// Every P-256 signature this crate emits is low-S. RFC 6979 is
+    /// deterministic, so the sample varies keys AND messages; 1000
+    /// signatures leave a ~2^-1000 chance of passing without the
+    /// normalization (about half of raw signatures are high-S).
+    #[test]
+    fn p256_signatures_are_always_low_s() {
+        for i in 0u32..1000 {
+            let mut seed = [0u8; 32];
+            seed[0] = 1;
+            seed[28..32].copy_from_slice(&(i / 10 + 1).to_be_bytes());
+            let key = P256SigningKey::from_bytes(&seed).unwrap();
+            let sig = if i % 2 == 0 {
+                let hash = ContentHash(format!("sha256:{:064x}", i));
+                key.sign_content_hash(&hash)
+            } else {
+                key.sign_string(&format!("acdp-registry-auth:v1:nonce-{i}"))
+            };
+            assert!(
+                s_bytes(&sig) <= P256_HALF_N,
+                "signature {i} is high-S: {sig}"
+            );
+        }
+    }
+
+    /// Low-S is an emit rule only: the verifier keeps accepting the
+    /// high-S twin of a valid signature (other producers may not
+    /// normalize, and the spec does not require consumers to reject).
+    #[test]
+    fn p256_verifier_accepts_high_s() {
+        use crate::verify::verify_ecdsa_p256;
+        let key = P256SigningKey::from_bytes(&[7u8; 32]).unwrap();
+        let hash = ContentHash("sha256:".to_owned() + &"b".repeat(64));
+        let low = key.sign_content_hash(&hash);
+        let high = flip_s(&low);
+        assert_ne!(low, high);
+        assert!(s_bytes(&high) > P256_HALF_N, "flipped twin must be high-S");
+        let sec1 = key.verifying_key_sec1();
+        verify_ecdsa_p256(&sec1, &low, hash.as_str()).unwrap();
+        verify_ecdsa_p256(&sec1, &high, hash.as_str())
+            .expect("high-S signatures MUST still verify");
     }
 
     /// Golden vector regression for `ecdsa-p256` (sig-002). The test

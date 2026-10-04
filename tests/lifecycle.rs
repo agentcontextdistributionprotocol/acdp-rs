@@ -895,6 +895,101 @@ fn store_commit_contract_duplicate_event_ids() {
     );
 }
 
+/// #343 regression: the §6 retry check compares whole events, signature
+/// bytes included (spec decision — byte-identical retries only). ECDSA
+/// is malleable, so a third party can turn a valid P-256 event into its
+/// still-valid `(r, n - s)` twin. That twin MUST NOT be treated as an
+/// idempotent retry (`schema_violation`, nothing appended), while a
+/// byte-identical retry stays `IdempotentReplay`. Our signer emits
+/// low-S, so honest retries of a re-signed event are byte-identical.
+#[test]
+fn p256_flipped_s_lifecycle_retry_is_not_idempotent() {
+    use acdp::crypto::P256SigningKey;
+    use acdp::registry::{LifecycleCommitOutcome, RegistryStore};
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use p256::ecdsa::Signature as P256Sig;
+
+    let mut caps = caps();
+    caps.supported_signature_algorithms = vec!["ed25519".into(), "ecdsa-p256".into()];
+    let server = RegistryServer::try_new(InMemoryStore::new(), caps, REGISTRY_AUTHORITY)
+        .expect("server")
+        .with_lifecycle()
+        .expect("lifecycle enabled");
+
+    let seed = [0x21u8; 32];
+    let producer =
+        Producer::new_did_key_p256(P256SigningKey::from_bytes(&seed).unwrap()).expect("producer");
+    let req = producer
+        .publish_request()
+        .title("p256 lifecycle retry")
+        .context_type(ContextType::DataSnapshot)
+        .visibility(Visibility::Public)
+        .build()
+        .expect("valid request");
+    let v1 = server
+        .publish_verified_did_key(&req, None)
+        .expect("p256 v1 publish accepted");
+    let did = acdp::did::key::did_key_from_p256_sec1(
+        &P256SigningKey::from_bytes(&seed)
+            .unwrap()
+            .verifying_key_sec1(),
+    )
+    .unwrap();
+    let key_id = acdp::did::key::did_key_url(&did).unwrap();
+
+    let retract = LifecycleEvent::new(
+        EV1,
+        v1.ctx_id.clone(),
+        LifecycleEventType::Retracted,
+        chrono::Utc::now(),
+        AgentDid::new(did),
+        Some("withdrawn".into()),
+    )
+    .expect("valid event")
+    .sign_with(P256SigningKey::from_bytes(&seed).unwrap(), key_id)
+    .expect("signed event");
+    server
+        .retract_verified_did_key(&retract, None)
+        .expect("first retract applied");
+
+    // Third-party malleation: s -> n - s. Still a valid signature.
+    let mut flipped = retract.clone();
+    let sig = flipped.signature.as_mut().unwrap();
+    let parsed = P256Sig::from_slice(&STANDARD.decode(&sig.value).unwrap()).unwrap();
+    sig.value = STANDARD.encode(
+        P256Sig::from_scalars(parsed.r(), -parsed.s())
+            .unwrap()
+            .to_bytes(),
+    );
+    assert_ne!(flipped, retract);
+
+    let err = server
+        .retract_verified_did_key(&flipped, None)
+        .expect_err("flipped-S twin passes verification but is not a byte-identical retry");
+    assert!(matches!(err, AcdpError::SchemaViolation(_)), "got {err:?}");
+
+    // Byte-identical retry: idempotent, at both the server and store layer.
+    let replay = server
+        .retract_verified_did_key(&retract, None)
+        .expect("byte-identical retry accepted");
+    assert_eq!(replay.registry_state.status, Status::Retracted);
+    assert!(matches!(
+        server.store().commit_lifecycle_event(&retract).unwrap(),
+        LifecycleCommitOutcome::IdempotentReplay(_)
+    ));
+
+    let ctx = server.retrieve(&v1.ctx_id, None).unwrap().unwrap();
+    assert_eq!(
+        ctx.registry_state
+            .lifecycle_events
+            .as_deref()
+            .unwrap()
+            .len(),
+        1,
+        "neither the twin nor the replays may append"
+    );
+}
+
 /// The lc-001..003 fixture files themselves parse and carry the pinned
 /// error codes this implementation maps to.
 #[test]

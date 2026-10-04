@@ -6,10 +6,13 @@ resolution). We take security reports seriously.
 
 ## Supported versions
 
-| Version | Supported          |
-|---------|--------------------|
-| 0.1.x   | :white_check_mark: |
-| < 0.1   | :x:                |
+Only the latest minor release line receives security fixes (currently
+`0.14.x`); older minors are unsupported — upgrade to the latest release.
+
+| Version              | Supported          |
+|----------------------|--------------------|
+| latest minor (0.14.x) | :white_check_mark: |
+| older minors (< 0.14) | :x:                |
 
 ## Reporting a vulnerability
 

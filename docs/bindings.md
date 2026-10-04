@@ -13,7 +13,7 @@ The crate ships three SDKs that reuse the Rust crypto core:
 
 All implement the same protocol primitives as the Rust crate, so a context
 signed in Python verifies in Node, in the browser, and in Rust. The protocol
-contract they implement is the same RFC set (0001 through 0015) — see
+contract they implement is the same RFC set (0001 through 0016) — see
 [RFC-ACDP-0001](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0001-core.md).
 
 ## Design: crypto in Rust, HTTP in the host

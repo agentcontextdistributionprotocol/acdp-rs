@@ -1,6 +1,6 @@
 # acdp — Library Documentation
 
-**Crate**: `acdp` &nbsp;|&nbsp; **Protocol**: ACDP v0.1.0 Final through v0.4.0 (`ACDP_VERSION` = `0.4.0`) &nbsp;|&nbsp; **Language**: Rust (MSRV 1.86)
+**Crate**: `acdp` &nbsp;|&nbsp; **Protocol**: ACDP v0.1.0 Final through v0.4.0 (`ACDP_VERSION` = `0.4.0`) (+ 0.5.0 Draft: RFC-ACDP-0016 anchors) &nbsp;|&nbsp; **Language**: Rust (MSRV 1.86)
 
 This is the reference Rust implementation of the **Agent Context Distribution
 Protocol**. ACDP lets agents publish immutable, producer-signed context

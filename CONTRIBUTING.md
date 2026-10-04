@@ -47,15 +47,17 @@ cargo audit
 
 ## Spec changes
 
-This crate implements **RFC-ACDP-0001 / 0002 / 0003 / 0007**. Any change that
+This crate implements **RFC-ACDP-0001–0008 and 0010–0016** (0009 is reserved;
+see the spec's [RFC index](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/README.md)). Any change that
 affects the wire format, hash preimage, signature input, or DID resolution
 behavior MUST:
 
 1. Cite the specific RFC section in the PR description.
 2. Update or extend the golden vectors in `tests/golden_vector.rs`.
-3. Pass against the canonical conformance vectors at
-   `schemas/conformance/sig-001-ed25519-golden.json` and
-   `schemas/conformance/can-001-jcs-vector.json`.
+3. Pass against the canonical conformance vectors in the
+   [spec repo](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol):
+   [`schemas/conformance/sig-001-ed25519-golden.json`](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/schemas/conformance/sig-001-ed25519-golden.json) and
+   [`schemas/conformance/can-001-jcs-vector.json`](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/schemas/conformance/can-001-jcs-vector.json).
 
 ## Adding tests
 

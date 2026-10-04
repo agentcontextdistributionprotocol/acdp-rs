@@ -49,6 +49,31 @@ you do not opt in:
 > `acdp::registry::{MAX_CONTEXT_BYTES, MAX_METADATA_BYTES, MAX_REDIRECTS}` and
 > in `src/limits.rs`.
 
+## ECDSA-P256 signatures: low-S on emit, high-S accepted
+
+ECDSA signatures are malleable: if `(r, s)` verifies, so does `(r, n - s)`,
+and anyone can compute that twin without the private key. It does not
+forge anything (the same key signed the same `content_hash`), but it means
+signature bytes are not unique.
+
+- **Emit:** every P-256 signature this crate produces
+  (`P256SigningKey::sign_content_hash` / `sign_string`, and so every
+  `ecdsa-p256` publish request, lifecycle event, and auth challenge) is
+  normalized to low-S (`s <= n/2`). RFC 6979 keeps it deterministic, so the
+  same key and input always give the same bytes. The `sig-002` golden vector
+  is already low-S and is unchanged.
+- **Verify:** `verify_ecdsa_p256` still **accepts** high-S signatures. Other
+  producers may not normalize, and the spec does not require consumers to
+  reject them.
+- **Signature bytes are not identities.** Never key deduplication, caching,
+  or idempotency on `signature.value`. Publish idempotency is keyed on
+  `content_hash`. The lifecycle retry check (RFC-ACDP-0013 §6) compares whole
+  events, signature included, by spec decision: only a **byte-identical**
+  retry is an `IdempotentReplay`. A flipped-S twin of an applied event is
+  rejected as `schema_violation` with nothing appended (see
+  `p256_flipped_s_lifecycle_retry_is_not_idempotent` in `tests/lifecycle.rs`).
+  Retry with the exact bytes you sent the first time.
+
 ## DNS-rebinding protection is active
 
 DNS-rebinding (RFC-ACDP-0008 §7.6) is **on**. `crate::safe_http::SafeDnsResolver`

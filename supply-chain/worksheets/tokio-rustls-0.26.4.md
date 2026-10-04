@@ -60,7 +60,8 @@ From `cargo tree --locked -e features -i tokio-rustls`:
 | `bindings/acdp-py`, `bindings/acdp-node` | lock-only; `cargo tree -e all -i tokio-rustls` prints nothing for their builds |
 | `bindings/acdp-wasm` | not in the lockfile |
 
-- Default features (`logging`, `tls12`, `aws_lc_rs`) are off as a set. `early-data` (0-RTT),
+- The `default` feature is off: dependents use `default-features = false`, and `tls12` is
+  enabled explicitly (with `ring`). `early-data` (0-RTT),
   `aws_lc_rs`, `fips`, `brotli`, `zlib` and `logging` are **not** compiled, so the
   `#[cfg(feature = "early-data")]` items in `src/client.rs` (for example
   `poll_early_data`, `:277-298`, and `poll_handle_early_data`, `:480-544`) were read but are
@@ -81,6 +82,9 @@ From `cargo tree --locked -e features -i tokio-rustls`:
   `ClientConnection::new_with_alpn(config, domain, alpn)` (`:68`). The only override is ALPN,
   and only through the explicit `with_alpn` (`:103-108`). Verifier, roots and name checks
   are rustls's, driven by the caller's config and the `ServerName` it passes.
+- `connect_with(domain, stream, f: FnOnce(&mut ClientConnection))` (`src/client.rs:47-54`)
+  lets a caller adjust the session before the handshake. Neither reqwest nor hyper-rustls
+  calls it: both use plain `connect`.
 - No `dangerous()`, no custom verifier, no key-log hook in the crate (grep over `src/`).
 - `TlsAcceptor` / `LazyConfigAcceptor` (`src/server.rs`) likewise wrap the caller's
   `ServerConfig`. In ACDP this is only the dev-only test harness.

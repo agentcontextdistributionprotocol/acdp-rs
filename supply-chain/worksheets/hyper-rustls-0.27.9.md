@@ -71,12 +71,22 @@ From `cargo tree --locked -e features -i hyper-rustls`:
 
 ## Certificate verification and configuration wiring
 
-- hyper-rustls never builds a certificate verifier and never touches
-  `ClientConfig::dangerous()`. It configures trust roots only in the opt-in
+- In the features ACDP compiles, hyper-rustls builds no certificate verifier. Only the
+  off `rustls-platform-verifier` feature installs one (`src/config.rs:66-71`). It never
+  touches `ClientConfig::dangerous()`, it configures trust roots only in the opt-in
   `ConfigBuilderExt` helpers (`src/config.rs:59-126`), and the only `ClientConfig` field it
   writes is `alpn_protocols` (`src/connector/builder.rs:261`, `:279`, `:346`).
 - reqwest builds its own `rustls::ClientConfig` (webpki roots, ring provider; see the rustls
-  worksheet) and wraps it with `HttpsConnector::from((http, tls))`
+  worksheet). ACDP's public API can add caller-supplied trust anchors to it through reqwest's
+  `add_root_certificate`:
+  - `WebResolver::with_root_cert_pem` and `with_capacity_and_root_cert_pem`
+    (`crates/acdp-did/src/web.rs:108`, `:117`, applied at `:348-352`);
+  - `RegistryClient::with_root_cert_pem` and `root_cert_pem`
+    (`crates/acdp-client/src/registry.rs:332`, `:748`, applied by `apply_root_cert`,
+    `:856-866`).
+
+  These add roots; nothing in ACDP disables verification. reqwest wraps that config with
+  `HttpsConnector::from((http, tls))`
   (`reqwest src/connect.rs:674`). That `From` impl (`src/connector.rs:126-138`) sets
   `force_https: false` and the `DefaultServerNameResolver`. hyper-rustls's own
   `with_webpki_roots` helpers (`src/config.rs:116-125`, `src/connector/builder.rs:153-177`)
@@ -90,10 +100,12 @@ From `cargo tree --locked -e features -i hyper-rustls`:
 - `DefaultServerNameResolver` (`:152-169`) takes `uri.host()`, strips IPv6 brackets, and
   fails closed through `ServerName::try_from` on an invalid name.
 - **Plain HTTP is the caller's policy, not this crate's.** With `force_https: false`, an
-  `http://` URL is sent in cleartext. ACDP rejects non-`https` URLs itself, before any
-  request (`SsrfPolicy::check_url`, `crates/acdp-safe-http/src/lib.rs:204`; the test
-  `https_only_by_default`, `:699`). That is a property of ACDP's code, not one this audit
-  attributes to hyper-rustls.
+  `http://` URL is sent in cleartext. By default ACDP rejects non-`https` URLs itself,
+  before any request: `SsrfPolicy::check_url` (`crates/acdp-safe-http/src/lib.rs:186`)
+  delegates to `classify_url`, whose scheme check is at `:204`, and the test
+  `https_only_by_default` is at `:699`. `SsrfPolicy.allow_http` (`:140`, default `false`) is
+  a public opt-in that turns this off (test `allow_http_can_be_opted_into`, `:867`). That is a
+  property of ACDP's code and configuration, not one this audit attributes to hyper-rustls.
 - Panics: `with_tls_config` asserts that the caller left `alpn_protocols` empty
   (`src/connector/builder.rs:60-66`, documented); `with_platform_verifier` `expect`s (`:76-79`,
   `src/config.rs:61-64`) are behind the feature that is off. reqwest's path hits neither.

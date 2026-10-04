@@ -1227,15 +1227,25 @@ assistance, maintainer approval required before merge.
   "no-attribute" batch). For each, the evidence is a grep of the full source, tests
   included: 0 `unsafe` sites, no `asm!`, no build script, no proc-macro.
 - **TLS adapters.** `hyper-rustls` and `tokio-rustls` do network I/O by design, but only on
-  the caller's connector or stream. Neither builds a certificate verifier, touches
-  `dangerous()` or installs a key-log hook. Both pass the caller's `rustls::ClientConfig`
-  through unchanged, apart from ALPN. ACDP compiles `hyper-rustls` with `http1`, `ring`,
-  `tls12`, `webpki-roots` and `webpki-tokio`, and `tokio-rustls` with `ring` and `tls12`.
-  Their default `aws-lc-rs`, `native-tokio` / `rustls-native-certs`, `logging` and
-  `early-data` features are off. hyper-rustls passes `http://` through in cleartext
-  (`force_https: false` on reqwest's path). ACDP's HTTPS-only rule is enforced by
-  `SsrfPolicy::check_url` (`crates/acdp-safe-http/src/lib.rs:204`), not by this crate. No
-  concern was found, so neither was kept exempt.
+  the caller's connector or stream. In the features ACDP compiles, neither builds a
+  certificate verifier: only hyper-rustls's `rustls-platform-verifier` feature, which is
+  off, installs one. Neither touches `dangerous()` or installs a key-log hook. Both pass
+  the caller's `rustls::ClientConfig` through unchanged, apart from ALPN.
+  - Features: ACDP compiles `hyper-rustls` with `http1`, `ring`, `tls12`, `webpki-roots`
+    and `webpki-tokio`, and `tokio-rustls` with `ring` and `tls12`. The default feature
+    sets are off, so `aws-lc-rs`, `native-tokio` / `rustls-native-certs`, `logging` and
+    `early-data` are not compiled.
+  - Trust roots: reqwest's config uses webpki roots. ACDP's public
+    `with_root_cert_pem` / `root_cert_pem` APIs (`crates/acdp-did/src/web.rs:108`, `:117`;
+    `crates/acdp-client/src/registry.rs:332`, `:748`) add caller-supplied roots. Nothing
+    disables verification.
+  - Plain HTTP: hyper-rustls passes `http://` through in cleartext (`force_https: false`
+    on reqwest's path). ACDP rejects non-`https` URLs by default, through
+    `SsrfPolicy::check_url` -> `classify_url` (`crates/acdp-safe-http/src/lib.rs:186`,
+    `:204`). That is not this crate's doing, and `SsrfPolicy.allow_http` (`:140`, default
+    `false`) is a public opt-in.
+
+  No concern was found, so neither crate was kept exempt.
 - `cpubits` (`#[macro_export]` macros expanding in `crypto-bigint`) and `primeorder` (generic
   curve arithmetic, monomorphized in `p256`) had every macro arm and every feature-gated file
   read. `primeorder`'s `dev` macro is compiled only with `dev`, which is off.

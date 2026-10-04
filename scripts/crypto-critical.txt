@@ -51,3 +51,10 @@ spki
 crypto-common
 zeroize_derive
 ed25519
+# Batch B2:
+hmac
+rfc6979
+pkcs8
+sec1
+primefield
+digest

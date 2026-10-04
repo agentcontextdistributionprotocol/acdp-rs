@@ -1165,3 +1165,44 @@ concern rule, maintainer approving review before merge.
 
 **Status:** AUTHORED. Merges only after the maintainer's approving review naming the six
 worksheets (Policy 4).
+
+## #339 Tier B batch B2: hmac, rfc6979, pkcs8, sec1, primefield, digest certified (2026-10-04)
+
+Batch B2 of issue #339 (plan P6), under the "#322 supply-chain audit policy" unchanged:
+built-in `safe-to-deploy` only, no claim of cryptographic correctness or constant-time
+behaviour, `who = "Ajit Koti <ajitkoti@zer07labs.com>"`, reviewed with Claude (Opus)
+assistance, maintainer approval required before merge.
+
+| Crate | Version | Method | Worksheet |
+|---|---|---|---|
+| `hmac` | 0.13.0 | full (no prior audit); test-fixture discretion | `supply-chain/worksheets/hmac-0.13.0.md` |
+| `rfc6979` | 0.6.0 | full (no prior audit) | `supply-chain/worksheets/rfc6979-0.6.0.md` |
+| `pkcs8` | 0.11.0 | full (no prior audit); test-fixture discretion | `supply-chain/worksheets/pkcs8-0.11.0.md` |
+| `sec1` | 0.8.1 | full (no prior audit); test-fixture discretion | `supply-chain/worksheets/sec1-0.8.1.md` |
+| `primefield` | 0.14.0 | full (no prior audit) | `supply-chain/worksheets/primefield-0.14.0.md` |
+| `digest` | 0.11.3 | full (no prior audit of 0.11.x); test-fixture discretion | `supply-chain/worksheets/digest-0.11.3.md` |
+
+- All six have zero `unsafe` lines, no `asm!`, no build script, and no proc-macro. For
+  all six the evidence is a grep of the full source. `pkcs8`, `sec1`, `primefield` and
+  `digest` carry `#![forbid(unsafe_code)]`, and `hmac` and `rfc6979` set it as a
+  `Cargo.toml` lint, but both are only corroborating hints: Cargo builds registry
+  dependencies with `--cap-lints allow`, which caps source-level `forbid` attributes and
+  `Cargo.toml` lints alike.
+- `primefield` and `digest` are mostly `#[macro_export]` macros that expand in caller
+  crates (`p256`; `sha2`, `hmac`), where their `forbid` does not apply. Every macro arm
+  was read; none contains `unsafe` or a powerful import.
+- The only powerful import is in `pkcs8` and `sec1` under `std` (enabled in ACDP):
+  explicit `read_*_der_file` / `write_*_der_file` trait helpers on a caller-chosen path.
+  Neither crate nor ACDP calls them, so this is documented opt-in I/O, not "unexpected"
+  I/O under the concern rule.
+- Test-only binary fixtures (`.blb`/`.der`/`.bin` under `tests/`) are recorded as
+  `Discretion:` lines, following the ecdsa/p256 precedent. None is compiled into a
+  non-test build.
+- `sec1` is on ACDP's untrusted-input path (`p256::ecdsa::VerifyingKey::from_sec1_bytes`):
+  `EncodedPoint::from_bytes` validates the tag and exact length before copying.
+- The six crates were added to `scripts/crypto-critical.txt` with no marker. All three
+  binding lockfiles lock the same six versions with the same checksums as the root.
+- No concern was found; nothing in this batch was kept exempt.
+
+**Status:** AUTHORED. Pending the maintainer's approving review naming the worksheets read
+(Policy 4); never auto-merged.

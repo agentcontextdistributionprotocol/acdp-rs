@@ -824,7 +824,10 @@ under the concern rule below.
 6. **Concern rule.** It applies when a review finds any of these: unsound or unexplained
    `unsafe`; unexpected network, filesystem, or process access; a build.rs or proc-macro
    that does more than cfg selection or codegen; obfuscated or vendored binary content;
-   a RUSTSEC hit; or a review that cannot be finished. For such a crate:
+   a RUSTSEC hit; or a review that cannot be finished. **Carve-out (amended 2026-10-04,
+   Fable decision on `322-sha2`):** this rule does not apply when the unsound code is
+   unreachable in any stable-toolchain build of any ACDP artifact; in that case certify
+   and record the discretion in the audit notes (`Discretion:` lines). For such a crate:
    - Do not certify it.
    - Keep its exemption, with `notes = "KEPT EXEMPT (#322): <reason>; see DECISIONS.md
      '322-<crate>'"`.
@@ -861,3 +864,117 @@ under the concern rule below.
    and the guard catches that once the crate's pending marker is removed.
 
 **Status:** DECIDED (maintainer-settled policy, recorded in Phase 1).
+
+## #322 322-sha2: sha2 0.11.0 concern review, certified with discretion (2026-10-04)
+
+**Needs: Fable decision.** Concern-rule entry for issue #322, Phase 2. Anchor: `322-sha2`.
+The worksheet is `supply-chain/worksheets/sha2-0.11.0.md`.
+
+**Concern.** The opt-in `riscv-zknh` backend is unsound for some inputs. Evidence:
+`src/sha256/riscv_zknh/utils.rs:44,61` and `src/sha512/riscv_zknh/utils.rs:44,61,94,110`.
+
+- `load_unaligned_block` derives `bp = block.as_ptr().wrapping_sub(offset)` and then calls
+  `ptr::read(bp.add(1 + i))`.
+- `<*const T>::add` is UB if `bp` lies before the allocation. That happens when an
+  unaligned block starts within the first `offset` bytes of an align-1 allocation.
+- The backend is reachable only with `--cfg sha2_backend="riscv-zknh"` or
+  `--cfg sha2_256_backend="riscv-zknh"`. These are the only keys that select it, in both
+  `src/sha256.rs:5` and `src/sha512.rs:5`.
+- It also needs nightly (or stable with RUSTC_BOOTSTRAP=1, which is not a supported configuration) (`#![feature(riscv_ext_intrinsics)]`, `src/lib.rs:9-16`).
+- No Cargo feature enables it, so it is **unreachable in every ACDP build** and in every
+  stable build.
+
+**Rest of the review.** All other `unsafe` sites were reviewed and found sound: the
+default soft path, cpufeatures-dispatched x86 SHA-NI/AVX2 and aarch64 SHA2/SHA3, the
+wasm32 simd128 backend, and loongarch64 asm.
+
+One non-blocking observation was recorded: the default aarch64 backend loads 16 bytes
+through `&K32[t]` / `&K64[t]`. That is a reference to one element of an immutable
+`static`, and the read stays in bounds of the static. It is an error only under Stacked
+Borrows, and 0.10.9, which we audited, used the identical pattern.
+
+**Options.**
+1. *(recommended)* Certify the full 0.11.0 audit with a scope line: "excludes the
+   nightly-only opt-in `riscv-zknh` backend (out-of-allocation `ptr::add`, see the
+   worksheet)". Also report S-1 and S-2 upstream to RustCrypto/hashes.
+2. Accept the exemption until upstream ships a fix, then delta-audit the fixed release.
+3. Pin back to 0.10.9 (audited). This is **not viable**: ed25519-dalek 3 and the
+   `digest` 0.11 stack require sha2 0.11.
+
+**Interim state.**
+- The `[[exemptions.sha2]]` entry stays, with `notes = "KEPT EXEMPT (#322): …"`.
+- The guard marker is `allow-exempt:DECISIONS#322-sha2`.
+- Upstream has not been reported yet; that is pending this decision.
+
+**Decision (Fable, after independent verification, 2026-10-04): option 1.** sha2 0.11.0 is
+certified `safe-to-deploy` (full) with two `Discretion:` note lines, under the Policy 6
+carve-out: the riscv-zknh finding is unreachable in any stable build. S-1 is fixed upstream
+in RustCrypto/hashes#879 (lands in 0.11.1, unreleased). S-2 is unfixed upstream. The
+exemption and the guard marker are removed. The draft upstream issue for S-2 is in
+`supply-chain/worksheets/sha2-0.11.0.md`; nothing has been filed.
+
+**Status:** DECIDED.
+
+## #322 322-zeroize: zeroize 1.9.0 kept exempt (2026-10-04)
+
+**Needs: Fable decision.** Concern-rule entry for issue #322, Phase 2. Anchor:
+`322-zeroize`. The worksheet is `supply-chain/worksheets/zeroize-1.9.0.md`.
+
+**Concern.** The new safe `pub fn optimization_barrier<T: ?Sized>(val: &T)` is unsound on
+targets without stable `asm!`, and under Miri. Evidence: `src/barrier.rs:92-100`.
+
+- The fallback calls an `#[inline(never)]` helper that does `read_volatile(p)` with
+  `p: *const u8`, on byte 0 of `*val`.
+- If that byte is uninitialized, producing the `u8` is UB. That covers padding,
+  `MaybeUninit`, and the payload bytes after a typed `None` write.
+- Safe code can trigger it, for example
+  `optimization_barrier(&MaybeUninit::<u8>::uninit())`.
+- The crate itself can reach it: `impl Zeroize for Option<Z>` does `write_volatile(self,
+  None)` and then `optimization_barrier(self)` (`src/lib.rs:403-405`).
+- 1.8.2 used `compiler_fence(SeqCst)` and had no such read.
+
+**Reachability for ACDP.**
+- Native x86_64 and aarch64 builds use the sound empty-`asm!` path (`src/barrier.rs:68-73`).
+- `bindings/acdp-wasm` (wasm32) resolves zeroize 1.9.0 and uses the fallback.
+- ACDP's own erasures are of `[u8; 32]`-style data, whose byte 0 is initialized after the
+  write, so no known ACDP call site triggers the UB.
+
+**Rest of the review.** All other `unsafe` sites were reviewed and found sound: the
+volatile writes, `volatile_set`, and the SIMD register impls. One non-blocking
+observation: `zeroize_flat_type` calls `optimization_barrier(&data)` on the pointer
+variable, not the pointee (`src/lib.rs:823`). That is redundant, not harmful.
+
+**Method.** Full. The ratio is 0.72, below 0.75, so the numeric rule said delta. Full was
+chosen under the rewrite clause, because the delta replaces the barrier at every
+volatile-write site and adds the crate's only `asm!`.
+
+**Options.**
+1. *(recommended)* Report Z-1 upstream to RustCrypto/utils. The fix is to read through
+   `MaybeUninit<u8>` or drop the volatile read. Accept the exemption until a fixed
+   release, then delta-audit it.
+2. Certify with a scope line ("sound on asm targets; the non-asm/Miri fallback of
+   `optimization_barrier` is excluded"). This is weaker, because the wasm binding uses
+   exactly that fallback.
+3. Pin back to 1.8.2 (audited 2026-07-05) with `cargo update -p zeroize --precise 1.8.2`.
+   The dependents' requirements allow it: ed25519-dalek `1.5`, elliptic-curve `1.7`,
+   curve25519-dalek and crypto-bigint `1`, and acdp-crypto `1`. Still to verify: whether
+   `zeroize_derive` 1.5, required by 1.9.0, also works with 1.8.2, and the binding locks.
+
+**Interim state.**
+- The `[[exemptions.zeroize]]` entry stays, with `notes = "KEPT EXEMPT (#322): …"`.
+- The guard marker is `allow-exempt:DECISIONS#322-zeroize`.
+- Upstream has not been reported yet; that is pending this decision.
+
+**Decision (Fable, after independent verification, 2026-10-04): option 1, keep exempt.**
+- The carve-out does not apply: `bindings/acdp-wasm` is a published ACDP artifact, and its
+  stable wasm32 build compiles the faulty fallback.
+- Do **not** pin to 1.8.2: that means lock churn across three bindings, a fight with
+  Dependabot, and an MSRV change (1.60 vs 1.85).
+- **Exit criterion:** delta-audit zeroize 1.9.1 when it is released. RustCrypto/utils#1535
+  (merged 2026-09-11) removes the internal callers of `optimization_barrier`. If the safe
+  `pub fn` remains unchanged but unused internally, it then qualifies for the discretion
+  carve-out, provided no ACDP artifact calls it.
+- The exemption and the `allow-exempt:DECISIONS#322-zeroize` marker stay. The draft
+  upstream issue is in `supply-chain/worksheets/zeroize-1.9.0.md`; nothing has been filed.
+
+**Status:** DECIDED.

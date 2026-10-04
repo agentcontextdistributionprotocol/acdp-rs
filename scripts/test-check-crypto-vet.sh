@@ -84,6 +84,14 @@ set_marker() {
         "$file" >"$file.new" && mv "$file.new" "$file"
 }
 
+# Remove every line mentioning <anchor> from a scratch DECISIONS.md, so a case
+# can model "the anchor is absent" even when the real file records it.
+drop_anchor() {
+    local file=$1 anchor=$2
+    grep -vF -- "$anchor" "$file" >"$file.new" || true
+    mv "$file.new" "$file"
+}
+
 # 0. The real tree passes (no scratch copies at all).
 set +e
 "$guard" >"$tmp/real.out" 2>&1
@@ -112,36 +120,37 @@ else
 fi
 expect_fail "$d" subtle "not fully audited"
 
-# (a2) a pending crate's marker is dropped while it is still exempted.
+# (a2) an exempted crate's marker is dropped while it is still exempted.
+#      zeroize is the fixture: it stays exempt (DECISIONS.md 322-zeroize).
 d=$(new_case a2-unmarked-exempted)
-set_marker "$d/list.txt" sha2 ""
-expect_fail "$d" sha2 "not fully audited"
+set_marker "$d/list.txt" zeroize ""
+expect_fail "$d" zeroize "not fully audited"
 
-# (b) sha2 keeps its pending marker although it is now fully audited.
+# (b) zeroize carries a pending marker although it is now (fake-)fully audited.
 d=$(new_case b-stale-pending)
 cat >>"$d/store/audits.toml" <<'EOF'
 
-[[audits.sha2]]
+[[audits.zeroize]]
 who = "Guard Self-Test <test@example.invalid>"
 criteria = "safe-to-deploy"
-version = "0.11.0"
+version = "1.9.0"
 notes = "FAKE audit injected by scripts/test-check-crypto-vet.sh (scratch copy only)."
 EOF
-expect_fail "$d" sha2 "stale marker"
+set_marker "$d/list.txt" zeroize "allow-exempt:#322-pending"
+expect_fail "$d" zeroize "stale marker"
 
 # (b2) the same stale check applies to a DECISIONS marker.
 d=$(new_case b2-stale-decisions)
 cat >>"$d/store/audits.toml" <<'EOF'
 
-[[audits.sha2]]
+[[audits.zeroize]]
 who = "Guard Self-Test <test@example.invalid>"
 criteria = "safe-to-deploy"
-version = "0.11.0"
+version = "1.9.0"
 notes = "FAKE audit injected by scripts/test-check-crypto-vet.sh (scratch copy only)."
 EOF
-set_marker "$d/list.txt" sha2 "allow-exempt:DECISIONS#322-sha2"
-printf '\nAnchor: 322-sha2\n' >>"$d/DECISIONS.md"
-expect_fail "$d" sha2 "stale marker"
+set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize"
+expect_fail "$d" zeroize "stale marker"
 
 # (c) the plan's case: a DECISIONS marker naming a nonexistent anchor.
 d=$(new_case c-nonexistent-anchor)
@@ -150,6 +159,7 @@ expect_fail "$d" zeroize "must name anchor '322-zeroize' exactly"
 
 # (c1) the anchor is the right shape but DECISIONS.md lacks it.
 d=$(new_case c1-anchor-absent)
+drop_anchor "$d/DECISIONS.md" "322-zeroize"
 set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize"
 expect_fail "$d" zeroize "does not appear in"
 
@@ -166,6 +176,7 @@ expect_fail "$d" zeroize "must name anchor '322-zeroize' exactly"
 
 # (c5) DECISIONS.md has only a longer token (322-zeroize-extra): no match.
 d=$(new_case c5-longer-token-only)
+drop_anchor "$d/DECISIONS.md" "322-zeroize"
 set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize"
 printf '\nAnchor: 322-zeroize-extra\n' >>"$d/DECISIONS.md"
 expect_fail "$d" zeroize "does not appear in"

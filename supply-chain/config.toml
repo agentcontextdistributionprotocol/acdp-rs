@@ -782,11 +782,6 @@ criteria = "safe-to-deploy"
 version = "0.4.3"
 criteria = "safe-to-deploy"
 
-[[exemptions.sha2]]
-version = "0.11.0"
-criteria = "safe-to-deploy"
-notes = "allow-exempt:#322-pending (issue #322)"
-
 [[exemptions.shlex]]
 version = "2.0.1"
 criteria = "safe-to-deploy"
@@ -794,11 +789,6 @@ criteria = "safe-to-deploy"
 [[exemptions.signal-hook-registry]]
 version = "1.4.8"
 criteria = "safe-to-deploy"
-
-[[exemptions.signature]]
-version = "3.0.0"
-criteria = "safe-to-deploy"
-notes = "allow-exempt:#322-pending (issue #322)"
 
 [[exemptions.slab]]
 version = "0.4.12"
@@ -1099,7 +1089,7 @@ criteria = "safe-to-deploy"
 [[exemptions.zeroize]]
 version = "1.9.0"
 criteria = "safe-to-deploy"
-notes = "allow-exempt:#322-pending (issue #322)"
+notes = "KEPT EXEMPT (#322): safe optimization_barrier reads possibly-uninit byte as u8 on non-asm targets (src/barrier.rs:92-100); see DECISIONS.md '322-zeroize'"
 
 [[exemptions.zeroize_derive]]
 version = "1.5.0"

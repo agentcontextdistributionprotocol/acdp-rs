@@ -49,11 +49,46 @@ criteria = "safe-to-deploy"
 version = "0.10.9"
 notes = "RustCrypto 'sha2'. SHA-256 for ACDP content_hash + lineage_id (RFC-ACDP-0001 5.7). Reviewed 0.10.9: unsafe confined to cpufeatures-gated asm/SIMD backends; no I/O. Canonical, latest 0.10.x. cargo audit clean 2026-07-05."
 
+[[audits.sha2]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "0.11.0"
+notes = """
+Scope: full audit of 0.11.0 (delta 0.10.9 -> 0.11.0 is 57 files, +2766/-1858 = 1.47x the 3151 src lines, so full per the #322 method rule).
+Source: crates.io tarball sha256 446ba717509524cb3f22f17ecc096f10f4822d76ab5c0b9822c5f9c284e825f4 == Cargo.lock checksum.
+unsafe: 50 non-comment unsafe code lines (53 raw grep hits, of which 3 are asm-template comments at src/sha256/riscv_zknh/utils.rs:51 and src/sha512/riscv_zknh/utils.rs:51,101); reviewed each. Calls into #[target_feature] backends are guarded by compile_error! static target_feature checks (forced --cfg backends) or cpufeatures runtime detection (default path). x86 SHA-NI / AVX2 SHA-512, aarch64 SHA2/SHA3 NEON and wasm32 simd128 loads/stores stay inside state/block arrays and the K constant tables (unaligned loadu/v128_load; index arithmetic checked); cast_ms/cast_rs reinterpret [__m128i;N] as [u64;2N] (same size, compatible alignment, all bit patterns valid); soft rk() reads in-bounds constants.
+asm/SIMD: asm! in loongarch64_asm (empty-input early return, stack scratch restored, all clobbers declared) and riscv_zknh/utils.rs; intrinsics elsewhere. Default path: soft + cpufeatures dispatch (x86 CPUID+xgetbv; aarch64 getauxval / Apple sysctlbyname), fallback to soft when undetected.
+Discretion: opt-in riscv-zknh backend does ptr::add on a wrapping_sub-derived pointer that may precede the allocation (src/sha256/riscv_zknh/utils.rs:44,61; src/sha512/riscv_zknh/utils.rs:44,61,94,110). Reachable only with --cfg sha2_backend="riscv-zknh" or --cfg sha2_256_backend="riscv-zknh" (the only keys that select it, in both src/sha256.rs:5 and src/sha512.rs:5; sha2_512_backend has no riscv-zknh arm) on nightly (or stable with RUSTC_BOOTSTRAP=1, which is not a supported configuration) (#![feature(riscv_ext_intrinsics)], lib.rs:9-16) on riscv; no Cargo feature; unreachable in any stable build. Fixed upstream in RustCrypto/hashes#879 (0.11.1, unreleased).
+Discretion: default aarch64 backend loads 16 bytes via vld1q_u32(&K32[t]) / vld1q_u64(&K64[t]) from a one-element reference (src/sha256/aarch64_sha2.rs:33-80, src/sha512/aarch64_sha3.rs:39-153); the read stays within the immutable K table; Stacked-Borrows-only concern; same pattern as audited 0.10.9; unfixed upstream.
+build.rs / proc-macro: none.
+Powerful imports: none (#![no_std]; only include_str!("../README.md") for docs). tests/data/*.blb binary KAT blobs are test-only, not built into the library.
+New deps: digest 0.10 -> 0.11, cpufeatures 0.2 -> 0.3; sha2-asm removed (Tier B digest/block-buffer/cpufeatures/hybrid-array/crypto-common still exempted). ACDP features: alloc, default, oid.
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance. Behavioural evidence only: ACDP sig-001/can-001 golden vectors pin SHA-256 content_hash.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/sha2-0.11.0.md (issue #322 Phase 2 PR)."""
+
 [[audits.signature]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"
 criteria = "safe-to-deploy"
 version = "2.2.0"
 notes = "RustCrypto 'signature' trait crate. Pure trait/marker defs used by ed25519/ecdsa; no unsafe, no I/O, no build script. Canonical upstream, latest 2.x. cargo audit clean 2026-07-05."
+
+[[audits.signature]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "3.0.0"
+notes = """
+Scope: full audit of 3.0.0 (delta 2.2.0 -> 3.0.0 is 11 files, +632/-431 = 1.33x the 798 src lines, so full per the #322 method rule).
+Source: crates.io tarball sha256 28d567dcbaf0049cb8ac2608a76cd95ff9e4412e1899d389ee400918ca7537f5 == Cargo.lock checksum.
+unsafe: 0 sites; #![forbid(unsafe_code)] unconditional at src/lib.rs:8.
+asm/SIMD: none.
+build.rs / proc-macro: none (build = false; not a proc-macro; the optional signature_derive proc-macro dependency of 2.x was removed).
+Powerful imports: none (#![no_std]; alloc only behind the `alloc` feature; only include_str!("../README.md") for docs).
+Trait surface: Signer/Verifier families (multipart, digest, randomized, async, hazmat prehash), Keypair, SignatureEncoding, opaque non_exhaustive Error with optional boxed source; blanket impls only forward; default infallible methods panic via expect on try_* errors (documented).
+New deps: digest 0.10 -> 0.11 and rand_core 0.6 -> 0.10 (both optional, default-features = false; Tier B, still exempted); removed signature_derive, dev hex-literal/sha2. ACDP features: alloc, digest, rand_core.
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/signature-3.0.0.md (issue #322 Phase 2 PR)."""
 
 [[audits.subtle]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"

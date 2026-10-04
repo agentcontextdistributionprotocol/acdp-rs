@@ -190,12 +190,17 @@ proptest = "1"
 # downstream consumers.
 rcgen        = { version = "0.14", default-features = false, features = ["pem", "ring"] }
 axum         = { version = "0.8", default-features = false, features = ["json", "query"] }
-axum-server  = { version = "0.8", default-features = false, features = ["tls-rustls"] }
+# `tls-rustls-no-provider`, not `tls-rustls`: the latter enables
+# `rustls/aws-lc-rs`, and Cargo feature unification would then switch that
+# optional dependency on for the *production* `rustls` that reqwest uses,
+# putting aws-lc-rs/aws-lc-sys on a normal edge (so cargo-vet would demand
+# `safe-to-deploy` for them). See DECISIONS.md (aws-lc dropped, #339).
+axum-server  = { version = "0.8", default-features = false, features = ["tls-rustls-no-provider"] }
 # rustls 0.23 requires the process to install a crypto provider before
-# the first TLS handshake — there's no auto-detect when more than one
-# backend is in scope. We install `aws-lc-rs` (matches what `axum-server`'s
-# `tls-rustls` feature pulls in transitively).
-rustls       = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
+# the first TLS handshake. The harness installs `ring`, the same provider
+# every production build already uses via reqwest's `rustls-tls`, so the
+# test graph adds no second crypto backend.
+rustls       = { version = "0.23", default-features = false, features = ["ring"] }
 
 [package.metadata.docs.rs]
 all-features        = true

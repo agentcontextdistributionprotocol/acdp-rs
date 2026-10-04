@@ -1099,3 +1099,40 @@ group.)
 
 **Status:** AUTHORED. Issue #322 closes on this entry once PRs #334, #335, #336 and the
 Phase 5 PR merge after the maintainer's approving reviews.
+
+## #339 aws-lc-rs dropped from the graph instead of re-exempted as safe-to-run (2026-10-04)
+
+**Context.** The #322 completion status above noted that the `aws-lc-rs` 1.18.0 /
+`aws-lc-sys` 0.44.0 exemptions over-claim `safe-to-deploy` and should move to
+`safe-to-run`. Re-verified before acting: with both exemptions edited to `safe-to-run`,
+`cargo vet --locked` failed with `aws-lc-rs:1.18.0 missing ["safe-to-deploy"]` (and the
+same for `aws-lc-sys`). Cause: the dev-dependencies `axum-server` (feature `tls-rustls`,
+which enables `rustls/aws-lc-rs`) and `rustls` (feature `aws-lc-rs`) unify features into
+the single `rustls` 0.23.45 that reqwest's `rustls-tls` uses in production. In cargo-vet's
+feature-unified view that makes `rustls -> aws-lc-rs` a normal edge, and `rustls` needs
+`safe-to-deploy`, so `aws-lc-*` inherit it. `cargo tree -e features -i aws-lc-rs` showed
+the path through `axum-server feature "tls-rustls"`.
+
+**Decision.** Remove the dependency rather than relabel it:
+- root `[dev-dependencies]`: `axum-server` uses `tls-rustls-no-provider`; the dev
+  `rustls` enables `ring` instead of `aws-lc-rs`;
+- `tests/common/mod.rs` installs `rustls::crypto::ring::default_provider()`, the provider
+  production already uses, so the test harness now exercises the same TLS backend;
+- `cargo update -w` removed only `aws-lc-rs`, `aws-lc-sys`, `cmake`, `dunce`, `fs_extra`,
+  `jobserver`, `pkg-config` from `Cargo.lock` (plus the `aws-lc-rs` edges of `rustls` /
+  `rustls-webpki` and `cc`'s `jobserver`/`libc` edges); nothing was added or upgraded;
+- the seven now-unused exemptions were removed from `supply-chain/config.toml`.
+  `cargo vet prune` also proposed swapping the still-used `rustc_version` and `shlex`
+  exemptions for newly imported audits (and dropping stale `allocator-api2` imports);
+  those are unrelated to this change and were left out.
+
+**Why not `safe-to-run`.** A `safe-to-run` exemption cannot be expressed while the edge
+is normal, and a C/asm crypto library we never ship or call in production is better
+absent than exempted. The bindings' lockfiles never contained `aws-lc-*`
+(`scripts/check-bindings-lock-parity.sh` passes). Guard list and guard script unchanged.
+
+**Reversibility.** Two-way door: re-adding `tls-rustls` would bring `aws-lc-*` back and
+need `safe-to-deploy` coverage again. `docs/supply-chain.md` says not to.
+
+**Status:** DONE (PR for #339, aws-lc part). Follow-up 1 of the #322 completion status
+no longer includes the `aws-lc-*` move.

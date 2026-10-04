@@ -68,7 +68,7 @@ To reproduce: `scripts/vet-facts.sh ed25519-dalek 3.0.0 2.2.0`.
 
 ## Verification semantics (relevant to ACDP)
 
-ACDP verifies with `VerifyingKey::verify` (`crates/acdp-crypto/src/verify.rs:30,63`),
+ACDP verifies with `VerifyingKey::verify` (`crates/acdp-crypto/src/verify.rs:30` (the P-256 path at :63 is a different primitive)),
 not `verify_strict`. The checks behind it are **unchanged** in this delta:
 
 - `InternalSignature::try_from` runs `check_scalar` (`src/signature.rs:87-95`):

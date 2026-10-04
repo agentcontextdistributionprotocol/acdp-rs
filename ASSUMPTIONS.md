@@ -989,3 +989,70 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
 - **Chose:** keep the audited column (item 1 wins); the grep's single hit is that cell.
 - **Blast radius if wrong:** trivial.
 - **Status:** CONFIRMED (2026-10-03)
+
+## #322 guard: DECISIONS anchor matched verbatim
+- **Plan:** plans/supply-chain-recertify-322.md (Phase 1 item 3; Policy 6)
+- **Assumed:** the plan names the marker `allow-exempt:DECISIONS#322-<crate>`, but it
+  names the DECISIONS entry `'#322 <crate>'` (a space, not a hyphen), and it describes the
+  check as `grep -q "<anchor>" DECISIONS.md`. A literal grep for `322-sha2` would not match
+  a heading `#322 sha2`.
+- **Chose:** the guard runs `grep -qF` on the anchor text after `DECISIONS#`. The policy
+  entry (DECISIONS.md "#322 supply-chain audit policy", item 6) requires a concern-rule
+  entry to contain `322-<crate>` verbatim.
+- **Alternatives:** normalize hyphens to spaces before the grep (rejected: too clever, and
+  it matches looser text); require a markdown heading (rejected: the plan says grep).
+- **Blast radius if wrong:** trivial. The text only changes when a concern-rule crate
+  appears.
+- **Status:** UNCONFIRMED
+
+## #322 guard: when a marker is stale with several locked versions
+- **Plan:** plans/supply-chain-recertify-322.md (Phase 1 item 3, edge case "two versions")
+- **Assumed:** "fails if the crate is already in `.vetted_fully`" means the marker is
+  stale only when **every** locked version of the crate is fully vetted. If one version
+  is still exempted, the marker is still needed.
+- **Chose:** a marker is stale when every locked version is fully vetted. An unmarked
+  crate needs every locked version fully vetted. Locked versions come from
+  `cargo metadata --locked --all-features`, registry sources only. That is the same
+  feature set cargo-vet resolves.
+- **Alternatives:** stale when any version is fully vetted (rejected: it would force
+  dropping a marker that one version still needs).
+- **Blast radius if wrong:** trivial. Today every Tier A crate has a single locked
+  version.
+- **Status:** UNCONFIRMED
+
+## #322 guard self-tests: a script, not wired into CI
+- **Plan:** plans/supply-chain-recertify-322.md (Phase 1 Tests / Acceptance)
+- **Assumed:** the plan wants the negative tests (a)/(b)/(c) run in scratch store copies
+  and recorded in the PR body. It does not ask for them to run in CI, and it lists no
+  test-script file.
+- **Chose:** added `scripts/test-check-crypto-vet.sh`, which runs locally. It covers the
+  real tree, a clean copy, (a) subtle exempted (`cargo vet` green, guard red), unmarked
+  exempted sha2, (b) stale pending marker, stale DECISIONS marker, (c) missing anchor,
+  present anchor, unknown marker, a crate not in the lock, and failing `cargo vet`.
+  `--with-network` adds the corrupted-tarball check for `vet-facts.sh`. Each case
+  re-sorts its scratch store with `cargo vet fmt`, because `cargo vet --locked` rejects
+  an unformatted store. Nothing was added to CI beyond the guard step.
+- **Alternatives:** add the self-test as a CI step in the `vet` job (about 12 offline
+  `cargo vet` runs). Deferred because the plan does not ask for it. It is a one-line
+  addition if wanted.
+- **Blast radius if wrong:** small. A guard regression would be caught only when someone
+  runs the self-test.
+- **Status:** UNCONFIRMED
+
+## #322 vet-facts: ratio rule vs. the plan's zeroize method
+- **Plan:** plans/supply-chain-recertify-322.md (Policy 2; Context table)
+- **Assumed:** with the exclusions, `scripts/vet-facts.sh zeroize 1.9.0 1.8.2` gives
+  12 files, +574/-194, which is 768 changed lines against 1,061 src lines, or 0.72. That
+  is below 0.75, so the numeric rule implies "delta". The plan decides "full" for zeroize,
+  under the rule's rewrite clause.
+- **Chose:** the script prints the numeric verdict and labels the rewrite clause as a
+  reviewer judgement. It does not encode the plan's per-crate choices. The full `src/`
+  count is `*.rs` lines under `src/`, which reproduces the plan's 1,061, 48,215, and so
+  on. `forbid(unsafe_code)` reports `conditional` for a `cfg_attr` form.
+  ed25519-dalek 3.0.0 has `#![cfg_attr(not(any(test, feature = "batch")), forbid(unsafe_code))]`
+  at `src/lib.rs:246`, not an unconditional forbid as the plan's table says. Phase 3
+  should check the `batch` feature.
+- **Alternatives:** hard-code the plan's method per crate (rejected: the script exists so
+  that facts can be re-derived).
+- **Blast radius if wrong:** small. It affects the Phase 2 and Phase 3 notes only.
+- **Status:** UNCONFIRMED

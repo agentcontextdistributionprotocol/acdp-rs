@@ -776,3 +776,88 @@ Eight assumptions, all reversible. Analyzed by a fresh Opus agent against `main`
 | Verification stage table order | CONFIRMED | Opus | Matches `verify_retrieved` order in `crates/acdp-client/src/verified.rs`. |
 | Runbook history deleted, not archived | CONFIRMED | Opus | `git show 115ce3d:docs/release-runbook.md` resolves; `plans/` is untracked. |
 | Audited crypto versions kept in table | CONFIRMED | Opus | Audited column makes the exemption-only coverage visible; the plan's `0.23.40` grep was the error. Re-certification tracked in #322. |
+
+## #322 supply-chain audit policy (2026-10-04)
+
+Policy for re-certifying the crypto-critical crates of issue #322 (plan
+`plans/supply-chain-recertify-322.md`, Phase 1). Every later #322 audit PR applies it.
+The Tier A set is the 11 crates in `scripts/crypto-critical.txt`: `ed25519-dalek`,
+`curve25519-dalek`, `signature`, `sha2`, `zeroize`, `subtle`, `p256`, `ecdsa`,
+`elliptic-curve`, `rustls`, and `ring`.
+
+**Decision: re-certify, do not formally accept the exemptions.** Every Tier A review is
+feasible; the largest is about 5k lines, or a 5k-line diff. An exemption survives only
+under the concern rule below.
+
+1. **Criteria: built-in `safe-to-deploy`, with no custom criterion.** That means fully
+   reasoning about every `unsafe` block and every powerful import. It does not require a
+   full logic review. **Not claimed:** cryptographic correctness, constant-time
+   behaviour, or side-channel resistance. Every note says so. A `crypto-reviewed`
+   criterion was rejected because we cannot honestly meet it.
+2. **Method rule.** Do a **full** audit (`version = "<locked>"`) when the delta's changed
+   lines are ≥75% of the crate's full `src/` lines. Also do a full audit when the delta
+   crosses a major or pre-1.0-minor rewrite that touches most `unsafe` sites; that is a
+   reviewer judgement. Otherwise do a **delta** audit (`delta = "<audited> -> <locked>"`).
+   Never build a delta on a base we now believe was wrong.
+3. **Notes template.** A multi-line TOML string with these fields: `Scope`; `Source`
+   (the crates.io tarball sha256, equal to the `Cargo.lock` checksum); `unsafe` (count,
+   with a soundness argument per cluster); `asm/SIMD`; `build.rs / proc-macro`;
+   `Powerful imports`; `New deps`; `Advisories` (`cargo deny check advisories` clean on
+   <date>); `Not claimed: cryptographic correctness, constant-time behaviour,
+   side-channel resistance.`; and `Method: Reviewed with Claude (Opus) assistance;
+   worksheet in <PR URL>`. Every factual field must be reproducible with
+   `scripts/vet-facts.sh <crate> <locked> [<base>]`.
+4. **`who` and sign-off.** `who = "Ajit Koti <ajitkoti@zer07labs.com>"`. The `Method:`
+   line is exact. Open the PR as a draft first, so the URL exists before `certify`
+   runs. The per-crate findings worksheet goes in the PR body. **Audit PRs are never
+   auto-merged.** The maintainer posts an approving GitHub review that says they read
+   the worksheet for `<crates>`. `/ship` holds the merge until that review exists, even
+   when CI is green; check with `gh pr view <n> --json reviews`.
+5. **Record command.** Run it non-interactively, with flags verified on cargo-vet 0.10.2:
+   `cargo vet certify <crate> <from> [<to>] --criteria safe-to-deploy --who "…"
+   --notes "$(cat notes.txt)" --accept-all`. Omit `<to>` for a full audit. Then
+   `git diff --stat supply-chain/imports.lock` must be empty. If it is not, check out
+   the file again and confirm `cargo vet --locked` is still green. If it is not green,
+   stop: no new imports are allowed. Then run `cargo vet --locked`. If `certify` edits
+   `config.toml` beyond the target exemption, rerun with `--no-minimize-exemptions`,
+   remove that one exemption by hand, and run `cargo vet fmt`.
+6. **Concern rule.** It applies when a review finds any of these: unsound or unexplained
+   `unsafe`; unexpected network, filesystem, or process access; a build.rs or proc-macro
+   that does more than cfg selection or codegen; obfuscated or vendored binary content;
+   a RUSTSEC hit; or a review that cannot be finished. For such a crate:
+   - Do not certify it.
+   - Keep its exemption, with `notes = "KEPT EXEMPT (#322): <reason>; see DECISIONS.md
+     '#322 <crate>'"`.
+   - Add a DECISIONS.md entry tagged `Needs: Fable decision`. It states the concern, the
+     evidence (`file:line`), and the options: accept the exemption, pin an older audited
+     version, or report upstream. It must contain the anchor text `322-<crate>`
+     verbatim.
+   - Change the guard marker to `allow-exempt:DECISIONS#322-<crate>`.
+   - The phase still closes, with that crate listed as an exception.
+7. **Guard and marker semantics.** The `cargo-vet` required check runs
+   `scripts/check-crypto-vet.sh` after `cargo vet --locked`. The guard reads
+   `cargo vet --locked --output-format=json`, plus the locked versions from
+   `cargo metadata --locked --all-features`.
+   - **No marker:** every locked version must be in `vetted_fully`.
+   - **`allow-exempt:#322-pending`:** passes while the crate is still exempted.
+   - **`allow-exempt:DECISIONS#<anchor>`:** passes only if `<anchor>` appears verbatim
+     in DECISIONS.md.
+   - Both markers fail as **stale** once every locked version is fully vetted, which
+     forces each phase to remove its own markers.
+   - Any other marker fails, as does a listed crate that is not in `Cargo.lock`.
+   - The nine pending exemptions also carry
+     `notes = "allow-exempt:#322-pending (issue #322)"` in `supply-chain/config.toml`, for
+     human readers only. The guard does not read them.
+   - The list lives in `scripts/`, because cargo-vet rewrites `supply-chain/` and drops
+     its comments.
+   - Self-tests are in `scripts/test-check-crypto-vet.sh`.
+   - Rejected alternatives: a cargo-vet `[policy]` knob (none exists); failing on any
+     exemption (that would block on the ~250-crate long tail); and TOML comments as
+     markers (cargo-vet drops them).
+8. **Dependabot.** A `crypto` group, listed first in the root `cargo` entry, holds the
+   direct crypto deps only: `ed25519-dalek`, `p256`, `sha2`, `zeroize`, and `rustls`.
+   `allow: dependency-type: all` is per ecosystem entry, so it would flood PRs for the
+   whole transitive graph. Transitive Tier A crates move only through a lock rewrite,
+   and the guard catches that.
+
+**Status:** DECIDED (maintainer-settled policy, recorded in Phase 1).

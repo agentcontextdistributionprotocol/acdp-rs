@@ -7,9 +7,20 @@
 
 use acdp_primitives::error::AcdpError;
 use base64::{engine::general_purpose::STANDARD, Engine};
-use ed25519_dalek::{Verifier as _, VerifyingKey};
+use ed25519_dalek::VerifyingKey;
 
 /// Verify an Ed25519 signature without DID resolution.
+///
+/// Uses **strict** verification (RFC-ACDP-0001 §5.10, conformance vector
+/// `sig-004`): besides rejecting a non-canonical `s` (`s >= L`), it rejects
+/// a small-order (weak) public key `A` and a small-order nonce point `R`.
+/// A non-strict (cofactorless-only) verifier accepts e.g. identity `A`,
+/// identity `R`, `s = 0` for **every** message. Honest keys are never
+/// small-order, so this changes nothing for honestly produced signatures.
+///
+/// This is the single Ed25519 verification site in the workspace; every
+/// higher-level path (publish, did:key, historical, lifecycle, receipt,
+/// log checkpoint, witness cosignature) reaches it.
 ///
 /// Useful for verifying the golden test vector with a known public key.
 pub fn verify_ed25519(
@@ -27,7 +38,7 @@ pub fn verify_ed25519(
     let sig = ed25519_dalek::Signature::from_slice(&sig_bytes)
         .map_err(|e| AcdpError::InvalidSignature(format!("sig parse: {e}")))?;
 
-    key.verify(message.as_bytes(), &sig)
+    key.verify_strict(message.as_bytes(), &sig)
         .map_err(|_| AcdpError::InvalidSignature("signature verification failed".into()))
 }
 
@@ -150,6 +161,76 @@ mod tests {
         let short = STANDARD.encode([1u8, 2, 3]);
         let err = verify_ed25519(&pub_bytes, &short, "sha256:x").unwrap_err();
         assert!(matches!(err, AcdpError::InvalidSignature(_)), "got {err:?}");
+    }
+
+    // ── strict Ed25519 verification (RFC-ACDP-0001 §5.10, sig-004) ─────────
+
+    /// The eight small-order Edwards25519 encodings listed in sig-004.
+    const SMALL_ORDER_HEX: [&str; 8] = [
+        "0100000000000000000000000000000000000000000000000000000000000000",
+        "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "0000000000000000000000000000000000000000000000000000000000000080",
+        "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+        "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+        "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+        "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+    ];
+
+    fn small_order(i: usize) -> [u8; 32] {
+        hex::decode(SMALL_ORDER_HEX[i]).unwrap().try_into().unwrap()
+    }
+
+    /// `R || s` with `s = 0`.
+    fn sig_r_s0(r: &[u8; 32]) -> String {
+        let mut sig = [0u8; 64];
+        sig[..32].copy_from_slice(r);
+        STANDARD.encode(sig)
+    }
+
+    #[test]
+    fn verify_ed25519_is_strict_identity_forgery_rejected() {
+        // sig-004 vector: identity A, identity R, s = 0. The cofactorless
+        // equation [0]B = R + [k]A holds for every message, so the
+        // non-strict `verify` accepts this (the positive control lives in
+        // tests/conformance.rs::sig_004_*); `verify_strict` MUST NOT.
+        let identity = small_order(0);
+        let forged = sig_r_s0(&identity);
+        for msg in [
+            "sha256:ccd2641662848a5168095e629c2c90336441bc0d61464e3d8066ea3c147fbaea",
+            "sha256:anything-at-all",
+        ] {
+            assert!(matches!(
+                verify_ed25519(&identity, &forged, msg),
+                Err(AcdpError::InvalidSignature(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn verify_ed25519_rejects_every_small_order_key_and_r() {
+        let honest_pub: [u8; 32] = hex::decode(TEST_PUB_HEX).unwrap().try_into().unwrap();
+        for i in 0..SMALL_ORDER_HEX.len() {
+            let p = small_order(i);
+            for j in 0..SMALL_ORDER_HEX.len() {
+                // Small-order public key, small-order R, s = 0.
+                assert!(
+                    matches!(
+                        verify_ed25519(&p, &sig_r_s0(&small_order(j)), "sha256:x"),
+                        Err(AcdpError::InvalidSignature(_))
+                    ),
+                    "small-order A #{i} with small-order R #{j} MUST be rejected"
+                );
+            }
+            // Honest key, small-order R, s = 0.
+            assert!(
+                matches!(
+                    verify_ed25519(&honest_pub, &sig_r_s0(&p), "sha256:x"),
+                    Err(AcdpError::InvalidSignature(_))
+                ),
+                "small-order R #{i} MUST be rejected under an honest key"
+            );
+        }
     }
 
     // ── verify_ecdsa_p256 error branches ───────────────────────────────────

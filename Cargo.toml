@@ -134,6 +134,13 @@ required-features = ["client", "server", "test-transport"]
 name              = "verify_algorithm"
 path              = "tests/verify_algorithm.rs"
 required-features = ["client", "test-transport"]
+
+# Strict Ed25519 (RFC-ACDP-0001 §5.10, sig-004) at every verification
+# entry point; the did:web paths reuse the TLS DID-document harness.
+[[test]]
+name              = "ed25519_strict"
+path              = "tests/ed25519_strict.rs"
+required-features = ["client", "test-transport"]
 # Criterion benchmarks for the crypto / JCS / SSRF hot paths.
 # `harness = false` hands `main` to criterion instead of libtest.
 [[bench]]

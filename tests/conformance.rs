@@ -2506,6 +2506,118 @@ fn sig_003_did_key_golden_fixture() {
     acdp::crypto::verify_publish_request_signature_offline(&req).unwrap();
 }
 
+/// sig-004 — strict Ed25519 negative vector (RFC-ACDP-0001 §5.10,
+/// acdp-rs#342). Executed, not just parsed: every vector MUST be rejected
+/// with `invalid_signature` (positive control: the cofactorless equation
+/// does hold, i.e. a non-strict verifier would accept it), and each of the
+/// eight listed small-order encodings is rejected both as the public key
+/// `A` and as the nonce point `R` under an honest key.
+#[test]
+fn sig_004_ed25519_strict_negative_fixture() {
+    use acdp::crypto::verify_ed25519;
+    use base64::{engine::general_purpose::STANDARD, Engine};
+
+    let Some(root) = spec_root() else { return };
+    let path = root.join("schemas/conformance/sig-004-ed25519-strict-negative.json");
+    if fixture_missing(&path) {
+        return;
+    }
+    let v = read_json(&path);
+    let hex32 = |s: &serde_json::Value| -> [u8; 32] {
+        hex::decode(s.as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap()
+    };
+
+    let vectors = v["vectors"].as_array().unwrap();
+    assert!(!vectors.is_empty(), "sig-004: no vectors");
+    for vector in vectors {
+        let name = vector["name"].as_str().unwrap();
+        let expected = &vector["expected"];
+        assert_eq!(vector["negative"], true, "sig-004 '{name}'");
+        assert_eq!(expected["strict_result"], "reject", "sig-004 '{name}'");
+        assert_eq!(expected["error"], "invalid_signature", "sig-004 '{name}'");
+
+        let pk = hex32(&vector["public_key_hex"]);
+        let sig_bytes = hex::decode(vector["signature_value_hex"].as_str().unwrap()).unwrap();
+        let sig_b64 = STANDARD.encode(&sig_bytes);
+        let input = vector["signature_input"].as_str().unwrap();
+
+        // Positive control: the loose (cofactorless) equation holds, so a
+        // non-strict verifier accepts this — the vector is a real forgery.
+        if expected["loose_equation_holds"] == true {
+            let key = ed25519_dalek::VerifyingKey::from_bytes(&pk).unwrap();
+            let sig = ed25519_dalek::Signature::from_slice(&sig_bytes).unwrap();
+            assert!(
+                ed25519_dalek::Verifier::verify(&key, input.as_bytes(), &sig).is_ok(),
+                "sig-004 '{name}': control — non-strict verify should accept"
+            );
+        }
+
+        // The ACDP verifier MUST reject it, for the fixture's input and
+        // for any other message.
+        for msg in [input, "sha256:some-other-message"] {
+            let err = verify_ed25519(&pk, &sig_b64, msg).expect_err("sig-004 MUST reject");
+            assert!(
+                matches!(err, acdp::AcdpError::InvalidSignature(_)),
+                "sig-004 '{name}': expected invalid_signature, got {err:?}"
+            );
+        }
+
+        // Same verdict through the did:key envelope path.
+        let did = acdp::did::key::did_key_from_ed25519(&pk);
+        let signature = acdp::types::Signature {
+            algorithm: "ed25519".into(),
+            key_id: acdp::did::key::did_key_url(&did).unwrap(),
+            value: sig_b64.clone(),
+        };
+        let err = acdp::verify::verify_did_key_envelope(
+            &signature,
+            &acdp::types::primitives::ContentHash(input.into()),
+        )
+        .expect_err("sig-004 MUST reject via did:key");
+        assert!(
+            matches!(err, acdp::AcdpError::InvalidSignature(_)),
+            "sig-004 '{name}' (did:key): got {err:?}"
+        );
+    }
+
+    // The eight small-order encodings: rejected as A (with every listed
+    // encoding as R, s = 0) and as R under an honest key.
+    let points = v["small_order_points"].as_array().unwrap();
+    assert_eq!(points.len(), 8, "sig-004 lists the 8 small-order encodings");
+    let honest = acdp::crypto::SigningKey::from_bytes(&[0u8; 32]).verifying_key_bytes();
+    let r_s0 = |r: &[u8; 32]| {
+        let mut sig = [0u8; 64];
+        sig[..32].copy_from_slice(r);
+        STANDARD.encode(sig)
+    };
+    for a in points {
+        let a_bytes = hex32(&a["encoding_hex"]);
+        for r in points {
+            let r_bytes = hex32(&r["encoding_hex"]);
+            assert!(
+                matches!(
+                    verify_ed25519(&a_bytes, &r_s0(&r_bytes), "sha256:x"),
+                    Err(acdp::AcdpError::InvalidSignature(_))
+                ),
+                "sig-004: small-order A {} / R {} MUST be rejected",
+                a["encoding_hex"],
+                r["encoding_hex"]
+            );
+        }
+        assert!(
+            matches!(
+                verify_ed25519(&honest, &r_s0(&a_bytes), "sha256:x"),
+                Err(acdp::AcdpError::InvalidSignature(_))
+            ),
+            "sig-004: small-order R {} MUST be rejected under an honest key",
+            a["encoding_hex"]
+        );
+    }
+}
+
 /// fp-001 — key-fingerprint encoding vectors, one per algorithm
 /// (RFC-ACDP-0010 §6).
 #[test]

@@ -12,10 +12,18 @@
 #   allow-exempt:#322-pending         re-certification still in progress (#322);
 #                                     passes while exempted, FAILS once the crate
 #                                     is fully vetted ("stale marker -- remove it").
-#   allow-exempt:DECISIONS#322-<crate>  kept exempt under the #322 concern rule;
+#                                     #322 is complete: no line uses it any more,
+#                                     and a new use needs a DECISIONS.md entry.
+#   allow-exempt:DECISIONS#322-<crate>@<version>
+#                                     kept exempt under the #322 concern rule;
 #                                     the anchor must be exactly 322-<crate> and
 #                                     appear as a whole token in DECISIONS.md;
-#                                     same stale-marker check.
+#                                     @<version> is required and pins the one
+#                                     exempted version: the guard FAILS if a
+#                                     locked-but-unaudited version or a
+#                                     config.toml exemption differs from it
+#                                     (re-audit, or update the DECISIONS entry
+#                                     and the marker); same stale-marker check.
 # Any other marker fails the guard. A line whose first non-blank character is
 # `#` is a comment, as is anything after whitespace followed by `#`.
 #
@@ -27,10 +35,10 @@ ed25519-dalek
 curve25519-dalek
 signature
 sha2
-zeroize           allow-exempt:DECISIONS#322-zeroize
+zeroize           allow-exempt:DECISIONS#322-zeroize@1.9.0
 subtle
 p256
 ecdsa
 elliptic-curve
-rustls            allow-exempt:#322-pending
+rustls
 ring

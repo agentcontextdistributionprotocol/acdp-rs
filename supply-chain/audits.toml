@@ -133,6 +133,25 @@ criteria = "safe-to-deploy"
 version = "0.23.40"
 notes = "Canonical rustls TLS stack (github.com/rustls/rustls) providing the HTTPS transport for WebResolver/RegistryClient (reqwest+rustls, RFC-ACDP-0008 HTTPS-only). Reviewed 0.23.40: memory-safe TLS in Rust, unsafe limited to vetted crypto providers (ring/aws-lc-rs); actively maintained, ISRG-backed. Latest 0.23.x; cargo audit clean 2026-07-05."
 
+[[audits.rustls]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+delta = "0.23.40 -> 0.23.45"
+notes = """
+Scope: delta 0.23.40 -> 0.23.45 (40 files, +732/-135 per scripts/vet-facts.sh; 867 changed / 48215 src lines = 0.02, so delta per the #322 method rule); every hunk of the 1952-line diff read. Base 0.23.40 spot-checked: same forbid(unsafe_code), byte-identical build.rs.
+Source: crates.io tarball sha256 0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634 == Cargo.lock checksum (base 0.23.40 ef86cd5876211988985292b91c96a8f2d298df24e75989a43a3c73f2d4d8168b == crates.io index cksum and this repo's pre-8c7a21b Cargo.lock).
+unsafe: 0 sites; #![forbid(unsafe_code, unused_must_use)] unconditional at src/lib.rs:332 (the one plain-word hit is prose, src/manual/features.rs:75).
+asm/SIMD: none (crypto is in the ring / aws-lc-rs providers).
+build.rs / proc-macro: build.rs unchanged (13 lines): emits cargo:rustc-cfg=read_buf only with the read_buf feature on nightly; no fs/network/env. Not a proc-macro.
+Powerful imports: src/key_log_file.rs reads SSLKEYLOGFILE (std::env::var_os) and appends key material via std::fs::OpenOptions; opt-in only via ClientConfig::key_log (builder default NoKeyLog, src/client/builder.rs:178); reqwest 0.12.28 / hyper-rustls 0.27.9 never set key_log and ACDP never constructs KeyLogFile, so it is inert in ACDP. Delta hardens it (unix create mode 0o600). std::net/std::fs/SystemTime elsewhere are doc/test-only; all include_bytes! are test-only and their targets are excluded from the package.
+ACDP build: normal graph enables rustls features ring, std, tls12 (reqwest rustls-tls -> ring provider fallback; ALL_VERSIONS = TLS 1.3 + 1.2; logging off). aws-lc-rs only in the dev graph (TLS test harness). py/node binding locks list 0.23.45 (same checksum) but do not compile it; wasm binding has no rustls.
+Changes read: RUSTSEC-2026-0285 fix (deframer is_aligned now = no pending handshake data; conn.rs recomputes aligned_handshake per taken message; key changes fail closed via check_aligned_handshake); ServerHello suite must be one offered; Protocol-aware version/suite checks (QUIC TLS 1.3 only); SignatureScheme::algorithm -> Option with fail-closed callers incl. webpki/verify.rs TLS 1.2 signature check; ECH-reject authenticates outer public_name (ECH unused by ACDP); RFC 9149 ticket_request (off by default); server HRR PSK/suite checks; aws-lc-rs ML-DSA (dev-only for ACDP); Zeroizing around load_private_key DER; checked_sub/saturating_sub/saturating_mul replace underflow/overflow (ticketer, binders, ticket age); debug-only PayloadU24 asserts; empty OCSP rejected. Client early data stays off (reqwest sets it only under http3, unused).
+Zeroize: new Zeroizing<PrivateKeyDer> targets initialized DER bytes; rustls is not built into the wasm binding (the only artifact on zeroize's non-asm fallback), so zeroize 1.9.0's Z-1 (DECISIONS 322-zeroize, still exempt) is unreachable via rustls.
+New deps: none (lock dependency set identical); requirement floors aws-lc-rs 1.14 -> 1.18 (optional) and rustls-webpki 0.103.5 -> 0.103.14 (locked 0.103.15). Tier B rustls-webpki, rustls-pki-types, hyper-rustls, tokio-rustls, webpki-roots, untrusted, once_cell still exempted.
+Advisories: cargo deny check advisories clean on 2026-10-04 (RUSTSEC-2026-0285 patched >= 0.23.45).
+Not claimed: TLS protocol correctness (including completeness of the RUSTSEC-2026-0285 fix), certificate-validation correctness, cryptographic correctness, constant-time behaviour, side-channel resistance.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/rustls-0.23.45.md (issue #322 Phase 5 PR)."""
+
 [[audits.sha2]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"
 criteria = "safe-to-deploy"

@@ -9,7 +9,8 @@ name: Dependabot auto-merge
 #
 # Scope: patch and minor updates only. Major bumps are left for a human
 # to review (they are the ones most likely to break the build in ways CI
-# can't catch, e.g. behavioural changes within a green build).
+# can't catch, e.g. behavioural changes within a green build). PRs from
+# the `crypto` Dependabot group are never auto-merged (see the step below).
 #
 # Requires: repo setting "Allow auto-merge" enabled, and branch
 # protection on `main` with required status checks (both configured
@@ -31,8 +32,11 @@ jobs:
         id: meta
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
 
-      - name: Enable auto-merge (patch & minor only)
-        if: ${{ steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor' }}
+      # Never for the `crypto` group (.github/dependabot.yml, issue #322): a
+      # crypto-critical bump needs a real audit plus the maintainer's
+      # approving review, so a green CI run must not merge it.
+      - name: Enable auto-merge (patch & minor only, not the crypto group)
+        if: ${{ (steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor') && steps.meta.outputs.dependency-group != 'crypto' }}
         run: gh pr merge --auto --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}

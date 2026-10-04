@@ -149,42 +149,63 @@ criteria = "safe-to-deploy"
 version = "1.9.0"
 notes = "FAKE audit injected by scripts/test-check-crypto-vet.sh (scratch copy only)."
 EOF
-set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize"
+set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize@1.9.0"
 expect_fail "$d" zeroize "stale marker"
 
 # (c) the plan's case: a DECISIONS marker naming a nonexistent anchor.
 d=$(new_case c-nonexistent-anchor)
-set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#nonexistent"
+set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#nonexistent@1.9.0"
 expect_fail "$d" zeroize "must name anchor '322-zeroize' exactly"
 
 # (c1) the anchor is the right shape but DECISIONS.md lacks it.
 d=$(new_case c1-anchor-absent)
 drop_anchor "$d/DECISIONS.md" "322-zeroize"
-set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize"
+set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize@1.9.0"
 expect_fail "$d" zeroize "does not appear in"
 
 # (c3) a prefix anchor (it would match as a substring) is rejected.
 d=$(new_case c3-prefix-anchor)
-set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322"
+set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322@1.9.0"
 expect_fail "$d" zeroize "must name anchor '322-zeroize' exactly"
 
 # (c4) another crate's anchor is rejected even though DECISIONS.md has it.
 d=$(new_case c4-other-crate-anchor)
-set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-sha2"
+set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-sha2@1.9.0"
 printf '\nAnchor: 322-sha2\n' >>"$d/DECISIONS.md"
 expect_fail "$d" zeroize "must name anchor '322-zeroize' exactly"
 
 # (c5) DECISIONS.md has only a longer token (322-zeroize-extra): no match.
 d=$(new_case c5-longer-token-only)
 drop_anchor "$d/DECISIONS.md" "322-zeroize"
-set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize"
+set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize@1.9.0"
 printf '\nAnchor: 322-zeroize-extra\n' >>"$d/DECISIONS.md"
 expect_fail "$d" zeroize "does not appear in"
 
 # (c2) a DECISIONS marker whose anchor exists passes.
 d=$(new_case c2-present-anchor)
-set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize"
+set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize@1.9.0"
 printf '\nAnchor: 322-zeroize\n' >>"$d/DECISIONS.md"
+expect_pass "$d"
+
+# (g) a DECISIONS marker without @<version> is rejected.
+d=$(new_case g-missing-version)
+set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize"
+expect_fail "$d" zeroize "must pin the exempted version"
+
+# (g2) the pinned version differs from the locked (exempted) version, as after
+#      a bump whose exemption was moved instead of audited.
+d=$(new_case g2-locked-version-mismatch)
+set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize@1.8.2"
+expect_fail "$d" zeroize "re-audit zeroize 1.9.0, or update the DECISIONS.md '322-zeroize' entry"
+
+# (g3) config.toml exempts a version other than the pinned one.
+d=$(new_case g3-exempted-version-mismatch)
+printf '\n[[exemptions.zeroize]]\nversion = "1.9.1"\ncriteria = "safe-to-deploy"\n' >>"$d/store/config.toml"
+expect_fail "$d" zeroize "config.toml exempts version 1.9.1"
+
+# (g4) a matching pinned version passes (the real list's form).
+d=$(new_case g4-version-match)
+set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize@1.9.0"
 expect_pass "$d"
 
 # (d) an unknown marker.

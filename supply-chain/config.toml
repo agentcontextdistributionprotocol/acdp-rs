@@ -204,10 +204,6 @@ criteria = "safe-to-run"
 version = "0.7.5"
 criteria = "safe-to-deploy"
 
-[[exemptions.ctutils]]
-version = "0.4.2"
-criteria = "safe-to-deploy"
-
 [[exemptions.curve25519-dalek-derive]]
 version = "0.1.1"
 criteria = "safe-to-deploy"
@@ -556,14 +552,6 @@ criteria = "safe-to-deploy"
 version = "0.9.0"
 criteria = "safe-to-run"
 
-[[exemptions.rand_core]]
-version = "0.9.5"
-criteria = "safe-to-run"
-
-[[exemptions.rand_core]]
-version = "0.10.1"
-criteria = "safe-to-deploy"
-
 [[exemptions.rand_pcg]]
 version = "0.10.2"
 criteria = "safe-to-deploy"
@@ -776,10 +764,6 @@ criteria = "safe-to-deploy"
 version = "0.2.5"
 criteria = "safe-to-deploy"
 
-[[exemptions.typenum]]
-version = "1.20.1"
-criteria = "safe-to-deploy"
-
 [[exemptions.unicode-ident]]
 version = "1.0.24"
 criteria = "safe-to-deploy"
@@ -834,10 +818,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.web-time]]
 version = "1.1.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.webpki-roots]]
-version = "1.0.9"
 criteria = "safe-to-deploy"
 
 [[exemptions.winapi-i686-pc-windows-gnu]]

@@ -364,16 +364,17 @@ have. Refresh them with `cargo vet` (updates `imports.lock`).
 
 ### The crypto-critical set
 
-The twenty-nine crates that implement or underpin ACDP's signature and TLS
+The thirty-three crates that implement or underpin ACDP's signature and TLS
 security are listed in
 [`scripts/crypto-critical.txt`](../scripts/crypto-critical.txt): the eleven
 Tier A crates, which issue #322 (completed 2026-10-04) re-certified at the
-versions in `Cargo.lock`, and the eighteen Tier B support crates certified so far
+versions in `Cargo.lock`, and the twenty-two Tier B support crates certified so far
 by issue #339 (batch B1: `wnaf`, `ff`, `spki`, `crypto-common`, `zeroize_derive`,
 `ed25519`; batch B2: `hmac`, `rfc6979`, `pkcs8`, `sec1`, `primefield`,
 `digest`; batch B3: `untrusted`, `cpubits`, `hyper-rustls`, `group`,
-`tokio-rustls`, `primeorder`). **Twenty-eight of the twenty-nine are covered by
-our own audit at the locked version. `zeroize` is the one deliberate exception:** it stays exempt
+`tokio-rustls`, `primeorder`; batch B4: `rand_core`, `ctutils`, `webpki-roots`,
+`typenum`). **Thirty-two of the thirty-three are covered by our own audit at
+every locked version. `zeroize` is the one deliberate exception:** it stays exempt
 under the #322 concern rule. The per-crate review worksheets are in
 [`supply-chain/worksheets/`](../supply-chain/worksheets/), and the notes are in
 `supply-chain/audits.toml`.
@@ -419,6 +420,10 @@ latest release, and no open advisory.
 | `group` | 0.14.0 | 0.14.0 | audit (full, 2026-10-04, #339 B3) | zkcrypto | Elliptic-curve group traits under the P-256 stack |
 | `tokio-rustls` | 0.26.4 | 0.26.4 | audit (full, 2026-10-04, #339 B3; discretion note on test-only PEM fixtures) | rustls | Async TLS stream adapter under hyper-rustls and reqwest |
 | `primeorder` | 0.14.0 | 0.14.0 | audit (full, 2026-10-04, #339 B3) | RustCrypto | Generic prime-order curve arithmetic under p256 (sign, verify, SEC1 key decoding) |
+| `rand_core` | 0.10.1, 0.9.5 | 0.10.1, 0.9.5 | audit (full, 2026-10-04, #339 B4; 0.9.5 is dev-only and now meets `safe-to-deploy`) | rust-random | RNG traits; `UnwrapErr(getrandom::SysRng)` in key generation (0.10.1); proptest's `rand` (0.9.5) |
+| `ctutils` | 0.4.2 | 0.4.2 | audit (full, 2026-10-04, #339 B4; constant-time behaviour not claimed) | RustCrypto | Constant-time selection/equality helpers under digest, sec1, crypto-bigint |
+| `webpki-roots` | 1.0.9 | 1.0.9 | audit (full, 2026-10-04, #339 B4; table checked against its embedded certificates; root-set correctness not claimed) | rustls | Default trust anchors for every ACDP HTTPS client (reqwest `rustls-tls`) |
+| `typenum` | 1.20.1 | 1.20.1 | audit (full, 2026-10-04, #339 B4; generated files shape-checked, impl headers sampled) | paholg | Type-level integers under hybrid-array |
 
 **`zeroize` 1.9.0 is exempt, not audited.** Its new safe
 `optimization_barrier` reads a possibly-uninitialized byte on targets without
@@ -434,17 +439,17 @@ covered only the eleven Tier A crates. Of the 35 support crates (Tier B) on the
 same signing, hashing, key generation, and TLS paths, issue #339 batch B1
 certified six (`ed25519`, `crypto-common`, `zeroize_derive`, `spki`, `ff`,
 `wnaf`), batch B2 six more (`hmac`, `rfc6979`, `pkcs8`, `sec1`,
-`primefield`, `digest`), and batch B3 six more (`untrusted`, `cpubits`,
-`hyper-rustls`, `group`, `tokio-rustls`, `primeorder`; table above), and added
-them to the guard list. The remaining 17 are covered by `[[exemptions.*]]`
-entries only, and are not on the guard list:
+`primefield`, `digest`), batch B3 six more (`untrusted`, `cpubits`,
+`hyper-rustls`, `group`, `tokio-rustls`, `primeorder`), and batch B4 four more
+(`rand_core` at both locked versions, `ctutils`, `webpki-roots`, `typenum`;
+table above), and added them to the guard list. The remaining 13 are covered by
+`[[exemptions.*]]` entries only, and are not on the guard list:
 
 - **RustCrypto support:** `curve25519-dalek-derive`, `block-buffer`,
-  `cpufeatures`, `hybrid-array`, `ctutils`, `cmov`, `base16ct`, `base64ct`,
-  `const-oid`, `der`, `crypto-bigint`, `typenum`.
-- **Key generation:** `rand_core` (0.9.5, 0.10.1) and `getrandom` (0.2.17,
-  0.3.4, 0.4.3).
-- **TLS stack:** `rustls-webpki`, `rustls-pki-types`, `webpki-roots`.
+  `cpufeatures`, `hybrid-array`, `cmov`, `base16ct`, `base64ct`,
+  `const-oid`, `der`, `crypto-bigint`.
+- **Key generation:** `getrandom` (0.2.17, 0.3.4, 0.4.3).
+- **TLS stack:** `rustls-webpki`, `rustls-pki-types`.
 
 Certifying them in batches (#339), and adding each one to the guard list as it
 is certified, is in progress.
@@ -539,8 +544,8 @@ fails when a listed crate is exempted or only partially vetted, so moving an
 exemption to a bumped version no longer turns CI green.
 
 The guard is now **enforcing**: since #322 closed, every listed crate except
-`zeroize` carries no marker (twenty-eight of the twenty-nine, including the
-eighteen Tier B crates added by #339 batches B1, B2 and B3). The list file documents
+`zeroize` carries no marker (thirty-two of the thirty-three, including the
+twenty-two Tier B crates added by #339 batches B1, B2, B3 and B4). The list file documents
 two markers:
 
 - `allow-exempt:DECISIONS#322-<crate>@<version>` is for a crate kept exempt

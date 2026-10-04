@@ -965,3 +965,27 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
 - **Chose:** stages 3 (receipt), 4 (revocation), 5 (key resolution + signature), 6 (status).
 - **Blast radius if wrong:** trivial.
 - **Status:** UNCONFIRMED
+
+## Release-runbook history deleted, not archived
+- **Plan:** plans/docs-refresh-2026-10.md (Phase 4 item 7)
+- **Assumed:** `plans/` is gitignored (`git ls-files plans` is empty), so moving the
+  0.8.x history to `plans/archive/release-runbook-0.8.x-history.md` would leave a pointer to
+  a file no reader of the repo can open.
+- **Chose:** deleted the history sections (2026-08-29 state table, 0.8.1 retroactive-tag
+  plan, RS-8 0.8.3 release, SPEC-11 coordination note) from `docs/release-runbook.md`; the
+  pointer line cites `git show 115ce3d:docs/release-runbook.md`. The generally useful
+  procedure (pause workflows before a manual tag push; release-state check commands) was
+  kept in short "Manual tag push" / "Checking release state" sections. Existing pointers to
+  untracked `plans/archive/issue-*` files were replaced with the issue/PR numbers.
+- **Alternatives:** write the archive file locally (rejected: untracked, so a dead pointer).
+- **Blast radius if wrong:** trivial — the text is one `git show` away.
+- **Status:** UNCONFIRMED
+
+## Audited crypto versions kept in the supply-chain table
+- **Plan:** plans/docs-refresh-2026-10.md (Phase 4 item 1 vs. its grep)
+- **Assumed:** item 1 asks for the audited version next to the locked version, which
+  conflicts with the Phase 4 grep expecting `0.23.40` to be absent. The table's
+  "Audited" column legitimately lists `rustls` 0.23.40.
+- **Chose:** keep the audited column (item 1 wins); the grep's single hit is that cell.
+- **Blast radius if wrong:** trivial.
+- **Status:** UNCONFIRMED

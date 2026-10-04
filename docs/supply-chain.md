@@ -26,7 +26,7 @@ Four layers, each independently verifiable:
 Every publishable artifact this repo produces carries provenance minted from the
 release workflow's OIDC identity. The mechanism differs per ecosystem.
 
-### npm (`acdp` Node SDK)
+### npm (`@agentcontextdistributionprotocol/acdp` Node SDK)
 
 Published by [`bindings-release.yml`](../.github/workflows/bindings-release.yml)
 with **npm provenance** (`npm publish --provenance`, plus
@@ -37,7 +37,7 @@ commit.
 
 ```bash
 # The registry shows a "Provenance" panel on the package page; from the CLI:
-npm view acdp --json | jq '.dist.attestations'      # provenance present?
+npm view @agentcontextdistributionprotocol/acdp --json | jq '.dist.attestations'   # provenance present?
 npm audit signatures                                  # verify install-time
 ```
 
@@ -47,7 +47,7 @@ Actions"** badge with the source repo, commit, and workflow file.
 > First-release note: npm provenance requires **npm ≥ 9.5** (the release runner
 > uses Node 20 → npm ≥ 10, so this is satisfied) and a public package. On the
 > *first* provenance-enabled publish, confirm the badge appears on
-> `https://www.npmjs.com/package/acdp` and that `npm audit signatures` passes
+> `https://www.npmjs.com/package/@agentcontextdistributionprotocol/acdp` and that `npm audit signatures` passes
 > for a fresh install — this is the one step that can only be checked against
 > the live registry.
 
@@ -108,7 +108,7 @@ even if you obtained it outside the registry.
 
 ```bash
 # Verify a downloaded wheel / sdist / .node against this repo:
-gh attestation verify ./acdp-0.3.0-cp39-abi3-manylinux_2_17_x86_64.whl \
+gh attestation verify ./acdp-<version>-cp39-abi3-manylinux_2_17_x86_64.whl \
     --repo agentcontextdistributionprotocol/acdp-rs
 
 gh attestation verify ./acdp.linux-x64-gnu.node \
@@ -198,14 +198,23 @@ rather than a semver, because that is what identifies the pinned behavior.
 | `PyO3/maturin-action` | `e83996d129638aa358a18fbd1dfb82f0b0fb5d3b` | v1.51.0 |
 | `pypa/gh-action-pypi-publish` | `dc37677b2e1c63e2034f94d8a5b11f265b73ba33` | release/v1 (v1.14.0) |
 | `peter-evans/repository-dispatch` | `28959ce8df70de7be546dd1250a005dd32156697` | v4.0.1 |
-| `MarcoIeni/release-plz-action` | `aec534bbd8631793b9b3b8f1ee6cd886c322e17f` | v0.5.133 |
-| `codecov/codecov-action` | `fb8b3582c8e4def4969c97caa2f19720cb33a72f` | v7.0.0 |
+| `MarcoIeni/release-plz-action` | `b8d6b54b02889ff2ae2bb82e8b57c3a8fc1683a5` | v0.5.139 |
+| `codecov/codecov-action` | `303a32d7a59b442fa8d48b6a1cc6825c09c847a5` | v7.1.1 |
 | `dependabot/fetch-metadata` | `25dd0e34f4fe68f24cc83900b1fe3fe149efef98` | v3.1.0 |
 
 **First-party (major tag by policy):** `actions/checkout@v7`,
 `actions/setup-node@v7`, `actions/setup-python@v7`, `actions/upload-artifact@v7`,
 `actions/download-artifact@v8`, `actions/attest-build-provenance@v4`,
 `actions/create-github-app-token@v3`.
+
+**Org-internal reusable workflows (major tag):**
+`agentcontextdistributionprotocol/acdp-ci/.github/workflows/auto-merge.yml@v1` and
+`agentcontextdistributionprotocol/acdp-ci/.github/workflows/bump-spec-ref.yml@v1`.
+The `v1` tag is moved only by the acdp-ci release procedure; see acdp-ci's
+[`DELIVERY-STANDARD.md` → Releasing `acdp-ci` (the `v1` tag)](https://github.com/agentcontextdistributionprotocol/acdp-ci/blob/main/DELIVERY-STANDARD.md#releasing-acdp-ci-the-v1-tag).
+
+To re-check this inventory, every row must match
+`grep -ho "uses: [^ ]*@[^ ]*" .github/workflows/*.yml | sort -u`.
 
 ### Pinned-tool inventory (`taiki-e/install-action`)
 
@@ -296,6 +305,13 @@ its own PR-triggered build check), not a required status check on `main`.
 There is no available upstream fix to track (no manifest exists to
 request).
 
+### Binding toolchain pins
+
+The language-binding builds also pin `maturin`/`pytest`, `@napi-rs/cli`, the wasm
+release `rustc`, and `wasm-pack`, and build against committed lockfiles with
+`--locked`. The table is in
+[Language bindings → Pinned binding toolchain](bindings.md#pinned-binding-toolchain).
+
 ### Updating a pinned Action
 
 Resolve the new SHA from the tag and update both the SHA and the comment:
@@ -343,27 +359,34 @@ These cover a large fraction of the common ecosystem (serde, tokio, hyper,
 rustls internals, …) so we don't re-audit what better-resourced teams already
 have. Refresh them with `cargo vet` (updates `imports.lock`).
 
-### The crypto-critical set — audited by us
+### The crypto-critical set
 
 The crates that implement or underpin ACDP's signature and TLS security were
-inspected and **certified locally** (`safe-to-deploy`), not merely exempted.
-The inspection criteria for each: canonical upstream source, latest compatible
-release, and no open RUSTSEC advisory (verified locally with `cargo audit`, 2026-07-05). See
-`supply-chain/audits.toml` for the full per-crate notes.
+inspected and certified locally (`safe-to-deploy`) on 2026-07-05. The
+inspection criteria for each: canonical upstream source, latest compatible
+release, and no open RUSTSEC advisory (checked with `cargo audit`). See
+`supply-chain/audits.toml` for the per-crate notes.
 
-| Crate | Version | Upstream | Role in ACDP |
-|---|---|---|---|
-| `ed25519-dalek` | 2.2.0 | dalek-cryptography | Mandatory signature primitive (RFC-ACDP-0002) |
-| `curve25519-dalek` | 4.1.3 | dalek-cryptography | Curve arithmetic under ed25519 (≥4.1.3 fixes the timing advisory) |
-| `signature` | 2.2.0 | RustCrypto | Signature traits |
-| `sha2` | 0.10.9 | RustCrypto | `content_hash` / `lineage_id` (RFC-ACDP-0001 §5.7) |
-| `zeroize` | 1.8.2 | RustCrypto | Secret-key zeroing (`SigningKey` `ZeroizeOnDrop`) |
-| `subtle` | 2.6.1 | dalek-cryptography | Constant-time primitives |
-| `p256` | 0.13.2 | RustCrypto | P-256 verification-method support |
-| `ecdsa` | 0.16.9 | RustCrypto | Generic ECDSA under p256 |
-| `elliptic-curve` | 0.13.8 | RustCrypto | Curve trait framework |
-| `rustls` | 0.23.40 | rustls | HTTPS transport (RFC-ACDP-0008) |
-| `ring` | 0.17.14 | briansmith | Default rustls crypto provider |
+Most of these crates have since moved to a new major or minor version.
+`cargo vet` does not carry an audit across versions, so **the versions now in
+`Cargo.lock` are covered by `[[exemptions.*]]` entries in
+`supply-chain/config.toml`, not by our audits**. Only `subtle` and `ring` are
+still covered by an audit at the locked version. Re-certifying the rest is
+tracked as a follow-up.
+
+| Crate | Locked (`Cargo.lock`) | Audited (`audits.toml`) | Locked version covered by | Upstream | Role in ACDP |
+|---|---|---|---|---|---|
+| `ed25519-dalek` | 3.0.0 | 2.2.0 | exemption | dalek-cryptography | Mandatory signature primitive (RFC-ACDP-0002) |
+| `curve25519-dalek` | 5.0.0 | 4.1.3 | exemption | dalek-cryptography | Curve arithmetic under ed25519 |
+| `signature` | 3.0.0 | 2.2.0 | exemption | RustCrypto | Signature traits |
+| `sha2` | 0.11.0 | 0.10.9 | exemption | RustCrypto | `content_hash` / `lineage_id` (RFC-ACDP-0001 §5.7) |
+| `zeroize` | 1.9.0 | 1.8.2 | exemption | RustCrypto | Secret-key zeroing (`SigningKey` `ZeroizeOnDrop`) |
+| `subtle` | 2.6.1 | 2.6.1 | audit | dalek-cryptography | Constant-time primitives |
+| `p256` | 0.14.0 | 0.13.2 | exemption | RustCrypto | P-256 verification-method support |
+| `ecdsa` | 0.17.0 | 0.16.9 | exemption | RustCrypto | Generic ECDSA under p256 |
+| `elliptic-curve` | 0.14.1 | 0.13.8 | exemption | RustCrypto | Curve trait framework |
+| `rustls` | 0.23.45 | 0.23.40 | exemption | rustls | HTTPS transport (RFC-ACDP-0008) |
+| `ring` | 0.17.14 | 0.17.14 | audit | briansmith | Default rustls crypto provider |
 
 ### Contributor workflow
 
@@ -397,7 +420,7 @@ changes with your PR. Run `cargo vet prune` occasionally to drop exemptions that
 an imported audit now covers.
 
 **Who audits.** The crypto-critical set is audited by the crate maintainers and
-must stay `safe-to-deploy` with real inspection notes — treat a change there as
+should be `safe-to-deploy` with real inspection notes — treat a change there as
 a security review, not a rubber stamp. The long-tail exemptions are a
 maintenance backlog: prefer converting them to real audits (ours or imported)
 over time. First-party workspace crates (`acdp`, `acdp-*`) are configured
@@ -423,6 +446,10 @@ entries (`ignore = []`) — the tree has no allowlisted advisories. The former
 `axum-server` 0.8 switched to `rustls`' built-in PEM helpers, dropping
 `rustls-pemfile` from the graph entirely; none of the crypto-critical crates
 carries an advisory.
+
+**rustls RUSTSEC-2026-0285:** fixed by bumping `rustls` 0.23.43 → 0.23.45
+(`b547227`, 2026-09-19), with the `cargo vet` exemption moved to 0.23.45 in the
+same change set (`09197e0`). No `deny.toml` ignore entry was needed.
 
 Together: **`vet`** answers "did a human look at this code?", **`deny`**
 answers "is there a known-bad advisory or license here?", and the **provenance +

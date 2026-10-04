@@ -899,3 +899,25 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   surface. `Proven`'s public API is now exactly the plan's originally-named 3 accessors
   (`agent_id`, `key_fingerprint`, `request`). Applied immediately (not deferred) since this
   crate has not released `Proven` yet, making the change genuinely costless today.
+
+## CLAUDE.md edits left uncommitted (gitignored)
+- **Plan:** plans/docs-refresh-2026-10.md
+- **Assumed:** the plan's Phase 1/2 CLAUDE.md fixes should be applied to the working
+  copy only, because `CLAUDE.md` is listed in `.gitignore:65` (as is `plans/`) and was
+  never tracked — not force-added into the docs commits.
+- **Chose:** edited `CLAUDE.md` in place; commits `fa8c673` / `2f69f01` contain no
+  CLAUDE.md changes.
+- **Alternatives:** `git add -f CLAUDE.md` (rejected: would start tracking a file the repo
+  deliberately ignores — a policy change the plan does not ask for).
+- **Blast radius if wrong:** trivial — `git add -f CLAUDE.md` in a follow-up commit.
+- **Status:** UNCONFIRMED
+
+## SECURITY.md support window wording
+- **Plan:** plans/docs-refresh-2026-10.md
+- **Assumed:** "latest minor only (currently 0.14.x)" is the intended support policy (the
+  plan offered "latest 0.14.x minor" or "latest minor only").
+- **Chose:** a rolling "latest minor (0.14.x)" row plus "older minors unsupported".
+- **Alternatives:** pin a fixed `0.14.x` row (rejected: goes stale on every minor bump).
+- **Blast radius if wrong:** trivial — one table edit.
+- **Status:** UNCONFIRMED
+

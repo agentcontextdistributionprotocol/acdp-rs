@@ -24,12 +24,14 @@ and [`registries/profiles.md`](https://github.com/agentcontextdistributionprotoc
 | `tests/lineage_head_receipts.rs` | **0.3.0** | Lineage-head receipts (RFC-ACDP-0011). |
 | `tests/transparency_log.rs` | **0.3.0** | Transparency log (RFC-ACDP-0012), `log-001..004`. |
 | `tests/lifecycle.rs` | **0.3.0** | Lifecycle events & retraction (RFC-ACDP-0013), `lc-001..003`. |
-| `tests/key_revocation.rs` | **0.3.0** | Key-revocation signal (RFC-ACDP-0014), `rev-001` / `rev-002`. |
+| `tests/key_revocation.rs` | **0.3.0** | Key-revocation signal (RFC-ACDP-0014), `rev-001..004` / `rot-001`. |
 | `tests/key_revocation_publish_gate.rs` | **0.3.0** | RFC-ACDP-0014 §5 step 2 on the `did:web` publish path. |
 | `tests/witness_cosigning.rs` | **0.4.0** | Witness cosigning (RFC-ACDP-0015), `wit-001..004`. |
 | `tests/anchors.rs` | **0.5.0 Draft** | Typed external anchors (RFC-ACDP-0016), `anc-001..005`. |
 | `tests/store_contract.rs` | **Server** | Concurrency contract of the atomic publish commit. |
 | `tests/send_futures.rs` | **API** | Compile-only check that the affected public async entry points return `Send` futures. |
+| `tests/body_materialization.rs` | **Server** | Field-transfer guard: every `PublishRequest` field survives `Body::from_publish_request`. |
+| `tests/negative_inputs.rs` | **API** | Error-path coverage: malformed identifiers, builder rule violations, oversize fields. |
 | `tests/facade_reexports.rs` | **API** | Locks in the umbrella crate's re-export surface. |
 | `crates/acdp-cli/tests/cli.rs` | **CLI** | The `acdp` binary as a subprocess. |
 

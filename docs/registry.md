@@ -86,7 +86,7 @@ let server = RegistryServer::new(
 | `publish_verified_did_key(req, idem)` / `publish_verified_did_key_in_tenant(...)` | The same pipeline for `did:key` producers. Synchronous: key resolution is offline. |
 | `publish_pinned_verified_in_tenant(...)` | The same pipeline against a caller-supplied, already-verified public key and algorithm. |
 | `publish_verified_in_tenant_with_outcome(...)` / `publish_verified_did_key_in_tenant_with_outcome(...)` / `publish_pinned_verified_in_tenant_with_outcome(...)` | The three tenant publish forms, returning `PublishCommitOutcome` instead of a bare `PublishResponse` (see [below](#insert-vs-idempotent-replay)). Use these when answering `POST /contexts`. |
-| `prove_publish_identity(req, resolver)` / `_did_key(req)` / `_pinned(req, key, alg)` | Split half of the publish pipeline — steps 1–8 (identity) without persisting. Pairs with `commit_proven`. |
+| `prove_publish_identity(req, resolver)` / `_did_key(req)` / `_pinned(req, key, alg)` | Split half of the publish pipeline — §2.1 steps 1–8 (identity; diagram steps 1–7) without persisting. Pairs with `commit_proven`. |
 | `commit_proven(proven, idem, tenant)` | The other half — the atomic store commit, given a `Proven`. |
 | `retract_verified(event, requester, resolver)` / `republish_verified(...)` (and `_did_key` twins) | RFC-ACDP-0013 lifecycle transitions on a signed `LifecycleEvent`. Require `with_lifecycle()`. |
 | `retrieve` / `retrieve_body` / `lineage` / `current` | Read paths (RFC-ACDP-0004). |

@@ -189,7 +189,7 @@ rather than a semver, because that is what identifies the pinned behavior.
 | `dtolnay/rust-toolchain` (stable) | `4be7066ada62dd38de10e7b70166bc74ed198c30` | stable branch |
 | `dtolnay/rust-toolchain` (nightly) | `efcb852328a9f50117170cc43094fb6f09eaf1ae` | nightly branch |
 | `dtolnay/rust-toolchain` (1.86.0) | `2767295e193a2ee92d23c1ff586f596cb6d94a7a` | 1.86.0 branch |
-| `taiki-e/install-action` (cargo-deny) | `0751bff5da373f43f04fdc57a72795931a822bd7` | cargo-deny tag |
+| `taiki-e/install-action` (cargo-deny) | `0751bff5da373f43f04fdc57a72795931a822bd7` | cargo-deny and wasm-pack install pin |
 | `taiki-e/install-action` (cargo-semver-checks) | `7b8d4719ee4aaa279bdf55df38dacb9ebfe12a6c` | v2.87.6 |
 | `taiki-e/install-action` (cargo-llvm-cov) | `7c1105379b6217809b9ed26c163a46c65c7a528f` | cargo-llvm-cov tag |
 | `taiki-e/install-action` (cargo-fuzz) | `82fc405565b9cf90abfe700ba43b4751ce2fe422` | cargo-fuzz tag |

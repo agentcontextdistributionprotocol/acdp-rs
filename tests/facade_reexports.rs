@@ -202,5 +202,10 @@ fn server_types_reexported() {
     #[allow(unused_imports)]
     use acdp::pagination;
     #[allow(unused_imports)]
-    use acdp::registry::{InMemoryStore, Proven, PublishValidator, RegistryServer};
+    use acdp::registry::{
+        InMemoryStore, LifecycleCommitOutcome, LifecycleEndpoint, Proven, ProvenLifecycle,
+        PublishValidator, RegistryServer,
+    };
+    let _r = acdp::registry::LifecycleEndpoint::Retract;
+    let _p = acdp::registry::server::LifecycleEndpoint::Republish;
 }

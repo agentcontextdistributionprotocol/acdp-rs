@@ -80,7 +80,7 @@ let server = RegistryServer::new(
 | `with_rate_limiter(limiter)` | Swap in a `RateLimiter` (default `NoopRateLimiter`). |
 | `with_receipt_signer(signer)` | Mint an RFC-ACDP-0010 registry receipt atomically with each commit (`acdp-registry-receipts`). The signer's `registry_did` must match the capabilities. |
 | `with_lineage_head_receipts()` | Enable RFC-ACDP-0011 lineage-head receipts. Requires `with_receipt_signer` first. |
-| `with_lifecycle()` | Enable RFC-ACDP-0013 lifecycle events (`acdp-registry-lifecycle`, `acdp_version` ≥ 0.3.0). Needs a store that implements `commit_lifecycle_event`. |
+| `with_lifecycle()` | Enable RFC-ACDP-0013 lifecycle events (`acdp-registry-lifecycle`, `acdp_version` ≥ 0.3.0). Needs a store that implements `commit_lifecycle_event`. A server without it never records lifecycle events, but its read paths do not filter them: do not run a lifecycle-disabled server over a store that already contains them. |
 | `publish_verified(req, idem, resolver)` | The conformant publish path (above). |
 | `publish_verified_in_tenant(req, idem, resolver, tenant)` | Same, binding the row to a tenant id for multi-tenant stores. |
 | `publish_verified_did_key(req, idem)` / `publish_verified_did_key_in_tenant(...)` | The same pipeline for `did:key` producers. Synchronous: key resolution is offline. |
@@ -89,6 +89,8 @@ let server = RegistryServer::new(
 | `prove_publish_identity(req, resolver)` / `_did_key(req)` / `_pinned(req, key, alg)` | Split half of the publish pipeline — §2.1 steps 1–8 (identity; diagram steps 1–7) without persisting. Pairs with `commit_proven`. |
 | `commit_proven(proven, idem, tenant)` | The other half — the atomic store commit, given a `Proven`. |
 | `retract_verified(event, requester, resolver)` / `republish_verified(...)` (and `_did_key` twins) | RFC-ACDP-0013 lifecycle transitions on a signed `LifecycleEvent`. Require `with_lifecycle()`. |
+| `prove_lifecycle_identity(event, endpoint, requester, resolver)` / `_did_key(event, endpoint, requester)` | Split half of the lifecycle pipeline — §6 steps 1–3 plus the §5 signature check, without persisting. Pairs with `commit_lifecycle_proven`. |
+| `commit_lifecycle_proven(proven)` | The other half — the atomic transition + append, returning `LifecycleCommitOutcome`. |
 | `retrieve` / `retrieve_body` / `lineage` / `current` | Read paths (RFC-ACDP-0004). |
 | `search` | Discovery (RFC-ACDP-0005). |
 | `store()` / `capabilities()` | Accessors. |
@@ -145,6 +147,49 @@ differently-configured `RegistryServer`, even one sharing the same
 signer configured and committing on one that requires receipts — so a
 "prove against server A, commit on server B" mixup fails loudly instead
 of silently persisting under the wrong configuration.
+
+### Splitting prove from commit for lifecycle events
+
+The lifecycle endpoints have the same split. `retract_verified` /
+`republish_verified` (and their `_did_key` twins) are each a
+`prove_lifecycle_identity*` call followed by `commit_lifecycle_proven`, so a
+registry that charges a per-producer rate limit can charge after the event's
+signature verifies and before anything is written, without verifying twice:
+
+```rust,no_run
+# #[cfg(all(feature = "server", feature = "client"))]
+# async fn run(
+#     server: &acdp::registry::RegistryServer<acdp::registry::InMemoryStore>,
+#     resolver: &acdp::did::WebResolver,
+#     event: &acdp::types::lifecycle::LifecycleEvent,
+# ) -> Result<(), acdp::AcdpError> {
+use acdp::registry::{LifecycleCommitOutcome, LifecycleEndpoint};
+
+let proven = server
+    .prove_lifecycle_identity(event, LifecycleEndpoint::Retract, None, resolver)
+    .await?;
+// ... the producer is authenticated (proven.actor()); charge here ...
+let replay = matches!(
+    server.commit_lifecycle_proven(proven)?,
+    LifecycleCommitOutcome::IdempotentReplay(_), // byte-identical event_id retry
+);
+# let _ = replay; Ok(()) }
+```
+
+`ProvenLifecycle` follows the same rules as `Proven`: no public constructor,
+not `Clone`, consumed by the commit. `commit_lifecycle_proven` re-checks that
+lifecycle is enabled on the committing instance (`NotImplemented` otherwise)
+and rejects a token proved against a different authority (`RegistryInternal`).
+
+Proving checks visibility, event shape and endpoint binding, the actor rule,
+and the signature. It does **not** check the retracted/republished
+alternation, or whether the `event_id` was already appended: the store's
+locked check at commit time is the only authoritative one. So a double
+retract still fails at commit (`InvalidLifecycleTransition`), and a
+byte-identical retry proves successfully and commits as `IdempotentReplay`.
+A registry that charges between prove and commit therefore charges retries
+and transitions that turn out to be illegal. That matches the publish split,
+where an idempotent replay is also charged.
 
 ## PublishValidator — validation without a server
 

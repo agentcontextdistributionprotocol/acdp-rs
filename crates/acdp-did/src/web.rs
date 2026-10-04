@@ -363,21 +363,19 @@ fn build_http_client_pinned(
 /// Translate a `reqwest::Error` into the right [`AcdpError`] variant.
 ///
 /// Walks the error's `source()` chain so the `SafeDnsResolver`'s refusal
-/// message — which always contains the substring `"SSRF policy"` — survives
-/// reqwest's wrapping. An SSRF-refused DNS lookup is policy-driven and
+/// (the typed `acdp_primitives::error::SsrfDnsRefusal` marker, detected by
+/// the shared `is_ssrf_refusal`) survives reqwest's wrapping. An
+/// SSRF-refused DNS lookup is policy-driven and
 /// permanent — it maps to `key_resolution_failed` (HTTP 400), NOT
 /// `key_resolution_unreachable` (502, retryable) that
 /// `reqwest::Error::is_connect()` would suggest by default
 /// (RFC-ACDP-0008 §4.8, fixtures did-ssrf-001/002/003).
 #[cfg(feature = "client")]
 fn classify_reqwest_error(e: &reqwest::Error) -> AcdpError {
-    let mut chain = e.to_string();
-    let mut src: Option<&dyn std::error::Error> = std::error::Error::source(e);
-    while let Some(s) = src {
-        chain = format!("{chain}: {s}");
-        src = s.source();
-    }
-    if chain.contains("SSRF policy") {
+    // Shared detection with `From<reqwest::Error> for AcdpError` and
+    // `HttpsDataRefFetcher` (issue #321); only the target variants differ.
+    let chain = acdp_primitives::error::error_chain_message(e);
+    if acdp_primitives::error::is_ssrf_refusal(e) {
         return AcdpError::KeyResolution(chain);
     }
     if e.is_timeout() || e.is_connect() {

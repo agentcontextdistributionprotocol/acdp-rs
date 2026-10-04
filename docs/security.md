@@ -59,19 +59,20 @@ builds (`WebResolver`, `RegistryClient`, `HttpsDataRefFetcher`,
 DNS-rebinds to a forbidden range can never be connected to.
 
 A host whose answers fall in a forbidden range is refused before any connect.
-How that refusal surfaces depends on the client:
+The resolver returns a typed `acdp::error::SsrfDnsRefusal` marker, and every
+path recognizes it through one shared check (`acdp::error::is_ssrf_refusal`).
+The refusal is always **permanent** (`is_transient() == false`), so
+`RegistryClient::publish_with_retry` does not retry it. The paths differ only
+in which variant they return:
 
-| Path | Error | `is_transient()` |
-|---|---|---|
-| `WebResolver` (resolving a `did:web` document) | `AcdpError::KeyResolution` (wire `key_resolution_failed`, HTTP 400) | `false` |
-| `RegistryClient` (and any other path through `From<reqwest::Error>`) | `AcdpError::Http("connection failed: … SSRF policy … forbidden …")` | `true` |
-| `HttpsDataRefFetcher` | `AcdpError::Http(…)` carrying only reqwest's outer message | `true` |
+| Path | Error |
+|---|---|
+| `WebResolver` (resolving a `did:web` document) | `AcdpError::KeyResolution` (wire `key_resolution_failed`, HTTP 400) |
+| `RegistryClient`, `HttpsDataRefFetcher`, and any other path through `From<reqwest::Error>` | `AcdpError::SchemaViolation("… SSRF policy … forbidden …")`, the same variant as the URL-time `SsrfPolicy::check_url` refusal |
 
-On the `RegistryClient` path the refusal is visible only because
-`From<reqwest::Error>` appends the error's `source()` chain to the message. Because `Http` is
-transient, `RegistryClient::publish_with_retry` retries such a refusal until
-`max_attempts` runs out. If you need to stop early, check the message for
-`SSRF policy`.
+In both cases the message carries the whole `source()` chain, so the SSRF
+detail is visible. See [errors.md](errors.md#retryability) for the retry
+predicate.
 
 ## SsrfPolicy
 

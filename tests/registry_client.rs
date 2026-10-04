@@ -636,11 +636,52 @@ async fn new_refuses_hostname_resolving_to_loopback_at_dns_time() {
     // (surfaced via the `reqwest::Error` source chain — see
     // `AcdpError::from(reqwest::Error)`) so this test can only pass when the
     // DNS-time filter is what actually fired.
-    let AcdpError::Http(msg) = &err else {
-        panic!("expected AcdpError::Http, got {err:?}");
+    //
+    // Issue #321: the refusal is a policy decision, so it classifies as the
+    // permanent `SchemaViolation` (the same variant the URL-time
+    // `SsrfPolicy::check_url` refusal uses), never the retryable `Http`.
+    let AcdpError::SchemaViolation(msg) = &err else {
+        panic!("expected AcdpError::SchemaViolation, got {err:?}");
     };
     assert!(
         msg.contains("SSRF policy") && msg.contains("forbidden"),
         "expected the DNS-time SSRF rejection to be visible in the error, got: {msg}"
     );
+    assert!(!err.is_transient(), "an SSRF refusal MUST NOT be transient");
+}
+
+/// Issue #321: `publish_with_retry` MUST NOT retry a DNS-time SSRF refusal
+/// — every attempt would be refused identically. The mock server counts
+/// requests: a refusal happens before any connect, so it MUST see zero, and
+/// the call MUST return well before the first 250 ms backoff would elapse
+/// for even one retry cycle (4 attempts would sleep 250+500+1000 ms).
+#[tokio::test]
+async fn publish_with_retry_does_not_retry_ssrf_refusal() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/contexts"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let port = server.address().port();
+    let client = RegistryClient::new(&format!("https://localhost:{port}")).unwrap();
+
+    let started = std::time::Instant::now();
+    let err = client
+        .publish_with_retry(&sample_publish_request(), "ssrf-no-retry", 4)
+        .await
+        .unwrap_err();
+    let elapsed = started.elapsed();
+
+    assert!(
+        matches!(&err, AcdpError::SchemaViolation(m) if m.contains("SSRF policy")),
+        "expected a permanent SSRF SchemaViolation, got {err:?}"
+    );
+    assert!(!err.is_transient());
+    assert!(
+        elapsed < std::time::Duration::from_millis(250),
+        "publish_with_retry slept for a retry backoff ({elapsed:?}) — it retried an SSRF refusal"
+    );
+    assert!(server.received_requests().await.unwrap().is_empty());
 }

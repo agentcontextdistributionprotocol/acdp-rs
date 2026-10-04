@@ -7,10 +7,29 @@ name: Dependabot auto-merge
 # GitHub holds the merge until those checks are green. If any required
 # check fails, the PR is never merged.
 #
-# Scope: patch and minor updates only. Major bumps are left for a human
-# to review (they are the ones most likely to break the build in ways CI
-# can't catch, e.g. behavioural changes within a green build). PRs from
-# the `crypto` Dependabot group are never auto-merged (see the step below).
+# Auto-merge is enabled only when ALL of these hold, and is turned off
+# (if it is on) otherwise — fail closed:
+#   - patch or minor update (majors are left for a human);
+#   - not the `crypto` Dependabot group (.github/dependabot.yml, #322);
+#   - scripts/dependabot-crypto-gate.sh exits 0: the PR changes no
+#     crypto-critical crate (scripts/crypto-critical.txt) in any of the four
+#     lockfiles, and none of the gate's own files (#344). A crypto crate can
+#     be fully vetted through an imported audit, so a green `cargo-vet`
+#     alone would merge it with no maintainer review;
+#   - `main` is protected with required status checks.
+#
+# Trust boundary: this stays on `pull_request` (never
+# `pull_request_target`), so the job gets no secrets beyond the scoped
+# GITHUB_TOKEN. The gate script and the guard list are loaded from the PR's
+# BASE commit (`git cat-file`), so a PR cannot weaken the gate that judges
+# it. Limitation: on `pull_request` this workflow file itself runs from the
+# PR's head; the gate therefore also treats a change to this file as
+# "needs review". See docs/supply-chain.md "Dependabot auto-merge".
+#
+# This replaces the shared acdp-ci auto-merge caller (formerly
+# .github/workflows/auto-merge.yml): that one armed auto-merge on every
+# patch/minor Dependabot PR, crypto included, racing this workflow's
+# decision.
 #
 # Requires: repo setting "Allow auto-merge" enabled, and branch
 # protection on `main` with required status checks (both configured
@@ -32,12 +51,95 @@ jobs:
         id: meta
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
 
-      # Never for the `crypto` group (.github/dependabot.yml, issue #322): a
-      # crypto-critical bump needs a real audit plus the maintainer's
-      # approving review, so a green CI run must not merge it.
-      - name: Enable auto-merge (patch & minor only, not the crypto group)
-        if: ${{ (steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor') && steps.meta.outputs.dependency-group != 'crypto' }}
-        run: gh pr merge --auto --squash "$PR_URL"
+      # Full history: the gate diffs merge-base(base, head)..head, and both
+      # commits must be present. No credentials are left in .git/config.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Exit 0 untouched, 1 touched (needs review), 2 error. The step never
+      # fails by itself; the decision step below acts on `rc`. Anything but
+      # an explicit 0 (including a missing script on the base) keeps
+      # auto-merge off.
+      - name: Crypto-critical gate (script and list from the base commit)
+        id: gate
+        run: |
+          set +e
+          gate="$RUNNER_TEMP/dependabot-crypto-gate.sh"
+          list="$RUNNER_TEMP/crypto-critical.txt"
+          if git cat-file blob "$BASE_SHA:scripts/dependabot-crypto-gate.sh" >"$gate" &&
+             git cat-file blob "$BASE_SHA:scripts/crypto-critical.txt" >"$list"; then
+            bash "$gate" --base "$BASE_SHA" --head "$HEAD_SHA" --list "$list"
+            rc=$?
+          else
+            echo "::error::cannot load the gate script or guard list from base $BASE_SHA"
+            rc=2
+          fi
+          echo "rc=$rc" >>"$GITHUB_OUTPUT"
         env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
+      # Runs even when an earlier step failed, so a stale auto-merge is
+      # always turned off; empty outputs mean "not eligible".
+      - name: Enable auto-merge, or make sure it is off
+        if: ${{ !cancelled() }}
+        run: |
+          eligible=yes
+          reasons=""
+          case "$UPDATE_TYPE" in
+            version-update:semver-patch | version-update:semver-minor) ;;
+            *) eligible=no; reasons="$reasons update-type='$UPDATE_TYPE'" ;;
+          esac
+          if [ "$GROUP" = crypto ]; then
+            eligible=no; reasons="$reasons group=crypto"
+          fi
+          if [ "$GATE_RC" != 0 ]; then
+            eligible=no; reasons="$reasons crypto-gate-rc='$GATE_RC'"
+          fi
+          branch=$(gh api "repos/$REPO/branches/$BASE_REF") || branch=""
+          protected=$(printf '%s' "$branch" | jq -r '.protected // false' 2>/dev/null) || protected=false
+          contexts=$(printf '%s' "$branch" | jq '.protection.required_status_checks.contexts | length? // 0' 2>/dev/null) || contexts=0
+          if [ "$protected" != true ] || [ "${contexts:-0}" -eq 0 ]; then
+            eligible=no; reasons="$reasons base-not-gated(protected=$protected,checks=$contexts)"
+          fi
+
+          if [ "$eligible" = yes ]; then
+            gh pr merge --auto --squash "$PR_URL"
+            exit 0
+          fi
+
+          echo "Auto-merge stays off:$reasons"
+          # Turn off an auto-merge enabled by an earlier run. Asking first
+          # means the "auto-merge is not enabled" case needs no error-string
+          # matching; any other failure fails the job.
+          state=$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')
+          if [ "$state" = true ]; then
+            if ! gh pr merge --disable-auto "$PR_URL"; then
+              # Tolerate only a race in which it is already off.
+              state=$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')
+              if [ "$state" != false ]; then
+                echo "::error::could not disable auto-merge on $PR_URL"
+                exit 1
+              fi
+            fi
+            echo "Disabled auto-merge."
+          fi
+          # A gate error (rc 2, or no result) is a failure to look into;
+          # rc 1 is the normal "needs maintainer review" outcome.
+          if [ "$GATE_RC" != 0 ] && [ "$GATE_RC" != 1 ]; then
+            echo "::error::crypto gate did not produce a result (rc='$GATE_RC'); see the gate step log"
+            exit 1
+          fi
+          if [ "$GATE_RC" = 1 ]; then
+            echo "::notice::touches a crypto-critical crate or a gate file: needs maintainer review (docs/supply-chain.md)"
+          fi
+        env:
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+          GROUP: ${{ steps.meta.outputs.dependency-group }}
+          GATE_RC: ${{ steps.gate.outputs.rc }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          REPO: ${{ github.repository }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -208,8 +208,10 @@ rather than a semver, because that is what identifies the pinned behavior.
 `actions/create-github-app-token@v3`.
 
 **Org-internal reusable workflows (major tag):**
-`agentcontextdistributionprotocol/acdp-ci/.github/workflows/auto-merge.yml@v1` and
 `agentcontextdistributionprotocol/acdp-ci/.github/workflows/bump-spec-ref.yml@v1`.
+(This repo no longer calls acdp-ci's `auto-merge.yml@v1`: it armed auto-merge on
+every patch/minor Dependabot PR, crypto included. `dependabot-auto-merge.yml`
+replaces it; see [Dependabot auto-merge](#dependabot-auto-merge).)
 The `v1` tag is moved only by the acdp-ci release procedure; see acdp-ci's
 [`DELIVERY-STANDARD.md` → Releasing `acdp-ci` (the `v1` tag)](https://github.com/agentcontextdistributionprotocol/acdp-ci/blob/main/DELIVERY-STANDARD.md#releasing-acdp-ci-the-v1-tag).
 
@@ -514,7 +516,8 @@ A marker left on a crate that is now fully audited also fails ("stale marker —
 remove it"). Run
 the guard locally with `scripts/check-crypto-vet.sh`, and run its self-tests
 with `scripts/test-check-crypto-vet.sh` (add `--with-network` to also exercise
-`vet-facts.sh`). Both need `jq`.
+`vet-facts.sh`). Both need `jq`. CI runs the self-tests (without
+`--with-network`) in the required `cargo-vet` job.
 
 After any certify or exemption change, run `cargo vet --locked` to confirm
 green and commit the `supply-chain/` changes with your PR. Run `cargo vet prune`
@@ -563,12 +566,12 @@ catches either case. When a bump turns `cargo-vet` red:
    - add a DECISIONS.md entry anchored `322-<crate>` that lists the options;
    - set the guard marker to `allow-exempt:DECISIONS#322-<crate>@<version>`.
 7. **Push to the Dependabot branch.** `dependabot-auto-merge.yml` never turns
-   on auto-merge for the `crypto` group: it checks `fetch-metadata`'s
-   `dependency-group != 'crypto'`. One case slips past that check. A
-   transitive crypto-critical crate can move inside another group's PR (for
-   example `minor-and-patch`), and that PR may already have auto-merge on. In
-   that case, turn it off before pushing an audit (`gh pr merge --disable-auto
-   <n>`).
+   on auto-merge for a PR that changes a crypto-critical crate in any of the
+   four lockfiles, whatever its Dependabot group (see
+   [Dependabot auto-merge](#dependabot-auto-merge)), and turns it off if an
+   earlier push had it on. Your push does not re-run that workflow (it runs
+   only for Dependabot's own pushes), so check before merging that
+   auto-merge is still off (`gh pr view <n> --json autoMergeRequest`).
 8. **Get sign-off.** The maintainer posts an approving review that says which
    worksheet they read. Only then is the PR merged.
 
@@ -584,6 +587,65 @@ maintenance backlog: prefer converting them to real audits (ours or imported)
 over time. First-party workspace crates (`acdp`, `acdp-*`) are configured
 `audit-as-crates-io = false` — they're our own code and need no audit or
 exemption, and their version bumps therefore never trip the gate.
+
+### Dependabot auto-merge
+
+`.github/workflows/dependabot-auto-merge.yml` turns on GitHub auto-merge (the
+merge still waits for every required check) only when all of these hold:
+
+- the update is patch or minor;
+- the PR is not from the `crypto` Dependabot group;
+- `scripts/dependabot-crypto-gate.sh` exits 0;
+- `main` is protected with required status checks.
+
+Otherwise it leaves auto-merge off, and turns it off if an earlier run had
+turned it on. The group check alone is not enough. A transitive
+crypto-critical crate can move inside another group's PR (for example
+`minor-and-patch`, or one of the bindings' Dependabot entries). If an
+imported audit covers the new version, `cargo-vet` and the guard are both
+green, and the PR would merge with no maintainer review (#344).
+
+**The gate.** `scripts/dependabot-crypto-gate.sh --base <rev> --head <rev>`
+reads the four lockfiles (`Cargo.lock` and `bindings/acdp-{py,node,wasm}/Cargo.lock`)
+at the merge base and at the head, straight from git objects. It turns each
+`[[package]]` block into a `name|version|source|checksum` row. If any row of a
+crate in `scripts/crypto-critical.txt` differs between the two sides, the PR
+needs review. That covers a bump, an added second version, a removal, and a
+source or checksum change. A change to the gate script, the guard list, or
+the workflow file also needs review. The guard list is parsed like
+`check-crypto-vet.sh` parses it: comments are skipped and markers ignored.
+
+| Exit | Meaning | Workflow |
+|---|---|---|
+| 0 | No crypto-critical crate or gate file touched | auto-merge on (if the other conditions hold) |
+| 1 | Touched; the crates and rows are printed | auto-merge off; job green with a notice |
+| 2 | Error: unknown revision, lockfile missing on either side, empty or malformed lockfile or guard list | auto-merge off; job red |
+
+**Trust boundary.** The workflow runs on `pull_request`, never
+`pull_request_target`. It checks out with `persist-credentials: false` and
+loads the gate script and guard list from the PR's **base** commit (`git
+cat-file`), so a PR cannot weaken the gate that judges it. The workflow file
+itself still runs from the PR's head (that is how `pull_request` works). This
+is why a change to it counts as touched. Turning auto-merge off first asks
+whether it is on, so the "auto-merge is not enabled" case needs no
+error-string matching. Any other `gh` failure fails the job.
+
+This workflow replaces the shared acdp-ci `auto-merge.yml@v1` caller. That
+caller armed auto-merge on every patch/minor Dependabot PR, crypto included,
+and raced this workflow's decision. Its branch-protection check is kept here.
+
+**Self-tests.** `scripts/test-dependabot-crypto-gate.sh` builds a scratch git
+repo from copies of the real lockfiles and list. It then checks one case per
+behaviour. Clean cases (no change, a non-crypto bump, a GitHub Actions-only
+PR, an unlisted crate whose name shares a prefix) exit 0. Touched cases
+(`subtle` bumped, a second `ring`, a crypto crate removed, a checksum-only or
+source-only change, a binding-only change, a gate file edited) exit 1. Error
+cases (malformed, empty, or one-sided lockfiles, a bad list or revision) exit
+2. It also covers list comment and marker parsing, a base-loaded copy of the
+gate, and the real tree HEAD vs HEAD. Every case runs under each awk on PATH
+(BSD awk on macOS; gawk, mawk, original-awk, and busybox where installed).
+The required `cargo-vet` CI job runs it after the guard, together with
+`scripts/test-check-crypto-vet.sh`.
 
 ---
 

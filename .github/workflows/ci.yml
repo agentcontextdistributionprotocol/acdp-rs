@@ -196,6 +196,14 @@ jobs:
         run: scripts/test-check-bindings-lock-parity.sh
       - name: Bindings lockfiles match the root for crypto-critical crates
         run: scripts/check-bindings-lock-parity.sh
+      # Self-tests of the supply-chain scripts (#344): the guard above
+      # (scratch copies of supply-chain/, never the real one) and the
+      # Dependabot auto-merge gate (scratch git repo; runs every awk on PATH,
+      # gawk and mawk on this runner).
+      - name: Supply-chain script self-tests
+        run: |
+          scripts/test-check-crypto-vet.sh
+          scripts/test-dependabot-crypto-gate.sh
 
   semver:
     name: cargo-semver-checks (advisory)

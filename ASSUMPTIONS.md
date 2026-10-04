@@ -910,7 +910,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
 - **Alternatives:** `git add -f CLAUDE.md` (rejected: would start tracking a file the repo
   deliberately ignores — a policy change the plan does not ask for).
 - **Blast radius if wrong:** trivial — `git add -f CLAUDE.md` in a follow-up commit.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-03)
 
 ## SECURITY.md support window wording
 - **Plan:** plans/docs-refresh-2026-10.md
@@ -919,7 +919,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
 - **Chose:** a rolling "latest minor (0.14.x)" row plus "older minors unsupported".
 - **Alternatives:** pin a fixed `0.14.x` row (rejected: goes stale on every minor bump).
 - **Blast radius if wrong:** trivial — one table edit.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-03)
 
 
 ## Embedded-ref root `content_hash` is not checked (docs follow code, not plan)
@@ -932,7 +932,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
 - **Chose:** `docs/producing.md` "Data-reference hashes" documents the code's behavior.
 - **Alternatives:** follow the plan text (rejected: code is truth).
 - **Blast radius if wrong:** trivial — one docs table.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-03)
 
 ## LIM-2 pointer goes to rustdoc, not plans/archive
 - **Plan:** plans/docs-refresh-2026-10.md (Phase 3 item 7)
@@ -943,7 +943,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   which documents the limitation.
 - **Alternatives:** link the untracked plan file (rejected: dead link on GitHub).
 - **Blast radius if wrong:** trivial.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-03)
 
 ## `HttpsDataRefFetcher` SSRF refusals documented as a third mapping
 - **Plan:** plans/docs-refresh-2026-10.md (Phase 3 item 5)
@@ -954,7 +954,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
 - **Chose:** `docs/security.md` lists it as its own row; folded into follow-up issue 1.
 - **Alternatives:** lump it with `RegistryClient` (rejected: the message claim would be false).
 - **Blast radius if wrong:** trivial.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-03)
 
 ## Verification stage table follows `verify_retrieved` order
 - **Plan:** plans/docs-refresh-2026-10.md (Phase 3 item 7)
@@ -964,7 +964,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   `verify_retrieved`).
 - **Chose:** stages 3 (receipt), 4 (revocation), 5 (key resolution + signature), 6 (status).
 - **Blast radius if wrong:** trivial.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-03)
 
 ## Release-runbook history deleted, not archived
 - **Plan:** plans/docs-refresh-2026-10.md (Phase 4 item 7)
@@ -979,7 +979,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   untracked `plans/archive/issue-*` files were replaced with the issue/PR numbers.
 - **Alternatives:** write the archive file locally (rejected: untracked, so a dead pointer).
 - **Blast radius if wrong:** trivial — the text is one `git show` away.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-03)
 
 ## Audited crypto versions kept in the supply-chain table
 - **Plan:** plans/docs-refresh-2026-10.md (Phase 4 item 1 vs. its grep)
@@ -988,4 +988,4 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   "Audited" column legitimately lists `rustls` 0.23.40.
 - **Chose:** keep the audited column (item 1 wins); the grep's single hit is that cell.
 - **Blast radius if wrong:** trivial.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-03)

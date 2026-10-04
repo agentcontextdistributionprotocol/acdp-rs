@@ -824,7 +824,10 @@ under the concern rule below.
 6. **Concern rule.** It applies when a review finds any of these: unsound or unexplained
    `unsafe`; unexpected network, filesystem, or process access; a build.rs or proc-macro
    that does more than cfg selection or codegen; obfuscated or vendored binary content;
-   a RUSTSEC hit; or a review that cannot be finished. For such a crate:
+   a RUSTSEC hit; or a review that cannot be finished. **Carve-out (amended 2026-10-04,
+   Fable decision on `322-sha2`):** this rule does not apply when the unsound code is
+   unreachable in any stable-toolchain build of any ACDP artifact; in that case certify
+   and record the discretion in the audit notes (`Discretion:` lines). For such a crate:
    - Do not certify it.
    - Keep its exemption, with `notes = "KEPT EXEMPT (#322): <reason>; see DECISIONS.md
      '322-<crate>'"`.
@@ -862,7 +865,7 @@ under the concern rule below.
 
 **Status:** DECIDED (maintainer-settled policy, recorded in Phase 1).
 
-## #322 322-sha2: sha2 0.11.0 kept exempt (2026-10-04)
+## #322 322-sha2: sha2 0.11.0 concern review, certified with discretion (2026-10-04)
 
 **Needs: Fable decision.** Concern-rule entry for issue #322, Phase 2. Anchor: `322-sha2`.
 The worksheet is `supply-chain/worksheets/sha2-0.11.0.md`.
@@ -902,7 +905,14 @@ Borrows, and 0.10.9, which we audited, used the identical pattern.
 - The guard marker is `allow-exempt:DECISIONS#322-sha2`.
 - Upstream has not been reported yet; that is pending this decision.
 
-**Status:** OPEN.
+**Decision (Fable, after independent verification, 2026-10-04): option 1.** sha2 0.11.0 is
+certified `safe-to-deploy` (full) with two `Discretion:` note lines, under the Policy 6
+carve-out: the riscv-zknh finding is unreachable in any stable build. S-1 is fixed upstream
+in RustCrypto/hashes#879 (lands in 0.11.1, unreleased). S-2 is unfixed upstream. The
+exemption and the guard marker are removed. The draft upstream issue for S-2 is in
+`supply-chain/worksheets/sha2-0.11.0.md`; nothing has been filed.
+
+**Status:** DECIDED.
 
 ## #322 322-zeroize: zeroize 1.9.0 kept exempt (2026-10-04)
 
@@ -954,4 +964,16 @@ volatile-write site and adds the crate's only `asm!`.
 - The guard marker is `allow-exempt:DECISIONS#322-zeroize`.
 - Upstream has not been reported yet; that is pending this decision.
 
-**Status:** OPEN.
+**Decision (Fable, after independent verification, 2026-10-04): option 1, keep exempt.**
+- The carve-out does not apply: `bindings/acdp-wasm` is a published ACDP artifact, and its
+  stable wasm32 build compiles the faulty fallback.
+- Do **not** pin to 1.8.2: that means lock churn across three bindings, a fight with
+  Dependabot, and an MSRV change (1.60 vs 1.85).
+- **Exit criterion:** delta-audit zeroize 1.9.1 when it is released. RustCrypto/utils#1535
+  (merged 2026-09-11) removes the internal callers of `optimization_barrier`. If the safe
+  `pub fn` remains unchanged but unused internally, it then qualifies for the discretion
+  carve-out, provided no ACDP artifact calls it.
+- The exemption and the `allow-exempt:DECISIONS#322-zeroize` marker stay. The draft
+  upstream issue is in `supply-chain/worksheets/zeroize-1.9.0.md`; nothing has been filed.
+
+**Status:** DECIDED.

@@ -782,11 +782,6 @@ criteria = "safe-to-deploy"
 version = "0.4.3"
 criteria = "safe-to-deploy"
 
-[[exemptions.sha2]]
-version = "0.11.0"
-criteria = "safe-to-deploy"
-notes = "KEPT EXEMPT (#322): out-of-allocation ptr::add in the opt-in nightly riscv-zknh backend (src/sha*/riscv_zknh/utils.rs); see DECISIONS.md '322-sha2'"
-
 [[exemptions.shlex]]
 version = "2.0.1"
 criteria = "safe-to-deploy"

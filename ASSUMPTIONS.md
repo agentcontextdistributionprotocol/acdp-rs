@@ -1093,7 +1093,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   is option 1 in DECISIONS `322-sha2`, left to Fable.
 - **Blast radius if wrong:** reversible. Certifying later is one `cargo vet certify` from
   the existing worksheet.
-- **Status:** UNCONFIRMED
+- **Status:** RESOLVED by Fable (2026-10-04): sha2 certified with Discretion notes under an amended Policy 6 carve-out; zeroize kept exempt. See DECISIONS `322-sha2` / `322-zeroize`.
 
 ## #322 Phase 2: zeroize method is full, not delta
 - **Plan:** plans/supply-chain-recertify-322.md (Policy 2)

@@ -1,15 +1,24 @@
 # Review worksheet: `sha2` 0.11.0 (issue #322, Phase 2)
 
-- **Verdict:** NOT CERTIFIED. KEPT EXEMPT under the #322 concern rule. See DECISIONS.md
-  `322-sha2` (`Needs: Fable decision`).
+- **Verdict:** CERTIFIED `safe-to-deploy`, full audit (`version = "0.11.0"`), with
+  recorded discretion. Under the Policy 6 carve-out, S-1 is unreachable in any
+  stable-toolchain build of any ACDP artifact. Fable decided this after independent
+  verification, recorded in DECISIONS.md `322-sha2`. The audit notes carry two
+  `Discretion:` lines, for S-1 and S-2.
 - **Reviewer:** Ajit Koti <ajitkoti@zer07labs.com>. Reviewed with Claude (Opus) assistance.
 - **Date:** 2026-10-04
 - **Policy:** DECISIONS.md "#322 supply-chain audit policy"
 
-The review was finished. Every `unsafe` site was read and has a verdict below. It is held
-back because one opt-in backend contains code that is unsound for some inputs (finding
-S-1). Policy 6 says not to certify in that case. The backends that ACDP actually builds
-were found sound.
+The review was finished. Every `unsafe` site was read and has a verdict below.
+- One opt-in backend contains code that is unsound for some inputs (finding S-1). It
+  needs nightly plus an explicit `--cfg`, so it is unreachable in every stable build.
+- The backends that ACDP actually builds were found sound.
+
+## Upstream status (2026-10-04)
+
+- **S-1:** fixed upstream in RustCrypto/hashes#879. The fix ships in 0.11.1, which is
+  unreleased.
+- **S-2:** unfixed upstream. A draft issue is below; it has not been filed.
 
 ## Provenance
 
@@ -87,12 +96,12 @@ Non-security observations (they cause compile errors, not unsoundness):
 | `sha256/wasm32_simd128.rs:20,31,50,141` and `sha512/wasm32_simd128.rs:18,29,48,135` | simd128 `v128_load` from `block.as_ptr().cast()` at offsets 0..3 (or 0..7), and from `K.as_ptr().add(..)`, which stays in bounds by the same index arithmetic as AVX2. | **Sound.** `v128_load` permits unaligned access; the feature is static (`compile_error!`). |
 | `sha256/loongarch64_asm.rs:89` and `sha512/loongarch64_asm.rs:88` | Inline asm. `blocks.is_empty()` returns early, as in 0.10.9, so the loop never runs with a zero count. Scratch space is `addi.d $sp,-64/-128`, restored afterwards. `nostack` is not claimed, so the stack adjustment is permitted. Loads stay in `state` / `blocks` (`$a1 += 64/128`, `$a2` counts the blocks) and `K32`/`K64`. Every clobbered register is declared, and `preserves_flags` is set. | **Sound** (by reading; not run on hardware). |
 | `sha256/riscv_zknh/utils.rs:18` and `sha512/riscv_zknh/utils.rs:16,32` | Aligned block loads after an `is_aligned()` check. | **Sound.** |
-| `sha256/riscv_zknh/utils.rs:49-77` and `sha512/riscv_zknh/utils.rs:49-77,99-126` | Unaligned block loads (`load_unaligned_block`). | **UNSOUND for some inputs (S-1).** |
+| `sha256/riscv_zknh/utils.rs:49-77` and `sha512/riscv_zknh/utils.rs:49-77,99-126` | Unaligned block loads (`load_unaligned_block`). | **UNSOUND for some inputs (S-1).** Unreachable in any stable build: discretion recorded. |
 | `sha*/riscv_zknh/utils.rs` `opaque_load` (sha256 :87, sha512 :138,150) | `assert!(R < k.len())` precedes an asm load at `R*4` (or `R*8`, plus +4 on rv32). | **Sound.** |
 
 ## Findings
 
-### S-1 (blocks certification): out-of-allocation pointer arithmetic in the riscv-zknh backend
+### S-1 (discretion; would block without the Policy 6 carve-out): out-of-allocation pointer arithmetic in the riscv-zknh backend
 
 `src/sha256/riscv_zknh/utils.rs:44,61` and `src/sha512/riscv_zknh/utils.rs:44,61,94,110`.
 
@@ -157,3 +166,23 @@ As behavioural evidence only, ACDP's `sig-001` / `can-001` golden vectors pin
 
 These Tier B crates remain exempted: `digest 0.11.3`, `block-buffer 0.12.1`,
 `cpufeatures 0.3.1`, `hybrid-array 0.4.14`, and `crypto-common 0.2.2`.
+
+## Draft upstream issue: RustCrypto/hashes (S-2). Text only; NOT filed.
+
+> **Title:** sha2 0.11.0 aarch64 backends load 16 bytes through a one-element reference
+> (`vld1q_u32(&K32[t])`)
+>
+> In `src/sha256/aarch64_sha2.rs` (lines 33-80), the round constants are loaded with
+> `vld1q_u32(&K32[t])`. The same pattern appears in `src/sha512/aarch64_sha3.rs`
+> (lines 39-153) as `vld1q_u64(&K64[t])`. The pointer comes from `&K32[t]`, a reference
+> to a single `u32`, but the intrinsic reads four elements.
+>
+> The read stays inside the `static` table, so this is not an out-of-bounds access in
+> practice. Under Stacked Borrows, however, the derived pointer's provenance covers only
+> the one element, so Miri (SB) would report it. 0.10.x had the same pattern.
+>
+> Suggested fix: `vld1q_u32(K32[t..].as_ptr())` and `vld1q_u64(K64[t..].as_ptr())`,
+> which carry provenance for the rest of the table.
+>
+> Separately: will 0.11.1 ship #879, the riscv-zknh `load_unaligned_block`
+> `wrapping_sub`/`add` fix? Is there a planned release date?

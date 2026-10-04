@@ -1,7 +1,10 @@
 # Review worksheet: `zeroize` 1.9.0 (issue #322, Phase 2)
 
-- **Verdict:** NOT CERTIFIED. KEPT EXEMPT under the #322 concern rule. See DECISIONS.md
-  `322-zeroize` (`Needs: Fable decision`).
+- **Verdict:** NOT CERTIFIED. KEPT EXEMPT under the #322 concern rule. Fable decided this
+  after independent verification (DECISIONS.md `322-zeroize`, DECIDED: option 1).
+  - The Policy 6 carve-out does not apply: `bindings/acdp-wasm` is a published ACDP
+    artifact, its stable wasm32 build compiles the faulty fallback, and it is in scope.
+  - **Exit criterion:** delta-audit 1.9.1 when it is released.
 - **Reviewer:** Ajit Koti <ajitkoti@zer07labs.com>. Reviewed with Claude (Opus) assistance.
 - **Date:** 2026-10-04
 - **Policy:** DECISIONS.md "#322 supply-chain audit policy"
@@ -119,6 +122,28 @@ rather than the tag or niche at offset 0, the fallback read is UB.
 **Fix for upstream.** Use `black_box` alone, or read through `MaybeUninit<u8>`
 (`read_volatile(p.cast::<MaybeUninit<u8>>())`).
 
+**Refinement (Fable verification).** Rustc places the tag of a *direct-tagged* enum at
+offset 0, so the tag is initialized after a `None` write. `Option<Z>::zeroize` therefore
+hits Z-1 only for a *niche-encoded* `Z` whose niche is not at offset 0.
+
+**ACDP exposure.**
+- ACDP's secret path is the `SigningKey` `[u8; 32]`: a per-byte `volatile_write` followed
+  by a barrier on the byte just written, whose byte 0 is initialized.
+- No zeroized `Option` exists in the wasm dependency tree.
+- So no ACDP code path hits Z-1 today. The crate-level `safe-to-deploy` claim still cannot
+  be made, because `acdp-wasm` is published.
+
+**Upstream status (2026-10-04).**
+- RustCrypto/utils#1535, merged 2026-09-11, removes the internal callers of
+  `optimization_barrier`.
+- `src/barrier.rs` on master is byte-identical to 1.9.0, so the safe `pub fn` is still
+  affected.
+- 1.9.1 is unreleased.
+- Z-1 has not been reported upstream; the draft issue is below.
+
+**Downgrade to 1.8.2: not recommended.** It means lock churn across three bindings, a
+fight with Dependabot bumping it back, and an MSRV change (1.60 vs 1.85).
+
 ### Z-2 (non-blocking observation): `zeroize_flat_type` puts the barrier on the pointer variable
 
 `src/lib.rs:823` calls `optimization_barrier(&data)`, where `data: *mut F`. That takes a
@@ -144,3 +169,25 @@ The review does not claim:
 - side-channel resistance.
 
 `zeroize_derive 1.5.0` remains exempted (Tier B).
+
+## Draft upstream issue: RustCrypto/utils (Z-1). Text only; NOT filed.
+
+> **Title:** zeroize 1.9.0: the `optimization_barrier` non-asm fallback reads possibly
+> uninitialized memory as `u8` (UB from safe code)
+>
+> On targets without stable `asm!` (for example `wasm32-unknown-unknown`), and under
+> Miri, `optimization_barrier<T: ?Sized>(val: &T)` (`src/barrier.rs:92-100`) calls
+> `custom_black_box(ptr.cast::<u8>())`, which does `core::ptr::read_volatile(p)` with
+> `p: *const u8`. If byte 0 of `*val` is uninitialized, producing that `u8` is
+> Undefined Behaviour. Byte 0 is uninitialized for padding, for `MaybeUninit`, or for the
+> payload bytes of a niche-encoded enum after a typed write.
+>
+> `optimization_barrier` is a safe `pub fn`, so safe code can trigger this, e.g.
+> `zeroize::optimization_barrier(&core::mem::MaybeUninit::<u8>::uninit())`.
+>
+> We see that #1535 removed the internal callers, but `barrier.rs` on master is unchanged.
+>
+> Suggested fix: `read_volatile(p.cast::<core::mem::MaybeUninit<u8>>())`, or drop
+> `custom_black_box` and rely on `core::hint::black_box` alone.
+>
+> Could this be included in 1.9.1?

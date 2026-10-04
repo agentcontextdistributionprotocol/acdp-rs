@@ -20,6 +20,7 @@ and [`registries/profiles.md`](https://github.com/agentcontextdistributionprotoc
 | `tests/tls_conformance.rs` | **Network/TLS** | `fed-001..006` and `pub-001/003/006` against an in-process TLS registry (the `did-ssrf-*` fixtures run in `tests/conformance.rs`). |
 | `tests/registry_client.rs` | **HTTP client** | `RegistryClient` / `WebResolver` against `wiremock`. |
 | `tests/verify_algorithm.rs` | **Verification** | The RFC-ACDP-0001 §5.11 algorithm, per step. |
+| `tests/ed25519_strict.rs` | **Verification** | Strict Ed25519 (RFC-ACDP-0001 §5.10, `sig-004`): the small-order forgery is rejected at every entry point (publish, did:key, historical, lifecycle, receipt, checkpoint, cosignature). |
 | `tests/receipts.rs` | **0.2.0** | Registry receipts (RFC-ACDP-0010), `rcpt-*` / `rot-001`. |
 | `tests/lineage_head_receipts.rs` | **0.3.0** | Lineage-head receipts (RFC-ACDP-0011). |
 | `tests/transparency_log.rs` | **0.3.0** | Transparency log (RFC-ACDP-0012), `log-001..004`. |
@@ -51,6 +52,12 @@ The binding test suites pin the same `sig-001` constants
 [Language bindings](bindings.md#golden-vector-parity). If these drift, the
 protocol is broken, not just the test.
 
+`sig-004` is the negative counterpart: identity public key, identity `R`,
+`s = 0` satisfies the cofactorless Ed25519 equation for every message, so a
+non-strict verifier accepts it. acdp-rs verifies Ed25519 strictly and rejects
+it with `invalid_signature`; `tests/conformance.rs` executes the vector and
+its eight small-order encodings (as `A` and as `R`).
+
 ## ACDP_SPEC_DIR — the conformance switch
 
 `tests/conformance.rs` parses the canonical spec fixtures: `sig-001`, `can-001`,
@@ -79,7 +86,7 @@ find, then fails the run. The dedicated CI conformance job sets it.
 CI does not test against the spec's moving `main`: the conformance job
 (`.github/workflows/ci.yml`) and the bindings conformance job
 (`.github/workflows/bindings.yml`) check out the spec at a pinned commit
-(currently `9deb7e7`). To reproduce CI locally, check out that commit. How the
+(currently `6d5cdb8`, the first spec commit carrying `sig-004`). To reproduce CI locally, check out that commit. How the
 pin is bumped when the spec moves is described in `acdp-ci`'s
 [Spec propagation](https://github.com/agentcontextdistributionprotocol/acdp-ci/blob/main/DELIVERY-STANDARD.md#spec-propagation-a-new-spec-revision--its-sha-pinners)
 section.

@@ -1,18 +1,18 @@
 # Research track
 
-Forward-looking technical evaluation memos for roadmap items that are **not yet
-scheduled**. Each memo is a rigorous, implementer-actionable assessment grounded
+Forward-looking technical evaluation memos for roadmap items. Except where the
+status column says otherwise, they are **not yet scheduled**. Each memo is a rigorous, implementer-actionable assessment grounded
 in this codebase (the workspace crates under `crates/`) and the normative RFC set
 (`agentcontextdistributionprotocol/agentcontextdistributionprotocol/rfcs`). They
-are **evaluations, not commitments** — none of these is on a release plan, and
-none changes any wire-frozen v0.1.0 semantic.
+are **evaluations, not commitments**, and none changes any wire-frozen v0.1.0
+semantic.
 
 These sit apart from the [library documentation](../README.md), which describes
 the crate *as it exists*. This directory describes things the crate *could grow*.
 
 | Memo | One-line summary | Status |
 |---|---|---|
-| [WebAssembly target](wasm-target.md) | Ship the pure types/crypto/JCS/`did:key`/offline-verify core to browsers, edge, and WASI for client-side zero-server-trust verification; the core is already `ring`-free, so `getrandom` on `wasm32` is the only real sharp edge. | evaluation / not scheduled |
+| [WebAssembly target](wasm-target.md) | Ship the pure types/crypto/JCS/`did:key`/offline-verify core to browsers, edge, and WASI for client-side zero-server-trust verification; the core is already `ring`-free, so `getrandom` on `wasm32` is the only real sharp edge. | shipped as `bindings/acdp-wasm` (npm `@agentcontextdistributionprotocol/acdp-wasm`); memo retained for history |
 | [`did:webvh` evaluation](did-webvh.md) | Add `did:web` + Verifiable History as a second resolvable producer DID method to close the historical-key-validity gap (RFC-ACDP-0008 §9.3) and the domain-lapse problem independently of receipts; additive and capability-gated like `did:key` was. | evaluation / not scheduled |
 | [Post-quantum signatures (ML-DSA)](post-quantum.md) | Add ML-DSA (FIPS 204) via the existing algorithm-agility machinery (the `ml-dsa-*` identifiers are already reserved); an additive, maturity-gated change whose only hard parts are crate readiness and KB-scale signature/key sizes. | evaluation / not scheduled |
 

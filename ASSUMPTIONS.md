@@ -899,3 +899,93 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   surface. `Proven`'s public API is now exactly the plan's originally-named 3 accessors
   (`agent_id`, `key_fingerprint`, `request`). Applied immediately (not deferred) since this
   crate has not released `Proven` yet, making the change genuinely costless today.
+
+## CLAUDE.md edits left uncommitted (gitignored)
+- **Plan:** plans/docs-refresh-2026-10.md
+- **Assumed:** the plan's Phase 1/2 CLAUDE.md fixes should be applied to the working
+  copy only, because `CLAUDE.md` is listed in `.gitignore:65` (as is `plans/`) and was
+  never tracked — not force-added into the docs commits.
+- **Chose:** edited `CLAUDE.md` in place; commits `fa8c673` / `2f69f01` contain no
+  CLAUDE.md changes.
+- **Alternatives:** `git add -f CLAUDE.md` (rejected: would start tracking a file the repo
+  deliberately ignores — a policy change the plan does not ask for).
+- **Blast radius if wrong:** trivial — `git add -f CLAUDE.md` in a follow-up commit.
+- **Status:** UNCONFIRMED
+
+## SECURITY.md support window wording
+- **Plan:** plans/docs-refresh-2026-10.md
+- **Assumed:** "latest minor only (currently 0.14.x)" is the intended support policy (the
+  plan offered "latest 0.14.x minor" or "latest minor only").
+- **Chose:** a rolling "latest minor (0.14.x)" row plus "older minors unsupported".
+- **Alternatives:** pin a fixed `0.14.x` row (rejected: goes stale on every minor bump).
+- **Blast radius if wrong:** trivial — one table edit.
+- **Status:** UNCONFIRMED
+
+
+## Embedded-ref root `content_hash` is not checked (docs follow code, not plan)
+- **Plan:** plans/docs-refresh-2026-10.md (Phase 3 item 9)
+- **Assumed:** the plan's wording "when present it is checked alongside the DataRef root
+  `content_hash`" is stale. `verify_embedded_hash` (`crates/acdp-validation/src/lib.rs`)
+  checks only `embedded.content_hash`; the root-hash check for embedded refs was reverted
+  (test `verify_embedded_hash_ignores_root_only_content_hash`). The root `content_hash` is
+  checked only for `location` refs, after fetch, in `fetch_and_verify_data_ref`.
+- **Chose:** `docs/producing.md` "Data-reference hashes" documents the code's behavior.
+- **Alternatives:** follow the plan text (rejected: code is truth).
+- **Blast radius if wrong:** trivial — one docs table.
+- **Status:** UNCONFIRMED
+
+## LIM-2 pointer goes to rustdoc, not plans/archive
+- **Plan:** plans/docs-refresh-2026-10.md (Phase 3 item 7)
+- **Assumed:** `plans/` is gitignored, so a link to
+  `plans/archive/issue-248-revocation-auto-discovery.md` would be broken for every reader
+  of the published repo.
+- **Chose:** `docs/consuming.md` names LIM-2 and points at the `RevocationPolicy` rustdoc,
+  which documents the limitation.
+- **Alternatives:** link the untracked plan file (rejected: dead link on GitHub).
+- **Blast radius if wrong:** trivial.
+- **Status:** UNCONFIRMED
+
+## `HttpsDataRefFetcher` SSRF refusals documented as a third mapping
+- **Plan:** plans/docs-refresh-2026-10.md (Phase 3 item 5)
+- **Assumed:** the plan lists two mappings (WebResolver → `KeyResolution`, `RegistryClient` →
+  `Http` with source chain). `HttpsDataRefFetcher` maps reqwest errors with
+  `AcdpError::Http(e.to_string())` (`crates/acdp-client/src/data_ref.rs`), so the SSRF
+  detail is not in its message.
+- **Chose:** `docs/security.md` lists it as its own row; folded into follow-up issue 1.
+- **Alternatives:** lump it with `RegistryClient` (rejected: the message claim would be false).
+- **Blast radius if wrong:** trivial.
+- **Status:** UNCONFIRMED
+
+## Verification stage table follows `verify_retrieved` order
+- **Plan:** plans/docs-refresh-2026-10.md (Phase 3 item 7)
+- **Assumed:** the stage table must reflect the code's order: receipt (RFC-0010) and
+  revocation (RFC-0014 §7/§8) run before key resolution + signature, because the
+  historical-key path depends on a verified receipt (`crates/acdp-client/src/verified.rs`
+  `verify_retrieved`).
+- **Chose:** stages 3 (receipt), 4 (revocation), 5 (key resolution + signature), 6 (status).
+- **Blast radius if wrong:** trivial.
+- **Status:** UNCONFIRMED
+
+## Release-runbook history deleted, not archived
+- **Plan:** plans/docs-refresh-2026-10.md (Phase 4 item 7)
+- **Assumed:** `plans/` is gitignored (`git ls-files plans` is empty), so moving the
+  0.8.x history to `plans/archive/release-runbook-0.8.x-history.md` would leave a pointer to
+  a file no reader of the repo can open.
+- **Chose:** deleted the history sections (2026-08-29 state table, 0.8.1 retroactive-tag
+  plan, RS-8 0.8.3 release, SPEC-11 coordination note) from `docs/release-runbook.md`; the
+  pointer line cites `git show 115ce3d:docs/release-runbook.md`. The generally useful
+  procedure (pause workflows before a manual tag push; release-state check commands) was
+  kept in short "Manual tag push" / "Checking release state" sections. Existing pointers to
+  untracked `plans/archive/issue-*` files were replaced with the issue/PR numbers.
+- **Alternatives:** write the archive file locally (rejected: untracked, so a dead pointer).
+- **Blast radius if wrong:** trivial — the text is one `git show` away.
+- **Status:** UNCONFIRMED
+
+## Audited crypto versions kept in the supply-chain table
+- **Plan:** plans/docs-refresh-2026-10.md (Phase 4 item 1 vs. its grep)
+- **Assumed:** item 1 asks for the audited version next to the locked version, which
+  conflicts with the Phase 4 grep expecting `0.23.40` to be absent. The table's
+  "Audited" column legitimately lists `rustls` 0.23.40.
+- **Chose:** keep the audited column (item 1 wins); the grep's single hit is that cell.
+- **Blast radius if wrong:** trivial.
+- **Status:** UNCONFIRMED

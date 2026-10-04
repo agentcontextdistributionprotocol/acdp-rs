@@ -13,7 +13,7 @@ The crate ships three SDKs that reuse the Rust crypto core:
 
 All implement the same protocol primitives as the Rust crate, so a context
 signed in Python verifies in Node, in the browser, and in Rust. The protocol
-contract they implement is the same RFC set (0001 through 0015) — see
+contract they implement is the same RFC set (0001 through 0016) — see
 [RFC-ACDP-0001](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0001-core.md).
 
 ## Design: crypto in Rust, HTTP in the host
@@ -23,9 +23,9 @@ calls.** They expose the deterministic, security-critical operations — buildin
 hashing, signing, verifying — and leave transport to the host language's HTTP
 stack (`httpx`, `fetch`, …).
 
-This is why both bindings depend on `acdp` with `default-features = false`:
-`reqwest` / `tokio` / `rustls` never enter the Python wheel or the `.node`
-binary. They only need the pure-types/crypto core (see
+This is why all three bindings depend on `acdp` with `default-features = false`:
+`reqwest` / `tokio` / `rustls` never enter the Python wheel, the `.node`
+binary, or the `.wasm` module. They only need the pure-types/crypto core (see
 [Architecture → feature gating](architecture.md#feature-gating)).
 
 ### JSON across the FFI boundary
@@ -202,21 +202,40 @@ See `bindings/acdp-wasm/README.md` for the full exported surface.
 
 ## Golden-vector parity
 
-Both binding test suites pin the **same** constants from the `sig-001` golden
-vector:
+All three binding test suites pin the **same** constants from the `sig-001`
+golden vector:
 
 ```
 content_hash    = "sha256:f170150d…"
 signature.value = "ErkbV+FU…"
 ```
 
-The `bindings/interop/` suite cross-builds the identical request in *both*
-bindings and asserts byte equality. If any of those constants drift, the
-protocol is broken — that's the tripwire.
+The `bindings/interop/` suite cross-builds the identical request in the Python
+and Node bindings and asserts byte equality. If any of those constants drift,
+the protocol is broken — that's the tripwire.
+
+`bindings/interop/test_parity.py` also guards against API drift, using
+`bindings/interop/expected_surface.json` as the single source of truth:
+
+- **API-surface parity** — Python and Node must expose the same classes and
+  methods (names normalized to snake_case) as the manifest.
+- **Arity guard** — the manifest's `arity` block pins each method's required
+  and total parameter count, checked against Python, the Node `.d.ts`, and the
+  WASM `.d.ts`.
+- **WASM surface parity** — the manifest's `wasm` block pins the flat
+  `acdp-wasm` export surface, including its permanent aliases. These checks
+  skip when `bindings/acdp-wasm/pkg/` is not built, unless
+  `ACDP_REQUIRE_WASM_PARITY=1` (set in CI).
+- **Version parity** — all binding manifests carry the same version.
 
 ```bash
-cd bindings/interop && pytest        # or: make interop
+cd bindings/interop && pytest        # or: make interop (build wasm first with make sdk-wasm)
 ```
+
+For an independent, non-Rust second implementation used as the
+cross-implementation interop gate, see `acdp-verifier-py`'s
+[Cross-implementation interop](https://github.com/agentcontextdistributionprotocol/acdp-verifier-py#cross-implementation-interop-rfc-acdp-0015-witness-cosigning)
+section.
 
 ## Build details
 
@@ -224,4 +243,18 @@ Each binding is a **standalone Cargo package** (its own `[workspace]` table)
 that references the parent crate via `path = "../.."`. They are **not** part of
 `cargo test` on the root crate — build each independently with maturin / napi /
 wasm-pack. The top-level `Makefile` wraps the common targets: `make sdk-py`,
-`make sdk-node`, `make interop`.
+`make sdk-node`, `make sdk-wasm`, `make interop`, `make audit-bindings`
+(`cargo deny` advisories for all three bindings plus `npm audit`), and
+`make ci-bindings` (what the bindings CI runs, locally).
+
+### Pinned binding toolchain
+
+The binding builds pin their toolchains so a release is reproducible:
+
+| Tool | Pin | Where |
+|---|---|---|
+| `maturin`, `pytest` | `maturin==1.15.0`, `pytest==8.4.2` | `.github/workflows/bindings.yml` |
+| `@napi-rs/cli` | `3.8.6`, exact | `bindings/acdp-node/package.json`; asserted in `bindings.yml` and `bindings-release.yml` |
+| `rustc` for the wasm release | `1.98.0` | `.github/workflows/acdp-wasm-release.yml` |
+| `wasm-pack` | `0.15.0` | `bindings.yml`, `acdp-wasm-release.yml` (via `taiki-e/install-action`) |
+| Cargo / npm lockfiles | `bindings/{acdp-py,acdp-node,acdp-wasm}/Cargo.lock` and `bindings/acdp-node/package-lock.json` are committed; builds run `--locked` | `.gitignore` (rationale), the binding workflows |

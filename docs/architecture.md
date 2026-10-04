@@ -65,7 +65,7 @@ paths. The crates form a strict bottom→top dependency DAG:
 | `acdp-safe-http` | `SsrfPolicy`, the HTTPS guard, and `SafeDnsResolver` (the DNS-time IP filter). |
 | `acdp-did` | `WebResolver` for `did:web` (LRU-cached, SSRF-gated) and offline `did:key` resolution (Ed25519 + P-256). |
 | `acdp-crypto` | `hash` (`content_hash` + `lineage_id`), `sign`/`verify` (Ed25519 + ECDSA-P256), fingerprint, Merkle. |
-| `acdp-types` | Wire types: `body`, `publish`, `search`, `data_ref`, `capabilities`, `receipt`, `lifecycle`, `log`, `cosignature`, `revocation`, `primitives`. `Body`/`RegistryState` are kept apart; `Status`/`ContextType`/`Visibility` are **open enums**. |
+| `acdp-types` | Wire types: `body`, `publish`, `search`, `data_ref`, `capabilities`, `anchor`, `receipt`, `lifecycle`, `log`, `cosignature`, `revocation`, `primitives`. `Body`/`RegistryState` are kept apart; `Status`/`ContextType`/`Visibility` are **open enums**. |
 | `acdp-validation` | One-stop schema validator: `validate_publish_request`, `validate_body`, `validate_data_ref`, `validate_metadata`, `compute_embedded_hash`. |
 | `acdp-verify` | High-level verification: resolver-backed `Verifier` (RFC-ACDP-0001 §5.11) plus offline `did:key` body/request/lifecycle verification. |
 | `acdp-producer` | `Producer` + `RequestBuilder`. Enforces v1-vs-v2+ rules, ms-truncates timestamps, validates, computes `content_hash`, then signs. |
@@ -96,8 +96,12 @@ Features on the umbrella crate add layers outward from a pure core:
               └─────────────────────────────────────────────┘
 ```
 
-- **`client` and `server` are independent.** A consumer pulls `client`; a
-  registry pulls `server`. They don't require each other.
+- **`client` and `server` are independent, with one coupling.** A consumer
+  pulls `client`; a registry pulls `server`, and neither requires the other.
+  But when both are enabled, `client` also turns on `acdp-server/client`
+  (`acdp-server?/client` in the root `Cargo.toml`), which is what gates the
+  resolver-backed (`did:web`) async `RegistryServer::publish_verified` path.
+  A `server`-only build keeps the offline `did:key` publish path.
 - **The core has no async runtime and no HTTP.** `reqwest`/`tokio`/`rustls`
   only arrive with `client`. Offline `did:key` verification and the receipt
   types work with `--no-default-features`. This is what lets the
@@ -106,7 +110,7 @@ Features on the umbrella crate add layers outward from a pure core:
 
 ## Where the work happens
 
-Most behavior changes land in **`crates/acdp-validation/src/lib.rs`** (~44 KB).
+Most behavior changes land in **`crates/acdp-validation/src/lib.rs`** (~70 KB).
 It is the single source of structural truth: the builder calls it before
 signing, the `server` feature calls it during publish, and `VerifiedContext`
 calls it during retrieval. If you're changing what counts as a valid context,
@@ -122,7 +126,8 @@ These are enforced and will fail CI or review if broken:
 
 - **No `unsafe`** — `unsafe_code = "forbid"` at the crate root.
 - **JCS is in-house** — do not swap `crates/acdp-jcs/src/lib.rs` for an external
-  crate; the `-0.0` handling is pinned by `proptest_jcs.rs` and `can-001`.
+  crate; the `-0.0` handling is pinned by `proptest_jcs.rs`,
+  `crates/acdp-jcs/tests/differential_numbers.rs`, and `can-001`.
 - **No `clap`** in the CLI — manual arg parsing keeps the dep graph identical to
   the library.
 - **`Option::is_none` skip-serialization** is load-bearing — never emit `null`

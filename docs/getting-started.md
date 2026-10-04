@@ -11,8 +11,10 @@ and [RFC-ACDP-0002 (Context Body)](https://github.com/agentcontextdistributionpr
 cargo add acdp                          # client profile (default)
 cargo add acdp --no-default-features    # types + crypto only, no HTTP
 cargo add acdp --features server        # add the registry-side validator
-cargo add acdp --features cli           # add the `acdp` binary
 ```
+
+The `acdp` command-line tool is its own crate: `cargo install acdp-cli`
+(see [CLI](cli.md)).
 
 MSRV is **1.86**. The crate is `#![forbid(unsafe_code)]`.
 
@@ -23,7 +25,6 @@ MSRV is **1.86**. The crate is `#![forbid(unsafe_code)]`.
 | `client` | ✓ | `reqwest`, `tokio`, `rustls`, `lru` | an **agent or consumer** retrieving and verifying contexts. |
 | *(none)* | — | `serde`, `sha2`, `ed25519-dalek` | building or signing contexts **offline**, or embedding in a binding (HTTP done by the host). |
 | `server` | ✗ | validation + store traits | implementing a **registry**. |
-| `cli` | ✗ | `client` + tokio macros | you want the `acdp` command-line tool. |
 | `tracing` | ✗ | `tracing` | you want `#[instrument]` spans on async ops. |
 
 The pure-types/crypto core (`--no-default-features`) has **no HTTP stack** —
@@ -107,11 +108,13 @@ cross-registry resolution are covered in [Consuming & verifying](consuming.md).
 
 ## Run the examples
 
-The repo ships two runnable examples:
+The repo ships four runnable examples:
 
 ```bash
-cargo run --example producer                    # build + sign a request, print the JSON
-cargo run --example consumer --features client  # verify the sig-001 golden vector offline
+cargo run --example producer                       # build + sign a request, print the JSON
+cargo run --example consumer --features client     # verify the sig-001 golden vector offline
+cargo run --example supersession                   # build a v2 that supersedes v1
+cargo run --example end_to_end --features client,test-transport  # publish→retrieve→verify
 ```
 
 The `consumer` example deliberately runs **offline** against the `sig-001`
@@ -133,14 +136,16 @@ The full error taxonomy and which errors are safe to retry is in
 
 ## Pre-PR checks
 
-If you're contributing to the crate, the CI-equivalent local check set is:
+If you're contributing to the crate, the CI-equivalent local check set
+(canonical copy: [CONTRIBUTING.md § Local checks](../CONTRIBUTING.md#local-checks)) is:
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --all-features --all-targets -- -D warnings
-cargo clippy --no-default-features --all-targets -- -D warnings
-cargo test --all-features
-cargo test --no-default-features
+cargo clippy --workspace --all-features --all-targets -- -D warnings
+cargo clippy -p acdp --no-default-features --all-targets -- -D warnings
+cargo test --workspace --all-features
+cargo test -p acdp --no-default-features
+RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo +nightly doc --workspace --all-features --no-deps
 ACDP_SPEC_DIR=../agentcontextdistributionprotocol cargo test --test conformance
 ```
 

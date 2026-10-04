@@ -17,9 +17,23 @@ and [`registries/profiles.md`](https://github.com/agentcontextdistributionprotoc
 | `tests/proptest_jcs.rs` | **Canonicalization** | Property tests for RFC 8785 JCS, including the `-0.0` edge case. |
 | `tests/wire_serialization.rs` | **Serde** | Round-trip JSON serialization and the absent-vs-null convention. |
 | `tests/conformance.rs` | **Behavior** | The spec conformance fixtures (see below). |
-| `tests/tls_conformance.rs` | **Network/SSRF** | `fed-*` and `did-ssrf-*` fixtures against an in-process TLS server. |
+| `tests/tls_conformance.rs` | **Network/TLS** | `fed-001..006` and `pub-001/003/006` against an in-process TLS registry (the `did-ssrf-*` fixtures run in `tests/conformance.rs`). |
 | `tests/registry_client.rs` | **HTTP client** | `RegistryClient` / `WebResolver` against `wiremock`. |
-| `tests/cli.rs` | **CLI** | The `acdp` binary as a subprocess. |
+| `tests/verify_algorithm.rs` | **Verification** | The RFC-ACDP-0001 §5.11 algorithm, per step. |
+| `tests/receipts.rs` | **0.2.0** | Registry receipts (RFC-ACDP-0010), `rcpt-*` / `rot-001`. |
+| `tests/lineage_head_receipts.rs` | **0.3.0** | Lineage-head receipts (RFC-ACDP-0011). |
+| `tests/transparency_log.rs` | **0.3.0** | Transparency log (RFC-ACDP-0012), `log-001..004`. |
+| `tests/lifecycle.rs` | **0.3.0** | Lifecycle events & retraction (RFC-ACDP-0013), `lc-001..003`. |
+| `tests/key_revocation.rs` | **0.3.0** | Key-revocation signal (RFC-ACDP-0014), `rev-001..004` / `rot-001`. |
+| `tests/key_revocation_publish_gate.rs` | **0.3.0** | RFC-ACDP-0014 §5 step 2 on the `did:web` publish path. |
+| `tests/witness_cosigning.rs` | **0.4.0** | Witness cosigning (RFC-ACDP-0015), `wit-001..004`. |
+| `tests/anchors.rs` | **0.5.0 Draft** | Typed external anchors (RFC-ACDP-0016), `anc-001..005`. |
+| `tests/store_contract.rs` | **Server** | Concurrency contract of the atomic publish commit. |
+| `tests/send_futures.rs` | **API** | Compile-only check that the affected public async entry points return `Send` futures. |
+| `tests/body_materialization.rs` | **Server** | Field-transfer guard: every `PublishRequest` field survives `Body::from_publish_request`. |
+| `tests/negative_inputs.rs` | **API** | Error-path coverage: malformed identifiers, builder rule violations, oversize fields. |
+| `tests/facade_reexports.rs` | **API** | Locks in the umbrella crate's re-export surface. |
+| `crates/acdp-cli/tests/cli.rs` | **CLI** | The `acdp` binary as a subprocess. |
 
 ## The golden vectors are non-negotiable
 
@@ -40,7 +54,8 @@ protocol is broken, not just the test.
 ## ACDP_SPEC_DIR — the conformance switch
 
 `tests/conformance.rs` parses the canonical spec fixtures: `sig-001`, `can-001`,
-all 16 conformance files, and every `examples/**/*.json`. It locates the spec
+every fixture family in `schemas/conformance/` (140+ files), and every
+`examples/**/*.json`. It locates the spec
 checkout via the **`ACDP_SPEC_DIR`** environment variable, falling back to a
 sibling-directory path, and **skips gracefully** if neither is found.
 
@@ -55,17 +70,32 @@ ACDP_SPEC_DIR=../agentcontextdistributionprotocol cargo test --test conformance
 
 (Adjust the path to wherever you've checked out the spec repo.)
 
+Set **`ACDP_REQUIRE_CONFORMANCE=1`** to turn the silent skip into a hard
+failure: a missing spec checkout, or any fixture a test references but cannot
+find, then fails the run. The dedicated CI conformance job sets it.
+
+### The pinned spec ref
+
+CI does not test against the spec's moving `main`: the conformance job
+(`.github/workflows/ci.yml`) and the bindings conformance job
+(`.github/workflows/bindings.yml`) check out the spec at a pinned commit
+(currently `9deb7e7`). To reproduce CI locally, check out that commit. How the
+pin is bumped when the spec moves is described in `acdp-ci`'s
+[Spec propagation](https://github.com/agentcontextdistributionprotocol/acdp-ci/blob/main/DELIVERY-STANDARD.md#spec-propagation-a-new-spec-revision--its-sha-pinners)
+section.
+
 ## The full pre-PR check set
 
-This mirrors CI exactly:
+This mirrors CI (canonical copy:
+[CONTRIBUTING.md § Local checks](../CONTRIBUTING.md#local-checks)):
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --all-features --all-targets -- -D warnings
-cargo clippy --no-default-features --all-targets -- -D warnings
-cargo test --all-features
-cargo test --no-default-features
-RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo +nightly doc --all-features --no-deps
+cargo clippy --workspace --all-features --all-targets -- -D warnings
+cargo clippy -p acdp --no-default-features --all-targets -- -D warnings
+cargo test --workspace --all-features
+cargo test -p acdp --no-default-features
+RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo +nightly doc --workspace --all-features --no-deps
 ACDP_SPEC_DIR=../agentcontextdistributionprotocol cargo test --test conformance
 ```
 
@@ -78,7 +108,7 @@ is optional and local-only — install them when touching dependencies or crypto
 cargo test --all-features golden_vector::sig_001   # one golden vector
 cargo test --test conformance                      # one integration file
 cargo test -- --nocapture some_test                # with stdout
-cargo test --no-default-features                    # core only, no HTTP
+cargo test -p acdp --no-default-features             # core only, no HTTP
 ```
 
 ## Which profile does this crate claim?

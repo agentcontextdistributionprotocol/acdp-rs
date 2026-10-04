@@ -58,9 +58,20 @@ builds (`WebResolver`, `RegistryClient`, `HttpsDataRefFetcher`,
 `SsrfPolicy` *at DNS time, before the socket is opened*, so a host that
 DNS-rebinds to a forbidden range can never be connected to.
 
-A host whose answers fall in a forbidden range is refused with
-`AcdpError::KeyResolution` (permanent — HTTP 400, `is_transient == false`), not
-a connect error.
+A host whose answers fall in a forbidden range is refused before any connect.
+How that refusal surfaces depends on the client:
+
+| Path | Error | `is_transient()` |
+|---|---|---|
+| `WebResolver` (resolving a `did:web` document) | `AcdpError::KeyResolution` (wire `key_resolution_failed`, HTTP 400) | `false` |
+| `RegistryClient` (and any other path through `From<reqwest::Error>`) | `AcdpError::Http("connection failed: … SSRF policy … forbidden …")` | `true` |
+| `HttpsDataRefFetcher` | `AcdpError::Http(…)` carrying only reqwest's outer message | `true` |
+
+On the `RegistryClient` path the refusal is visible only because
+`From<reqwest::Error>` appends the error's `source()` chain to the message. Because `Http` is
+transient, `RegistryClient::publish_with_retry` retries such a refusal until
+`max_attempts` runs out. If you need to stop early, check the message for
+`SSRF policy`.
 
 ## SsrfPolicy
 
@@ -94,7 +105,8 @@ need to opt in explicitly. The intended seams:
 > These are **test-only**. Never construct a loopback-permitting policy in
 > production code — it reopens the SSRF surface the defaults close. The TLS
 > conformance suite (`tests/tls_conformance.rs`) uses exactly these seams to
-> drive the `fed-*` and `did-ssrf-*` fixtures against an in-process server.
+> drive the `fed-001..006` and `pub-001/003/006` fixtures against an in-process
+> server (the `did-ssrf-*` fixtures run in `tests/conformance.rs`).
 
 ## What the crate does *not* do
 

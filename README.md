@@ -7,10 +7,11 @@
 [![MSRV](https://img.shields.io/badge/MSRV-1.86-blue)](https://blog.rust-lang.org/2025/04/03/Rust-1.86.0.html)
 
 Reference Rust library for the **Agent Context Distribution Protocol** —
-ACDP v0.1.0 Final, the v0.2.0 Trust & Hardening layer, v0.3.0 (lineage-head
-receipts, transparency log, lifecycle/retraction, key revocation), and
-v0.4.0 (witness cosigning, RFC-ACDP-0015, promoted to Final 2026-08) —
-all wire-frozen (`ACDP_VERSION` is `0.4.0`).
+ACDP 0.1.0–0.4.0 Final (`ACDP_VERSION` = `0.4.0`), with the 0.5.0 Draft
+surfaces (RFC-ACDP-0016 typed external anchors, the `unsupported_media_type`
+wire code, and the RFC-ACDP-0014 §4/§10 registry amendments) implemented
+ahead of promotion. For the status of each wire line, see the spec's
+[`VERSIONING.md`](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/VERSIONING.md).
 
 ACDP lets agents publish immutable, producer-signed context descriptors,
 retrieve and verify them locally, discover them by keyword, and follow signed
@@ -18,11 +19,13 @@ retrieve and verify them locally, discover them by keyword, and follow signed
 registry receipts, offline `did:key` verification, a transparency log,
 witness cosigning, key revocation, and lifecycle/retraction events.
 
-> Spec: [agentcontextdistributionprotocol/spec](https://github.com/agentcontextdistributionprotocol)
-> — RFC-ACDP-0001 through 0015 (0009 reserved). This crate implements 0001–0008
-> (core + retrieval/lineage/search), 0010 (registry receipts), 0011 (lineage-head
-> receipts), 0012 (transparency log), 0013 (lifecycle/retraction), 0014 (key
-> revocation), and 0015 (witness cosigning).
+> Spec: [agentcontextdistributionprotocol/agentcontextdistributionprotocol](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol)
+> — RFC-ACDP-0001 through 0016 (0009 reserved; see the spec's
+> [RFC index](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/README.md)).
+> This crate implements 0001–0008 (core + retrieval/lineage/search), 0010
+> (registry receipts), 0011 (lineage-head receipts), 0012 (transparency log),
+> 0013 (lifecycle/retraction), 0014 (key revocation), 0015 (witness
+> cosigning), and 0016 (typed external anchors, 0.5.0 Draft).
 
 This is a **Cargo workspace**: the umbrella `acdp` crate is a thin facade that
 re-exports a fine-grained set of crates under [`crates/`](./crates/)
@@ -245,9 +248,12 @@ cargo run --example end_to_end --features client,test-transport  # publish→ret
 ## Testing
 
 ```bash
-cargo test --all-features                          # full suite
-cargo test --no-default-features                   # core (no HTTP)
+cargo test --workspace --all-features              # full suite
+cargo test -p acdp --no-default-features           # core (no HTTP)
 ```
+
+The full CI-equivalent pre-PR check set is in
+[CONTRIBUTING.md § Local checks](./CONTRIBUTING.md#local-checks).
 
 The suite includes:
 - Spec golden vectors (`tests/golden_vector.rs` — `sig-001`, `can-001`).
@@ -270,7 +276,7 @@ ACDP_SPEC_DIR=../agentcontextdistributionprotocol cargo test --test conformance
 ## Building docs
 
 ```bash
-RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo +nightly doc --all-features --no-deps --open
+RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo +nightly doc --workspace --all-features --no-deps --open
 ```
 
 ## Dependencies

@@ -1,12 +1,17 @@
 # Errors & Retries
 
 Everything fallible in the crate returns `Result<_, acdp::AcdpError>`.
-`AcdpError` is a typed, exhaustive mapping of the RFC-ACDP-0007 §5 wire error
-codes plus a handful of local/transport errors. This page explains the variants,
+`AcdpError` is a typed mapping of every RFC-ACDP-0007 §5 wire error code
+(plus the codes later RFCs added) and a handful of local/transport errors. It is
+`#[non_exhaustive]`, so new variants can be added without a breaking release. This page explains the variants,
 how registry wire errors round-trip into them, and which are safe to retry.
 
-The wire error envelope and the canonical code registry are specified in
+The wire error envelope is specified in
 [RFC-ACDP-0007 (Capabilities & Errors)](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0007-capabilities.md).
+The canonical code registry, including which wire line introduced each code, is
+the spec's
+[`registries/error-codes.md`](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/registries/error-codes.md).
+The table below only adds this crate's Rust variant for each code.
 
 ## Wire errors round-trip into typed variants
 
@@ -30,11 +35,17 @@ newer registry never breaks an older client.
 | `key_resolution_unreachable` | `KeyResolutionUnreachable` |
 | `key_not_authorized` | `KeyNotAuthorized` |
 | `unsupported_algorithm` | `UnsupportedAlgorithm` |
+| `unsupported_media_type` | `UnsupportedMediaType` |
 | `not_implemented` | `NotImplemented` |
 | `cursor_expired` | `CursorExpired` |
 | `invalid_cursor` | `InvalidCursor` |
 | `duplicate_publish` | `DuplicatePublish` |
 | `cross_registry_resolution_failed` | `CrossRegistryResolutionFailed` |
+| `invalid_receipt` | `InvalidReceipt` |
+| `invalid_log_proof` | `InvalidLogProof` |
+| `invalid_witness_cosignature` | `InvalidWitnessCosignature` |
+| `immutable_field` | `ImmutableField` |
+| `invalid_lifecycle_transition` | `InvalidLifecycleTransition` |
 | `internal_error` | `RegistryInternal` |
 | `superseded_target` | `SupersededTarget { reason, message }` |
 | *(unknown)* | `Registry(WireError)` |
@@ -91,14 +102,28 @@ for the variants the spec marks retryable:
 | `RateLimited` | back off and retry (RFC-ACDP-0008 §4.3) |
 | `CrossRegistryResolutionFailed` | a foreign hop failed transiently (RFC-ACDP-0006 §7) |
 | `RegistryInternal` | the registry hit an internal error (HTTP 5xx) |
-| `Http` | a connect/timeout/transport error |
+| `Http` | a connect/timeout/transport error — **including** a DNS-rebinding refusal on the `RegistryClient` path (see the note below) |
+| `RevocationDiscoveryFailed { source }` | a wrapper, not a wire code: it delegates to `source.is_transient()` |
 
 Everything else — `InvalidSignature`, `SchemaViolation`, `HashMismatch`,
-`KeyResolution` (permanent resolution failure, including DNS-rebinding
-refusals), `NotAuthorized`, `NotFound`, `PayloadTooLarge`,
+`KeyResolution` (permanent resolution failure: a DNS-rebinding refusal while
+resolving a `did:web` document, and also a `did:key` resolver fault raised by
+publish-request validation, which surfaces as `KeyResolution` rather than
+`SchemaViolation`), `NotAuthorized`, `NotFound`, `PayloadTooLarge`,
 `ContextIdMismatch` (locally detected context substitution — RFC-ACDP-0008
-§9.1; a misbehaving registry will serve the same wrong body on retry) — is
+§9.1; a misbehaving registry will serve the same wrong body on retry),
+`RevocationDiscoveryBudgetExceeded` (a caller-configured discovery
+request/byte budget ran out; retrying reproduces it) — is
 **permanent**. Retrying won't help; fix the request or the key.
+
+> **DNS-rebinding refusals map differently per path.** `SafeDnsResolver`
+> refuses a hostname that resolves into a forbidden range at DNS time. On the
+> `WebResolver` (`did:web`) path that refusal is classified as
+> `KeyResolution`, which is permanent. On `RegistryClient` (which goes through
+> `From<reqwest::Error>`), the same refusal arrives as
+> `Http("connection failed: … SSRF policy … forbidden …")`, which is
+> **transient**, so `publish_with_retry` will retry it until `max_attempts`.
+> See [security.md](security.md#dns-rebinding-protection-is-active).
 
 `RegistryClient::publish_with_retry(req, idempotency_key, max_attempts)` uses
 exactly this predicate, with bounded backoff (250 ms → 500 ms → 1 s → 2 s):
@@ -112,7 +137,8 @@ let resp = client.publish_with_retry(req, "publish-2026-06-10-abc", 4).await?;
 
 ## Handling errors
 
-`AcdpError` is a plain enum — `match` on it, or use the convenience predicates:
+`AcdpError` is `#[non_exhaustive]`: `match` on the variants you care about, but
+always keep a wildcard arm (here, `other`), or use the convenience predicates:
 
 ```rust
 # fn handle(err: acdp::AcdpError) {
@@ -128,8 +154,11 @@ match &err {
 ```
 
 `From` conversions are provided for `serde_json::Error` (→ `Serialization`),
-`std::io::Error` (→ `Http`), and `reqwest::Error` (→ `Http`, distinguishing
-connect/timeout), so `?` works naturally in client code.
+`std::io::Error` (→ `Http`), and `reqwest::Error` (→ `Http`, prefixed
+`connection failed:` for connect/timeout errors), so `?` works naturally in
+client code. The `reqwest::Error` conversion appends the error's whole
+`source()` chain to the message. Without that, reqwest's own `Display` would
+hide the underlying cause, such as a `SafeDnsResolver` SSRF refusal.
 
 ## Adding a new wire error code
 

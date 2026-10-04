@@ -79,8 +79,13 @@ pub struct RegistryServer<S: RegistryStore, L: RateLimiter = NoopRateLimiter> {
     /// via [`Self::with_lifecycle`], which also advertises the
     /// `acdp-registry-lifecycle` profile. When disabled, the lifecycle
     /// operations return [`AcdpError::NotImplemented`] (the §6 rule for
-    /// non-advertising registries: HTTP 501) and the registry never
-    /// emits `lifecycle_events` or the `retracted` status.
+    /// non-advertising registries: HTTP 501), so a disabled server never
+    /// *records* `lifecycle_events` or produces the `retracted` status.
+    /// The read paths (`retrieve`/`lineage`/`current`/`search`) do NOT
+    /// gate on this flag — they serve whatever the store projects — so a
+    /// disabled server MUST NOT be run over a store that already contains
+    /// lifecycle events (e.g. one previously written by a
+    /// lifecycle-enabled instance).
     lifecycle_enabled: bool,
 }
 
@@ -140,6 +145,79 @@ impl<'a> Proven<'a> {
     /// used to decide whether fingerprinting was worth its cost.
     pub fn key_fingerprint(&self) -> Option<&str> {
         self.fingerprint.as_deref()
+    }
+}
+
+/// Which producer lifecycle endpoint (RFC-ACDP-0013 §6) a
+/// [`ProvenLifecycle`] was proved for — the endpoint-binding rule
+/// (`retracted` on `/retract`, `republished` on `/republish`, §6 step 2)
+/// is checked against it during proving.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum LifecycleEndpoint {
+    /// `POST /contexts/{ctx_id}/retract` — accepts only `retracted` events.
+    Retract,
+    /// `POST /contexts/{ctx_id}/republish` — accepts only `republished`
+    /// events.
+    Republish,
+}
+
+impl LifecycleEndpoint {
+    /// The only `event_type` this endpoint accepts (§6 step 2).
+    pub fn expected_event_type(self) -> acdp_types::lifecycle::LifecycleEventType {
+        match self {
+            LifecycleEndpoint::Retract => acdp_types::lifecycle::LifecycleEventType::Retracted,
+            LifecycleEndpoint::Republish => acdp_types::lifecycle::LifecycleEventType::Republished,
+        }
+    }
+}
+
+/// Proof that a producer [`LifecycleEvent`](acdp_types::lifecycle::LifecycleEvent)
+/// passed RFC-ACDP-0013 §6 steps 1–3 — visibility, event validation and
+/// endpoint binding, actor authentication, and the §5 signature
+/// verification — but nothing has been persisted yet. The lifecycle
+/// counterpart of [`Proven`].
+///
+/// Produced only by a successful
+/// [`RegistryServer::prove_lifecycle_identity`] /
+/// [`RegistryServer::prove_lifecycle_identity_did_key`] call (no public
+/// constructor) and consumed by
+/// [`RegistryServer::commit_lifecycle_proven`]. Proving deliberately does
+/// **not** check the strict retracted/republished alternation: only the
+/// store's locked check inside
+/// [`RegistryStore::commit_lifecycle_event`] is authoritative, so a
+/// token never certifies that its transition will still be legal at
+/// commit time.
+///
+/// Not [`Clone`] — a move-only, "prove once, commit once" value:
+///
+/// ```compile_fail
+/// fn assert_clone<T: Clone>() {}
+/// assert_clone::<acdp_server::registry::ProvenLifecycle<'static>>();
+/// ```
+#[derive(Debug)]
+pub struct ProvenLifecycle<'a> {
+    event: &'a acdp_types::lifecycle::LifecycleEvent,
+    endpoint: LifecycleEndpoint,
+    authority: String,
+}
+
+impl<'a> ProvenLifecycle<'a> {
+    /// The event this proof was established for.
+    pub fn event(&self) -> &acdp_types::lifecycle::LifecycleEvent {
+        self.event
+    }
+
+    /// The endpoint the event was proved against.
+    pub fn endpoint(&self) -> LifecycleEndpoint {
+        self.endpoint
+    }
+
+    /// The authenticated actor — always the context's producer
+    /// (`agent_id`, §6 step 3). The key to charge a per-producer rate
+    /// limit against.
+    pub fn actor(&self) -> &AgentDid {
+        &self.event.actor
     }
 }
 
@@ -1360,16 +1438,27 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
         Ok(self.store.commit_lifecycle_event(event)?.into_context())
     }
 
-    /// Shared verified pipeline for both endpoints (resolver-backed).
+    /// **Prove** a did:web producer's lifecycle event for `endpoint` —
+    /// RFC-ACDP-0013 §6 steps 1–3 (visibility, event validation and
+    /// endpoint binding, actor authentication) plus the §5 signature
+    /// verification through the RFC-ACDP-0001 §5.11 resolver pipeline —
+    /// without touching the store's write path. Pair with
+    /// [`Self::commit_lifecycle_proven`]; the two together are exactly
+    /// what [`Self::retract_verified`] / [`Self::republish_verified`]
+    /// compose. A registry that charges a per-producer rate limit can
+    /// charge between the two, once identity is established.
+    ///
+    /// Does NOT check strict alternation (§6 step 4) — that is the
+    /// store's locked check at commit time.
     #[cfg(feature = "client")]
-    async fn lifecycle_transition_verified(
+    pub async fn prove_lifecycle_identity<'a>(
         &self,
-        event: &acdp_types::lifecycle::LifecycleEvent,
-        expected_type: acdp_types::lifecycle::LifecycleEventType,
+        event: &'a acdp_types::lifecycle::LifecycleEvent,
+        endpoint: LifecycleEndpoint,
         requester: Option<&AgentDid>,
         resolver: &acdp_did::WebResolver,
-    ) -> Result<FullContext, AcdpError> {
-        let ctx = self.lifecycle_precheck(event, &expected_type, requester)?;
+    ) -> Result<ProvenLifecycle<'a>, AcdpError> {
+        let ctx = self.lifecycle_precheck(event, &endpoint.expected_event_type(), requester)?;
         // Full RFC-ACDP-0001 §5.11 pipeline over the event hash
         // (RFC-ACDP-0013 §5): resolution, assertionMethod, algorithm
         // binding, SSRF protections — the same pipeline as a publish.
@@ -1381,24 +1470,69 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
             resolver,
         )
         .await?;
-        self.lifecycle_commit(event)
+        Ok(ProvenLifecycle {
+            event,
+            endpoint,
+            authority: self.authority.clone(),
+        })
     }
 
-    /// Shared verified pipeline for did:key producers — no resolver.
-    fn lifecycle_transition_verified_did_key(
+    /// **Prove** a did:key producer's lifecycle event — the same steps as
+    /// [`Self::prove_lifecycle_identity`], with the §5 signature verified
+    /// purely (the DID is the key), so it is available without the
+    /// `client` feature. Rejects `did:web` (and any other method) actors
+    /// with `key_resolution_failed`.
+    pub fn prove_lifecycle_identity_did_key<'a>(
         &self,
-        event: &acdp_types::lifecycle::LifecycleEvent,
-        expected_type: acdp_types::lifecycle::LifecycleEventType,
+        event: &'a acdp_types::lifecycle::LifecycleEvent,
+        endpoint: LifecycleEndpoint,
         requester: Option<&AgentDid>,
-    ) -> Result<FullContext, AcdpError> {
-        let ctx = self.lifecycle_precheck(event, &expected_type, requester)?;
+    ) -> Result<ProvenLifecycle<'a>, AcdpError> {
+        let ctx = self.lifecycle_precheck(event, &endpoint.expected_event_type(), requester)?;
         acdp_verify::verify_lifecycle_event_offline(
             &serde_json::to_value(event)?,
             &event.ctx_id,
             &ctx.body.agent_id,
             None,
         )?;
-        self.lifecycle_commit(event)
+        Ok(ProvenLifecycle {
+            event,
+            endpoint,
+            authority: self.authority.clone(),
+        })
+    }
+
+    /// **Commit** a [`ProvenLifecycle`] — RFC-ACDP-0013 §6 steps 4–5:
+    /// the atomic strict-alternation check and append via
+    /// [`RegistryStore::commit_lifecycle_event`]. Returns the store's
+    /// [`LifecycleCommitOutcome`](crate::registry::store::LifecycleCommitOutcome),
+    /// so a front-end can tell a fresh append from a byte-identical
+    /// `event_id` retry.
+    ///
+    /// Re-checks that lifecycle is enabled on THIS instance
+    /// ([`AcdpError::NotImplemented`] otherwise) and rejects a token
+    /// proved against a different registry authority with
+    /// [`AcdpError::RegistryInternal`].
+    pub fn commit_lifecycle_proven(
+        &self,
+        proven: ProvenLifecycle<'_>,
+    ) -> Result<crate::registry::store::LifecycleCommitOutcome, AcdpError> {
+        if !self.lifecycle_enabled {
+            return Err(AcdpError::NotImplemented(
+                "this registry does not advertise acdp-registry-lifecycle \
+                 (RFC-ACDP-0013 §6: lifecycle endpoints are not implemented)"
+                    .into(),
+            ));
+        }
+        if proven.authority != self.authority {
+            return Err(AcdpError::RegistryInternal(format!(
+                "commit_lifecycle_proven: ProvenLifecycle was established against authority \
+                 '{}', but this registry's authority is '{}' — refusing to commit a proof \
+                 against the wrong registry",
+                proven.authority, self.authority
+            )));
+        }
+        self.store.commit_lifecycle_event(proven.event)
     }
 
     /// **RFC-conformant retraction** — `POST /contexts/{ctx_id}/retract`
@@ -1420,13 +1554,11 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
         requester: Option<&AgentDid>,
         resolver: &acdp_did::WebResolver,
     ) -> Result<FullContext, AcdpError> {
-        self.lifecycle_transition_verified(
-            event,
-            acdp_types::lifecycle::LifecycleEventType::Retracted,
-            requester,
-            resolver,
-        )
-        .await
+        let proven = self
+            .prove_lifecycle_identity(event, LifecycleEndpoint::Retract, requester, resolver)
+            .await?;
+        self.commit_lifecycle_proven(proven)
+            .map(|o| o.into_context())
     }
 
     /// **RFC-conformant republication** — `POST
@@ -1442,13 +1574,11 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
         requester: Option<&AgentDid>,
         resolver: &acdp_did::WebResolver,
     ) -> Result<FullContext, AcdpError> {
-        self.lifecycle_transition_verified(
-            event,
-            acdp_types::lifecycle::LifecycleEventType::Republished,
-            requester,
-            resolver,
-        )
-        .await
+        let proven = self
+            .prove_lifecycle_identity(event, LifecycleEndpoint::Republish, requester, resolver)
+            .await?;
+        self.commit_lifecycle_proven(proven)
+            .map(|o| o.into_context())
     }
 
     /// [`Self::retract_verified`] for `did:key` producers — the §5
@@ -1460,11 +1590,10 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
         event: &acdp_types::lifecycle::LifecycleEvent,
         requester: Option<&AgentDid>,
     ) -> Result<FullContext, AcdpError> {
-        self.lifecycle_transition_verified_did_key(
-            event,
-            acdp_types::lifecycle::LifecycleEventType::Retracted,
-            requester,
-        )
+        let proven =
+            self.prove_lifecycle_identity_did_key(event, LifecycleEndpoint::Retract, requester)?;
+        self.commit_lifecycle_proven(proven)
+            .map(|o| o.into_context())
     }
 
     /// [`Self::republish_verified`] for `did:key` producers.
@@ -1473,11 +1602,10 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
         event: &acdp_types::lifecycle::LifecycleEvent,
         requester: Option<&AgentDid>,
     ) -> Result<FullContext, AcdpError> {
-        self.lifecycle_transition_verified_did_key(
-            event,
-            acdp_types::lifecycle::LifecycleEventType::Republished,
-            requester,
-        )
+        let proven =
+            self.prove_lifecycle_identity_did_key(event, LifecycleEndpoint::Republish, requester)?;
+        self.commit_lifecycle_proven(proven)
+            .map(|o| o.into_context())
     }
 
     /// **NOT RFC-conformant.** Skips signature verification (the §6

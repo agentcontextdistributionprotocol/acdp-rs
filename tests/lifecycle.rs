@@ -23,7 +23,10 @@ use std::path::{Path, PathBuf};
 use acdp::crypto::SigningKey;
 use acdp::error::AcdpError;
 use acdp::producer::Producer;
-use acdp::registry::{parse_lifecycle_request, InMemoryStore, RegistryServer};
+use acdp::registry::{
+    parse_lifecycle_request, InMemoryStore, LifecycleCommitOutcome, LifecycleEndpoint,
+    RegistryServer,
+};
 use acdp::types::capabilities::Limits;
 use acdp::types::lifecycle::{retraction_state, LifecycleEvent, LifecycleEventType};
 use acdp::types::receipt::{LineageHeadReceipt, ReceiptSigner};
@@ -929,4 +932,378 @@ fn lc_fixture_files_parse_and_pin_expected_codes() {
         let a = &lc3["scenarios"].as_array().unwrap()[0];
         assert_eq!(a["expected"]["error_code"], "not_found");
     }
+}
+
+// ── prove / commit split (#337) ──────────────────────────────────────────────
+
+/// Prove + commit through the split API, returning the post-transition
+/// context — the split equivalent of `retract_verified_did_key` /
+/// `republish_verified_did_key`.
+fn split_did_key(
+    server: &RegistryServer<InMemoryStore>,
+    event: &LifecycleEvent,
+    endpoint: LifecycleEndpoint,
+    requester: Option<&AgentDid>,
+) -> Result<acdp::types::body::FullContext, AcdpError> {
+    let proven = server.prove_lifecycle_identity_did_key(event, endpoint, requester)?;
+    server
+        .commit_lifecycle_proven(proven)
+        .map(LifecycleCommitOutcome::into_context)
+}
+
+/// Appended-event count, read as the producer (so private targets count).
+fn event_count(server: &RegistryServer<InMemoryStore>, ctx_id: &CtxId) -> usize {
+    let (producer, _) = did_key_identity(&PRODUCER_SEED);
+    server
+        .retrieve(ctx_id, Some(&producer))
+        .unwrap()
+        .unwrap()
+        .registry_state
+        .lifecycle_events
+        .map_or(0, |e| e.len())
+}
+
+/// Registry state with the registry-assigned `ctx_id` (and the signature,
+/// which covers it) removed from each event, so two contexts driven
+/// through the same sequence on two servers compare equal.
+fn normalized(ctx: acdp::types::body::FullContext) -> serde_json::Value {
+    let mut state = serde_json::to_value(&ctx.registry_state).unwrap();
+    for e in state["lifecycle_events"].as_array_mut().unwrap() {
+        let e = e.as_object_mut().unwrap();
+        e.remove("ctx_id");
+        e.remove("signature");
+    }
+    state
+}
+
+/// The split API yields exactly what the bundled entry points yield, for
+/// both endpoints, and reports `Applied` on a fresh append.
+#[test]
+fn split_did_key_prove_commit_matches_bundled_both_endpoints() {
+    let bundled = lifecycle_server();
+    let split = lifecycle_server();
+    let b = publish_v1(&bundled, "split parity");
+    let s = publish_v1(&split, "split parity");
+
+    let at = chrono::Utc::now();
+    let (actor, key_id) = did_key_identity(&PRODUCER_SEED);
+    let ev = |ctx: &CtxId, ty: LifecycleEventType, id: &str| {
+        LifecycleEvent::new(id, ctx.clone(), ty, at, actor.clone(), None)
+            .unwrap()
+            .sign_with(SigningKey::from_bytes(&PRODUCER_SEED), key_id.clone())
+            .unwrap()
+    };
+
+    // Retract.
+    let rb = ev(&b.ctx_id, LifecycleEventType::Retracted, EV1);
+    let rs = ev(&s.ctx_id, LifecycleEventType::Retracted, EV1);
+    let via_bundled = bundled.retract_verified_did_key(&rb, None).unwrap();
+    let proven = split
+        .prove_lifecycle_identity_did_key(&rs, LifecycleEndpoint::Retract, None)
+        .unwrap();
+    assert_eq!(proven.endpoint(), LifecycleEndpoint::Retract);
+    assert_eq!(proven.event(), &rs);
+    assert_eq!(proven.actor(), &actor);
+    let outcome = split.commit_lifecycle_proven(proven).unwrap();
+    assert!(matches!(outcome, LifecycleCommitOutcome::Applied(_)));
+    let via_split = outcome.into_context();
+    assert_eq!(via_split.registry_state.status, Status::Retracted);
+    assert_eq!(normalized(via_bundled), normalized(via_split));
+
+    // Republish.
+    let pb = ev(&b.ctx_id, LifecycleEventType::Republished, EV2);
+    let ps = ev(&s.ctx_id, LifecycleEventType::Republished, EV2);
+    let via_bundled = bundled.republish_verified_did_key(&pb, None).unwrap();
+    let via_split = split_did_key(&split, &ps, LifecycleEndpoint::Republish, None).unwrap();
+    assert_eq!(via_split.registry_state.status, Status::Active);
+    assert_eq!(normalized(via_bundled), normalized(via_split));
+}
+
+/// No `ProvenLifecycle` is produced for any request the bundled path
+/// would reject before the store — and none of the failures writes.
+#[test]
+fn prove_lifecycle_identity_produces_no_token_on_failure() {
+    let server = lifecycle_server();
+    let v1 = publish_v1(&server, "no token");
+    let retract = signed_event(
+        &PRODUCER_SEED,
+        &v1.ctx_id,
+        LifecycleEventType::Retracted,
+        EV1,
+        None,
+    );
+
+    // Lifecycle disabled on this instance.
+    let disabled =
+        RegistryServer::try_new(InMemoryStore::new(), caps(), REGISTRY_AUTHORITY).unwrap();
+    let dv1 = publish_v1(&disabled, "disabled");
+    let dev = signed_event(
+        &PRODUCER_SEED,
+        &dv1.ctx_id,
+        LifecycleEventType::Retracted,
+        EV1,
+        None,
+    );
+    let err = disabled
+        .prove_lifecycle_identity_did_key(&dev, LifecycleEndpoint::Retract, None)
+        .unwrap_err();
+    assert!(matches!(err, AcdpError::NotImplemented(_)), "got {err:?}");
+
+    // Wrong endpoint: a `retracted` event on /republish.
+    let err = server
+        .prove_lifecycle_identity_did_key(&retract, LifecycleEndpoint::Republish, None)
+        .unwrap_err();
+    assert!(matches!(err, AcdpError::SchemaViolation(_)), "got {err:?}");
+
+    // Actor ≠ producer.
+    let foreign = signed_event(
+        &STRANGER_SEED,
+        &v1.ctx_id,
+        LifecycleEventType::Retracted,
+        EV2,
+        None,
+    );
+    let err = server
+        .prove_lifecycle_identity_did_key(&foreign, LifecycleEndpoint::Retract, None)
+        .unwrap_err();
+    assert!(matches!(err, AcdpError::NotAuthorized(_)), "got {err:?}");
+
+    // Unsigned producer event.
+    let (actor, _) = did_key_identity(&PRODUCER_SEED);
+    let unsigned = LifecycleEvent::new(
+        EV3,
+        v1.ctx_id.clone(),
+        LifecycleEventType::Retracted,
+        chrono::Utc::now(),
+        actor,
+        None,
+    )
+    .unwrap();
+    let err = server
+        .prove_lifecycle_identity_did_key(&unsigned, LifecycleEndpoint::Retract, None)
+        .unwrap_err();
+    assert!(matches!(err, AcdpError::SchemaViolation(_)), "got {err:?}");
+
+    // Tampered after signing: the signature no longer covers the event.
+    let mut tampered = retract.clone();
+    tampered.reason = Some("edited after signing".into());
+    assert!(server
+        .prove_lifecycle_identity_did_key(&tampered, LifecycleEndpoint::Retract, None)
+        .is_err());
+
+    // Invisible context: a stranger probing a private context gets
+    // not_found, never a token.
+    let private_req = did_key_producer(&PRODUCER_SEED)
+        .publish_request()
+        .title("private target")
+        .context_type(ContextType::DataSnapshot)
+        .visibility(Visibility::Private)
+        .build()
+        .unwrap();
+    let private = server.publish_verified_did_key(&private_req, None).unwrap();
+    let (stranger_did, _) = did_key_identity(&STRANGER_SEED);
+    let probe = signed_event(
+        &STRANGER_SEED,
+        &private.ctx_id,
+        LifecycleEventType::Retracted,
+        EV1,
+        None,
+    );
+    let err = server
+        .prove_lifecycle_identity_did_key(&probe, LifecycleEndpoint::Retract, Some(&stranger_did))
+        .unwrap_err();
+    assert!(matches!(err, AcdpError::NotFound(_)), "got {err:?}");
+
+    // A did:web actor through the did:key prover → key_resolution_failed.
+    let web_did = AgentDid::new("did:web:agents.example.com:web-producer");
+    let web_key_id = format!("{}#key-1", web_did.as_str());
+    let web_producer = Producer::new(
+        SigningKey::from_bytes(&PRODUCER_SEED),
+        web_did.clone(),
+        web_key_id.clone(),
+    );
+    let web_req = web_producer
+        .publish_request()
+        .title("did:web target")
+        .context_type(ContextType::DataSnapshot)
+        .visibility(Visibility::Public)
+        .build()
+        .unwrap();
+    let web_ctx = server.publish_unverified_for_tests(&web_req).unwrap();
+    let web_event = LifecycleEvent::new(
+        EV1,
+        web_ctx.ctx_id.clone(),
+        LifecycleEventType::Retracted,
+        chrono::Utc::now(),
+        web_did,
+        None,
+    )
+    .unwrap()
+    .sign_with(SigningKey::from_bytes(&PRODUCER_SEED), web_key_id)
+    .unwrap();
+    let err = server
+        .prove_lifecycle_identity_did_key(&web_event, LifecycleEndpoint::Retract, None)
+        .unwrap_err();
+    assert!(matches!(err, AcdpError::KeyResolution(_)), "got {err:?}");
+
+    assert_eq!(event_count(&server, &v1.ctx_id), 0);
+    assert_eq!(event_count(&server, &private.ctx_id), 0);
+    assert_eq!(event_count(&server, &web_ctx.ctx_id), 0);
+}
+
+/// Commit refuses a token proved against a different authority, and a
+/// token committed on an instance that has lifecycle disabled.
+#[test]
+fn commit_lifecycle_proven_rejects_foreign_and_disabled_instances() {
+    let server = lifecycle_server();
+    let v1 = publish_v1(&server, "foreign commit");
+    let retract = signed_event(
+        &PRODUCER_SEED,
+        &v1.ctx_id,
+        LifecycleEventType::Retracted,
+        EV1,
+        None,
+    );
+
+    let mut other_caps = caps();
+    other_caps.registry_did = "did:web:other.example.com".into();
+    let other = RegistryServer::try_new(InMemoryStore::new(), other_caps, "other.example.com")
+        .unwrap()
+        .with_lifecycle()
+        .unwrap();
+    let proven = server
+        .prove_lifecycle_identity_did_key(&retract, LifecycleEndpoint::Retract, None)
+        .unwrap();
+    let err = other.commit_lifecycle_proven(proven).unwrap_err();
+    assert!(matches!(err, AcdpError::RegistryInternal(_)), "got {err:?}");
+
+    // Same authority, lifecycle disabled.
+    let disabled =
+        RegistryServer::try_new(InMemoryStore::new(), caps(), REGISTRY_AUTHORITY).unwrap();
+    let proven = server
+        .prove_lifecycle_identity_did_key(&retract, LifecycleEndpoint::Retract, None)
+        .unwrap();
+    let err = disabled.commit_lifecycle_proven(proven).unwrap_err();
+    assert!(matches!(err, AcdpError::NotImplemented(_)), "got {err:?}");
+
+    assert_eq!(event_count(&server, &v1.ctx_id), 0);
+}
+
+/// Prove never consults alternation or the stored events; the store's
+/// locked check at commit is the only authoritative one.
+#[test]
+fn split_commit_is_the_authoritative_transition_and_replay_check() {
+    let server = lifecycle_server();
+    let v1 = publish_v1(&server, "authoritative commit");
+
+    // Two tokens for the same transition, different event_ids: both
+    // prove, the second commit is an illegal double retract.
+    let first = signed_event(
+        &PRODUCER_SEED,
+        &v1.ctx_id,
+        LifecycleEventType::Retracted,
+        EV1,
+        Some("first"),
+    );
+    let second = signed_event(
+        &PRODUCER_SEED,
+        &v1.ctx_id,
+        LifecycleEventType::Retracted,
+        EV2,
+        None,
+    );
+    let p1 = server
+        .prove_lifecycle_identity_did_key(&first, LifecycleEndpoint::Retract, None)
+        .unwrap();
+    let p2 = server
+        .prove_lifecycle_identity_did_key(&second, LifecycleEndpoint::Retract, None)
+        .unwrap();
+    assert!(matches!(
+        server.commit_lifecycle_proven(p1).unwrap(),
+        LifecycleCommitOutcome::Applied(_)
+    ));
+    let err = server.commit_lifecycle_proven(p2).unwrap_err();
+    assert!(
+        matches!(err, AcdpError::InvalidLifecycleTransition(_)),
+        "got {err:?}"
+    );
+
+    // Same content proved again after it was appended: prove succeeds
+    // (it never touches the store), commit reports IdempotentReplay.
+    let again = server
+        .prove_lifecycle_identity_did_key(&first, LifecycleEndpoint::Retract, None)
+        .expect("prove does not consult stored events");
+    match server.commit_lifecycle_proven(again).unwrap() {
+        LifecycleCommitOutcome::IdempotentReplay(ctx) => {
+            assert_eq!(ctx.registry_state.lifecycle_events.unwrap().len(), 1)
+        }
+        other => panic!("expected IdempotentReplay, got {other:?}"),
+    }
+
+    // Same event_id, different content → schema_violation at commit.
+    let conflicting = signed_event(
+        &PRODUCER_SEED,
+        &v1.ctx_id,
+        LifecycleEventType::Retracted,
+        EV1,
+        Some("different"),
+    );
+    let p = server
+        .prove_lifecycle_identity_did_key(&conflicting, LifecycleEndpoint::Retract, None)
+        .unwrap();
+    let err = server.commit_lifecycle_proven(p).unwrap_err();
+    assert!(matches!(err, AcdpError::SchemaViolation(_)), "got {err:?}");
+
+    assert_eq!(event_count(&server, &v1.ctx_id), 1);
+}
+
+/// lc-001 A/C/F and the §6 retry rule driven through the split API.
+#[test]
+fn lc_001_retraction_flow_through_split_api() {
+    let server = lifecycle_server();
+    let v1 = publish_v1(&server, "golden retraction flow (split)");
+
+    let retract = signed_event(
+        &PRODUCER_SEED,
+        &v1.ctx_id,
+        LifecycleEventType::Retracted,
+        EV1,
+        Some("underlying data source found to be fabricated"),
+    );
+    let after = split_did_key(&server, &retract, LifecycleEndpoint::Retract, None).unwrap();
+    assert_eq!(after.registry_state.status, Status::Retracted);
+    assert_eq!(
+        after.registry_state.lifecycle_events.unwrap(),
+        vec![retract.clone()]
+    );
+
+    let replay = split_did_key(&server, &retract, LifecycleEndpoint::Retract, None)
+        .expect("byte-identical retry is idempotent");
+    assert_eq!(replay.registry_state.lifecycle_events.unwrap().len(), 1);
+
+    let double = signed_event(
+        &PRODUCER_SEED,
+        &v1.ctx_id,
+        LifecycleEventType::Retracted,
+        EV2,
+        None,
+    );
+    let err = split_did_key(&server, &double, LifecycleEndpoint::Retract, None).unwrap_err();
+    assert!(
+        matches!(err, AcdpError::InvalidLifecycleTransition(_)),
+        "got {err:?}"
+    );
+
+    let republish = signed_event(
+        &PRODUCER_SEED,
+        &v1.ctx_id,
+        LifecycleEventType::Republished,
+        EV3,
+        None,
+    );
+    let after = split_did_key(&server, &republish, LifecycleEndpoint::Republish, None).unwrap();
+    assert_eq!(after.registry_state.status, Status::Active);
+    let events = after.registry_state.lifecycle_events.unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[1].event_type, LifecycleEventType::Republished);
 }

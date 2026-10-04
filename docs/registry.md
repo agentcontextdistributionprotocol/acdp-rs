@@ -31,7 +31,11 @@ publish_verified(req, idempotency_key, resolver):
   4. algorithm check            │ verify_publish_request_signature
   5. did:web key resolution     │   (steps 7–8 of §2.1)
   6. signature verification     ┘
-  7. atomic commit via store   ← idempotency lookup, predecessor check,
+  7. self-revocation check     ← RFC-ACDP-0014 §5 step 2: a key-revocation body
+                                  must not be signed by the key it revokes
+                                  (acdp_version >= 0.3.0)
+  8. atomic commit via store   ← idempotency lookup, predecessor check
+                                  (incl. the RFC-0014 §4 admission hook),
                                   insert, supersession marking — one critical section
 ```
 
@@ -74,16 +78,37 @@ let server = RegistryServer::new(
 |---|---|
 | `new(store, caps, authority)` | Construct. Also `try_new` (validates caps) and `try_new_for_test_authority`. |
 | `with_rate_limiter(limiter)` | Swap in a `RateLimiter` (default `NoopRateLimiter`). |
+| `with_receipt_signer(signer)` | Mint an RFC-ACDP-0010 registry receipt atomically with each commit (`acdp-registry-receipts`). The signer's `registry_did` must match the capabilities. |
+| `with_lineage_head_receipts()` | Enable RFC-ACDP-0011 lineage-head receipts. Requires `with_receipt_signer` first. |
+| `with_lifecycle()` | Enable RFC-ACDP-0013 lifecycle events (`acdp-registry-lifecycle`, `acdp_version` ≥ 0.3.0). Needs a store that implements `commit_lifecycle_event`. |
 | `publish_verified(req, idem, resolver)` | The conformant publish path (above). |
 | `publish_verified_in_tenant(req, idem, resolver, tenant)` | Same, binding the row to a tenant id for multi-tenant stores. |
+| `publish_verified_did_key(req, idem)` / `publish_verified_did_key_in_tenant(...)` | The same pipeline for `did:key` producers. Synchronous: key resolution is offline. |
+| `publish_pinned_verified_in_tenant(...)` | The same pipeline against a caller-supplied, already-verified public key and algorithm. |
+| `publish_verified_in_tenant_with_outcome(...)` / `publish_verified_did_key_in_tenant_with_outcome(...)` / `publish_pinned_verified_in_tenant_with_outcome(...)` | The three tenant publish forms, returning `PublishCommitOutcome` instead of a bare `PublishResponse` (see [below](#insert-vs-idempotent-replay)). Use these when answering `POST /contexts`. |
 | `prove_publish_identity(req, resolver)` / `_did_key(req)` / `_pinned(req, key, alg)` | Split half of the publish pipeline — steps 1–8 (identity) without persisting. Pairs with `commit_proven`. |
 | `commit_proven(proven, idem, tenant)` | The other half — the atomic store commit, given a `Proven`. |
+| `retract_verified(event, requester, resolver)` / `republish_verified(...)` (and `_did_key` twins) | RFC-ACDP-0013 lifecycle transitions on a signed `LifecycleEvent`. Require `with_lifecycle()`. |
 | `retrieve` / `retrieve_body` / `lineage` / `current` | Read paths (RFC-ACDP-0004). |
 | `search` | Discovery (RFC-ACDP-0005). |
 | `store()` / `capabilities()` | Accessors. |
 
-The publish pipeline is `async` (it resolves DIDs over the network, requiring
-the `client` feature transitively); the read paths are synchronous.
+The `did:web` publish pipeline is `async` (it resolves DIDs over the network,
+requiring the `client` feature transitively); the `did:key` and pinned forms
+and the read paths are synchronous.
+
+### Insert vs. idempotent replay
+
+`PublishCommitOutcome` tells a front-end which HTTP status to send:
+
+| Variant | Meaning | Respond with |
+|---|---|---|
+| `Inserted(PublishResponse)` | a fresh publish was persisted | `201 Created` + `Location` |
+| `IdempotentReplay(PublishResponse)` | the same `(agent_id, Idempotency-Key)` and `content_hash` was already committed; this is the original response | `200 OK` — never `201` (RFC-ACDP-0003 `idem-002`) |
+
+`is_replay()`, `response()`, and `into_response()` read it. The publish entry
+points without `_with_outcome` return `into_response()`, so they cannot make
+this distinction.
 
 ### Splitting prove from commit
 
@@ -144,7 +169,7 @@ let validated = validator.validate_post_schema(req, raw_len)?;   // schema + siz
   (RFC-ACDP-0003 §3.1).
 
 `PublishValidator` does **not** verify the signature — call
-`crate::crypto::verify::verify_publish_request_signature(req, resolver)` for
+`acdp::verify::verify_publish_request_signature(req, resolver)` for
 that. `RegistryServer` wires the two together in the correct order; if you
 compose them yourself, keep that order.
 
@@ -162,6 +187,15 @@ perform the **entire post-verification commit as one atomic critical section**:
 | `search` | discovery query |
 | `idempotency_lookup` / `idempotency_record` / `idempotency_evict_expired` | `Idempotency-Key` handling (RFC-ACDP-0003 §6) |
 | **`commit_publish`** | idempotency lookup + predecessor verification + insert + supersession marking, **atomically** |
+| `commit_lifecycle_event` | persist an RFC-ACDP-0013 lifecycle event. The default returns `NotImplemented`; a store backing a `with_lifecycle()` server must implement it. |
+
+> **`PublishCommit::predecessor_admission`.** When the RFC-ACDP-0014 version
+> gate applies and the publish sets `supersedes`, the server passes a hook in
+> `PublishCommit::predecessor_admission`. `commit_publish` must call it with the
+> predecessor's stored `Body`, inside the same critical section, and only
+> **after** its producer-continuity and tenant checks (calling it earlier leaks
+> the predecessor's existence and type across tenants). An `Err` must abort the
+> commit. A store that ignores the hook fails an RFC-ACDP-0014 §4 MUST.
 
 > **Why `commit_publish` is atomic.** Two concurrent publishes against the same
 > `supersedes` target (or the same `Idempotency-Key`) must not both succeed.
@@ -172,6 +206,33 @@ perform the **entire post-verification commit as one atomic critical section**:
 
 `InMemoryStore` is a complete reference implementation — read
 `crates/acdp-server/src/registry/store.rs` to see exactly what `commit_publish` must guarantee.
+
+## Key-revocation publish gates (RFC-ACDP-0014)
+
+`PublishValidator` and `RegistryServer` gate key-revocation publishes on the
+`acdp_version` the registry **advertises** in its capabilities:
+
+| Advertised `acdp_version` | Behavior |
+|---|---|
+| < 0.3.0 | No RFC-ACDP-0014 checks. |
+| [0.3.0, 0.5.0) | Full §4 validation of standard `key-revocation` bodies, plus the §4 rule that a revocation is superseded only by a revocation (rejected as `SchemaViolation`). The interim `acdp:key-revocation` form is not §4-validated, but it still gets the §5 not-self-signed and controller checks. |
+| ≥ 0.5.0 (Draft) | As above, except a non-revocation superseding a revocation is rejected as `SupersededTarget` with reason `RevocationTypeMismatch` (`details.reason: revocation_type_mismatch`), and a **new** publish of the interim `acdp:key-revocation` form is rejected as `SchemaViolation`. Already-stored interim bodies are still served. |
+
+A malformed advertised version turns the gates on, not off.
+`acdp::registry::validator::key_revocation_gate_applies` and
+`check_revocation_supersession` are public for registries that compose the
+pipeline themselves. The normative text is RFC-ACDP-0014
+[§4](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0014-key-revocation.md#4-the-key-revocation-context-type)
+and
+[§10](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0014-key-revocation.md#10-capabilities-profile-errors-and-compatibility),
+with the 0.5.0 amendments summarized in the spec's
+[`VERSIONING.md`](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/VERSIONING.md).
+
+For a production registry built on these pieces, including adoption of the
+`prove_publish_identity*` / `commit_proven` split, see `acdp-registry-rs`'s
+[`docs/ENGINEERING-LOG.md`](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/ENGINEERING-LOG.md)
+and
+[`docs/ARCHITECTURE.md`](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/ARCHITECTURE.md).
 
 ## Rate limiting
 

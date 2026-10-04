@@ -110,9 +110,10 @@ The stages, in order (it returns on the **first** failure):
 | 0 | **Identifier binding** — the served body's `ctx_id` must equal the one requested, per RFC-ACDP-0006 §4.1 step 7 (NORMATIVE); see RFC-ACDP-0008 §9.1 for the threat rationale | `ContextIdMismatch` |
 | 1 | **Schema validation** (`validate_body`) — structural + embedded `data_ref` hashes | `SchemaViolation`, `DataRefHashMismatch` |
 | 2 | **`content_hash` recompute** — `sha256(JCS(ProducerContent))` vs declared | `HashMismatch` |
-| 3 | **`did:web` key resolution** via `WebResolver` | `KeyResolution`, `KeyResolutionUnreachable` |
-| 4 | **Signature verification** against the resolved key (algorithm must match) | `InvalidSignature`, `UnsupportedAlgorithm` |
-| 5 | **Status check** per policy | — |
+| 3 | **Registry receipt** (RFC-ACDP-0010) per `policy.receipts` — verified by recomputing the ProducerContent hash, before the signature stage because the historical-key path depends on it | `InvalidReceipt` |
+| 4 | **Revocation** (RFC-ACDP-0014 §7/§8) — `policy.revocations.known`, plus discovered or cached revocations when configured | `KeyNotAuthorized`; `RevocationDiscoveryFailed { source }` under `on_failure: FailClosed` (the `source` may be `RevocationDiscoveryBudgetExceeded`) |
+| 5 | **Key resolution and signature verification** — `did:web` via `WebResolver` or `did:key` offline; the algorithm must match the key; historical-key fallback per `policy.historical_keys` | `KeyResolution`, `KeyResolutionUnreachable`, `InvalidSignature`, `UnsupportedAlgorithm`, `KeyNotAuthorized` |
+| 6 | **Status check** per policy | `SchemaViolation` if `allow_unknown_status` is `false` |
 
 Stage 0 is the client-side form of the check: §4.1 step 7 permits "an
 equivalent typed error" in place of the registry-side
@@ -149,7 +150,10 @@ let policy = VerificationPolicy::strict_v0_1_0();   // == VerificationPolicy::de
 |---|---|---|
 | `validate_body_schema` | `true` | Run stage 1. Set `false` only in diagnostics that want to attempt signature checks on a body known to fail structural checks. |
 | `allow_unknown_status` | `true` | Accept `Status::Other` and degrade to active (RFC-ACDP-0004 §4.1). `false` rejects unknown statuses. |
-| `verify_registry_receipt` | `false` | Reserved for v0.1+ (RFC-ACDP-0009 §2.7); no-op today. |
+| `receipts` | `ReceiptPolicy::VerifyIfPresent` | Registry-receipt handling (RFC-ACDP-0010). `Ignore` skips receipts; `Require` fails a context that has no valid receipt. |
+| `historical_keys` | `HistoricalKeyPolicy::AcceptWithReceipt` | Whether a signature by a key no longer in the DID document is accepted when a verified receipt places the publish while the key was authorized. `Reject` refuses it. |
+| `lineage_head` | `LineageHeadPolicy::default()` | Lineage-head receipt handling (RFC-ACDP-0011). Consulted only by `fetch_current_with_policy`. |
+| `revocations` | `RevocationPolicy::default()` (no known revocations, no discovery) | Key-revocation enforcement (RFC-ACDP-0014 §7): `known` revocations plus optional `discover`. See [below](#revocation-auto-discovery). |
 
 > There is no "relaxed `did:web`" or "skip-hash" mode in v0.1.0. The strict
 > profile is the only one the `acdp-consumer` conformance suite covers. To
@@ -392,8 +396,8 @@ carry it:
 
 - `fetch` and `fetch_current` hardcode `VerificationPolicy::default()`
   and take no policy argument at all; use the `_with_policy` forms if
-  you need discovery. This is a known limitation, not an oversight —
-  see the issue #248 plan's LIM-2. (LIM-1, the `CrossRegistryResolver`
+  you need discovery. This is a known limitation (LIM-2), not an
+  oversight — see the `RevocationPolicy` rustdoc. (LIM-1, the `CrossRegistryResolver`
   gap, was closed by issue #260.)
 
 **`CrossRegistryResolver` and revocation discovery (issue #260).**
@@ -485,7 +489,7 @@ mismatch as fatal (see `data_ref_embedded` below).
 ```rust,no_run
 # #[cfg(feature = "client")]
 # async fn run(client: &acdp::client::RegistryClient, resolver: &acdp::did::WebResolver, ctx_id: &acdp::types::CtxId) -> Result<(), acdp::AcdpError> {
-use acdp::client::VerificationPolicy;
+use acdp::client::{VerificationPolicy, VerifiedContext};
 
 let policy = VerificationPolicy::strict_v0_1_0();
 let (verified, report) =

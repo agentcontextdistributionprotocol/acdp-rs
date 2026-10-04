@@ -56,15 +56,15 @@ opt-in:
 | Ed25519 mandatory for signature verification | RFC-ACDP-0001 §5.10 | `crypto::verify` |
 | Algorithm-downgrade rejection (signature.algorithm vs declared method type) | RFC-ACDP-0008 §3.9 | `crypto::verify::Verifier::verify_body` |
 | Embedded data ≤ 64 KB decoded | RFC-ACDP-0002 §6.3 | `validation::validate_data_ref` |
-| Embedded `content_hash` verified when present | RFC-ACDP-0003 §2.1 step 3 | `validation::verify_embedded_hash` (also wired into `PublishValidator`) |
+| Embedded `embedded.content_hash` verified when present | RFC-ACDP-0002 §6.3/§6.6, RFC-ACDP-0003 §2.1 step 3 | `validation::verify_embedded_hash` (also wired into `PublishValidator`) |
 | Cross-registry resolver verifies registry DID document binding | RFC-ACDP-0006 §4.1 step 3 | `client::cross_registry::CrossRegistryResolver::resolve` |
 | Tag / DID / ctx_id pattern checks at validation | schema | `validation` module |
 | Producer-side timestamp truncation to ms | RFC-ACDP-0001 §5.3 | `time::trunc_ms` |
 | Wire-error → typed error mapping | RFC-ACDP-0007 §5 | `AcdpError::from_wire_error` |
 | `Status` open enum (forward compat) | RFC-ACDP-0004 §4.1 | `types::Status` |
 
-DNS rebinding pinning (RFC-ACDP-0006 §7.6) is **not** implemented in this
-release; it requires hyper-level DNS pinning. See
-`plans/defered/README.md`. Operators running a registry that performs
-server-side cross-registry resolution SHOULD layer this defense in front
-of the library until upstream support lands.
+DNS-rebinding protection (RFC-ACDP-0006 §7.6) is **active**: every HTTP client
+the crate builds filters resolved IPs through the SSRF policy at DNS time,
+before connecting. See
+[docs/security.md](docs/security.md#dns-rebinding-protection-is-active),
+including how the refusal surfaces as an error on each path.

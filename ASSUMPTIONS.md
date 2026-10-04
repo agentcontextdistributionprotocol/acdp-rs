@@ -921,3 +921,47 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
 - **Blast radius if wrong:** trivial — one table edit.
 - **Status:** UNCONFIRMED
 
+
+## Embedded-ref root `content_hash` is not checked (docs follow code, not plan)
+- **Plan:** plans/docs-refresh-2026-10.md (Phase 3 item 9)
+- **Assumed:** the plan's wording "when present it is checked alongside the DataRef root
+  `content_hash`" is stale. `verify_embedded_hash` (`crates/acdp-validation/src/lib.rs`)
+  checks only `embedded.content_hash`; the root-hash check for embedded refs was reverted
+  (test `verify_embedded_hash_ignores_root_only_content_hash`). The root `content_hash` is
+  checked only for `location` refs, after fetch, in `fetch_and_verify_data_ref`.
+- **Chose:** `docs/producing.md` "Data-reference hashes" documents the code's behavior.
+- **Alternatives:** follow the plan text (rejected: code is truth).
+- **Blast radius if wrong:** trivial — one docs table.
+- **Status:** UNCONFIRMED
+
+## LIM-2 pointer goes to rustdoc, not plans/archive
+- **Plan:** plans/docs-refresh-2026-10.md (Phase 3 item 7)
+- **Assumed:** `plans/` is gitignored, so a link to
+  `plans/archive/issue-248-revocation-auto-discovery.md` would be broken for every reader
+  of the published repo.
+- **Chose:** `docs/consuming.md` names LIM-2 and points at the `RevocationPolicy` rustdoc,
+  which documents the limitation.
+- **Alternatives:** link the untracked plan file (rejected: dead link on GitHub).
+- **Blast radius if wrong:** trivial.
+- **Status:** UNCONFIRMED
+
+## `HttpsDataRefFetcher` SSRF refusals documented as a third mapping
+- **Plan:** plans/docs-refresh-2026-10.md (Phase 3 item 5)
+- **Assumed:** the plan lists two mappings (WebResolver → `KeyResolution`, `RegistryClient` →
+  `Http` with source chain). `HttpsDataRefFetcher` maps reqwest errors with
+  `AcdpError::Http(e.to_string())` (`crates/acdp-client/src/data_ref.rs`), so the SSRF
+  detail is not in its message.
+- **Chose:** `docs/security.md` lists it as its own row; folded into follow-up issue 1.
+- **Alternatives:** lump it with `RegistryClient` (rejected: the message claim would be false).
+- **Blast radius if wrong:** trivial.
+- **Status:** UNCONFIRMED
+
+## Verification stage table follows `verify_retrieved` order
+- **Plan:** plans/docs-refresh-2026-10.md (Phase 3 item 7)
+- **Assumed:** the stage table must reflect the code's order: receipt (RFC-0010) and
+  revocation (RFC-0014 §7/§8) run before key resolution + signature, because the
+  historical-key path depends on a verified receipt (`crates/acdp-client/src/verified.rs`
+  `verify_retrieved`).
+- **Chose:** stages 3 (receipt), 4 (revocation), 5 (key resolution + signature), 6 (status).
+- **Blast radius if wrong:** trivial.
+- **Status:** UNCONFIRMED

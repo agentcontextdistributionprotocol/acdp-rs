@@ -1,0 +1,36 @@
+# Crypto-critical crates guarded by scripts/check-crypto-vet.sh (issue #322).
+#
+# Every crate listed here must be covered by a real cargo-vet audit (ours or
+# imported) at each version in Cargo.lock -- that is, appear in the
+# `vetted_fully` set of `cargo vet --locked --output-format=json`. The
+# "move the exemption to the bumped version" path is NOT available for these
+# crates. See docs/supply-chain.md "Contributor workflow" and DECISIONS.md
+# "#322 supply-chain audit policy".
+#
+# Format: one crate per line:   <crate> [allow-exempt:<anchor>]
+#   (no marker)                       must be fully vetted at every locked version.
+#   allow-exempt:#322-pending         re-certification still in progress (#322);
+#                                     passes while exempted, FAILS once the crate
+#                                     is fully vetted ("stale marker -- remove it").
+#   allow-exempt:DECISIONS#322-<crate>  kept exempt under the #322 concern rule;
+#                                     the anchor must be exactly 322-<crate> and
+#                                     appear as a whole token in DECISIONS.md;
+#                                     same stale-marker check.
+# Any other marker fails the guard. A line whose first non-blank character is
+# `#` is a comment, as is anything after whitespace followed by `#`.
+#
+# This file lives outside supply-chain/ because cargo-vet owns that directory
+# and rewrites its files (dropping comments).
+
+# Tier A (#322).
+ed25519-dalek     allow-exempt:#322-pending
+curve25519-dalek  allow-exempt:#322-pending
+signature         allow-exempt:#322-pending
+sha2              allow-exempt:#322-pending
+zeroize           allow-exempt:#322-pending
+subtle
+p256              allow-exempt:#322-pending
+ecdsa             allow-exempt:#322-pending
+elliptic-curve    allow-exempt:#322-pending
+rustls            allow-exempt:#322-pending
+ring

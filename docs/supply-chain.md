@@ -335,7 +335,8 @@ CI job — a new or version-bumped dependency that is not yet covered fails the
 build.
 
 ```bash
-cargo vet --locked        # what CI runs; must be green
+cargo vet --locked              # what CI runs; must be green
+scripts/check-crypto-vet.sh     # also in CI: crypto-critical crates audited, not exempted
 ```
 
 Config lives under [`supply-chain/`](../supply-chain/):
@@ -414,6 +415,40 @@ and in CI until it's covered. Two paths:
   ```bash
   cargo vet add-exemption <crate> <version>   # or edit config.toml's exemptions
   ```
+
+**Crypto-critical crates may not take the exempt path.** The crates listed in
+[`scripts/crypto-critical.txt`](../scripts/crypto-critical.txt) must be covered
+by a real audit at every locked version. `cargo vet` alone cannot enforce
+this, because it passes an exempted crate exactly like an audited one, so the
+`cargo-vet` CI job also runs
+[`scripts/check-crypto-vet.sh`](../scripts/check-crypto-vet.sh). That guard
+fails when a listed crate is exempted or only partially vetted, so moving an
+exemption to a bumped version no longer turns CI green. The only exceptions
+are the markers documented in the list file: `allow-exempt:#322-pending`,
+used while issue #322's re-certification is in progress, and
+`allow-exempt:DECISIONS#322-<crate>`, for a crate kept exempt under the #322
+concern rule with a DECISIONS.md entry. A marker left on a crate that is now
+fully audited also fails ("stale marker — remove it"). Run the guard locally
+with `scripts/check-crypto-vet.sh`, and run its self-tests with
+`scripts/test-check-crypto-vet.sh` (add `--with-network` to also exercise
+`vet-facts.sh`). Both need `jq`.
+
+To review a crypto-critical bump:
+
+1. Run `scripts/vet-facts.sh <crate> <locked> [<audited-base>]`. It downloads
+   the crates.io tarball(s) and checks them against the `Cargo.lock` checksum
+   (and the index checksum for the base). It then prints the facts an audit
+   note quotes: the diff stat with Cargo.lock excluded, the delta/full ratio
+   and the method it implies, `unsafe` code lines as `file:line`,
+   `forbid(unsafe_code)`, `asm!`, `build.rs`, `proc-macro`, powerful imports,
+   and dependency changes.
+2. Read the code with `cargo vet diff <crate> <base> <locked> --mode=local`, or
+   `cargo vet inspect <crate> <locked> --mode=local` for a full audit.
+3. Record the audit with the non-interactive `cargo vet certify … --accept-all`
+   command, using the notes template. The criteria, the method rule (delta
+   vs. full), the notes template, the `who` / sign-off rule, and the concern
+   rule are all in DECISIONS.md "#322 supply-chain audit policy". Audit PRs
+   for these crates are never auto-merged.
 
 Then run `cargo vet --locked` to confirm green and commit the `supply-chain/`
 changes with your PR. Run `cargo vet prune` occasionally to drop exemptions that

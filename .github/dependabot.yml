@@ -7,6 +7,26 @@ updates:
       interval: monthly
     open-pull-requests-limit: 5
     groups:
+      # Crypto-critical direct deps (#322). Listed FIRST so it matches before
+      # the generic groups: a bump here needs a real cargo-vet audit (the
+      # crypto-critical guard in ci.yml fails on an exemption), so keep it
+      # in its own reviewable PR. Direct deps only: ed25519-dalek, p256,
+      # sha2, zeroize (crates/acdp-crypto/Cargo.toml) and rustls (a direct
+      # [dev-dependencies] entry in Cargo.toml; the production rustls via
+      # reqwest is the same lock entry). Widening `allow` to
+      # `dependency-type: all` is per ecosystem entry, not per group, and
+      # would open lockfile PRs for the whole transitive graph; the
+      # transitive crypto crates (curve25519-dalek, signature, ecdsa,
+      # elliptic-curve, subtle, ring) move only with a lock rewrite, which
+      # the guard catches once that crate's pending marker is removed. See
+      # scripts/crypto-critical.txt.
+      crypto:
+        patterns:
+          - "ed25519-dalek"
+          - "p256"
+          - "sha2"
+          - "zeroize"
+          - "rustls"
       minor-and-patch:
         update-types: ["minor", "patch"]
       major-updates:

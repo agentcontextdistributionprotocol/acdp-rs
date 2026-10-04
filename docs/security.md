@@ -77,7 +77,9 @@ predicate.
 Redirect-policy refusals (a cross-authority redirect, or more than 3
 redirects) are not SSRF refusals in this sense. On `RegistryClient` and
 `HttpsDataRefFetcher` they still surface as the transient `AcdpError::Http`;
-`CrossRegistryResolver` reports them as `CrossRegistryResolutionFailed`.
+`CrossRegistryResolver` reports them as `CrossRegistryResolutionFailed` when
+they occur during the capabilities fetch; during retrieval the `Http` error
+passes through unchanged.
 
 ## SsrfPolicy
 

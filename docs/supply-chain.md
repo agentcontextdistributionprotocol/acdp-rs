@@ -336,7 +336,7 @@ build.
 
 ```bash
 cargo vet --locked              # what CI runs; must be green
-scripts/check-crypto-vet.sh     # also in CI: crypto-critical crates audited, not exempted
+scripts/check-crypto-vet.sh     # also in CI: crypto-critical crates audited (zeroize: documented exemption)
 ```
 
 Config lives under [`supply-chain/`](../supply-chain/):
@@ -362,21 +362,24 @@ have. Refresh them with `cargo vet` (updates `imports.lock`).
 
 ### The crypto-critical set
 
-The crates that implement or underpin ACDP's signature and TLS security were
-inspected and certified locally (`safe-to-deploy`) on 2026-07-05. The
-inspection criteria for each: canonical upstream source, latest compatible
-release, and no open RUSTSEC advisory (checked with `cargo audit`). See
-`supply-chain/audits.toml` for the per-crate notes.
+The eleven crates that implement or underpin ACDP's signature and TLS security
+are listed in [`scripts/crypto-critical.txt`](../scripts/crypto-critical.txt).
+Issue #322 (completed 2026-10-04) re-certified them at the versions in
+`Cargo.lock`. **Ten of the eleven are covered by our own audit at the locked
+version. `zeroize` is the one deliberate exception:** it stays exempt under the
+#322 concern rule. The per-crate review worksheets are in
+[`supply-chain/worksheets/`](../supply-chain/worksheets/), and the notes are in
+`supply-chain/audits.toml`.
 
-Most of these crates have since moved to a new major or minor version.
-`cargo vet` does not carry an audit across versions, so **the versions now in
-`Cargo.lock` are covered by `[[exemptions.*]]` entries in
-`supply-chain/config.toml`, not by our audits**. Only `subtle`, `ring`, `signature`
-and `sha2` (re-certified in #322 Phase 2), `ed25519-dalek` and
-`curve25519-dalek` (re-certified in #322 Phase 3), and `elliptic-curve`, `ecdsa`,
-and `p256` (re-certified in #322 Phase 4) are covered by an audit at the locked
-version. Re-certifying the rest is tracked in #322. The per-crate review
-worksheets are in `supply-chain/worksheets/`.
+**What a `safe-to-deploy` audit here claims.** The reviewer read the code at
+that exact version, or the diff from an audited version. The tarball sha256 was
+checked against the `Cargo.lock` checksum. Every `unsafe` block, `asm!`, build
+script, and powerful import (filesystem, network, process, or environment
+access) was reasoned about. **It does not claim** cryptographic correctness,
+constant-time behaviour, side-channel resistance, or (for rustls) TLS protocol
+and certificate-validation correctness. Those remain upstream's responsibility.
+The 2026-07-05 audits of the older versions recorded less: canonical source,
+latest release, and no open advisory.
 
 | Crate | Locked (`Cargo.lock`) | Audited (`audits.toml`) | Locked version covered by | Upstream | Role in ACDP |
 |---|---|---|---|---|---|
@@ -384,13 +387,46 @@ worksheets are in `supply-chain/worksheets/`.
 | `curve25519-dalek` | 5.0.0 | 4.1.3, 4.1.3 → 5.0.0 | audit (delta, 2026-10-04; discretion note on the nightly-only `docsrs` path) | dalek-cryptography | Curve arithmetic under ed25519 |
 | `signature` | 3.0.0 | 2.2.0, 3.0.0 | audit (full, 2026-10-04) | RustCrypto | Signature traits |
 | `sha2` | 0.11.0 | 0.10.9, 0.11.0 | audit (full, 2026-10-04; discretion notes, DECISIONS.md `322-sha2`) | RustCrypto | `content_hash` / `lineage_id` (RFC-ACDP-0001 §5.7) |
-| `zeroize` | 1.9.0 | 1.8.2 | exemption, kept under the #322 concern rule (DECISIONS.md `322-zeroize`) | RustCrypto | Secret-key zeroing (`SigningKey` `ZeroizeOnDrop`) |
-| `subtle` | 2.6.1 | 2.6.1 | audit | dalek-cryptography | Constant-time primitives |
+| `zeroize` | 1.9.0 | 1.8.2 | **exemption**, kept under the #322 concern rule (DECISIONS.md `322-zeroize`) | RustCrypto | Secret-key zeroing (`SigningKey` `ZeroizeOnDrop`) |
+| `subtle` | 2.6.1 | 2.6.1 | audit (2026-07-05) | dalek-cryptography | Constant-time primitives |
 | `p256` | 0.14.0 | 0.13.2, 0.14.0 | audit (full, 2026-10-04; discretion note on a test-only fixture) | RustCrypto | `ecdsa-p256` signing and verification-method support |
 | `ecdsa` | 0.17.0 | 0.16.9, 0.17.0 | audit (full, 2026-10-04; discretion note on a test-only fixture) | RustCrypto | Generic ECDSA under p256 |
 | `elliptic-curve` | 0.14.1 | 0.13.8, 0.14.1 | audit (full, 2026-10-04) | RustCrypto | Curve trait framework |
-| `rustls` | 0.23.45 | 0.23.40 | exemption | rustls | HTTPS transport (RFC-ACDP-0008) |
-| `ring` | 0.17.14 | 0.17.14 | audit | briansmith | Default rustls crypto provider |
+| `rustls` | 0.23.45 | 0.23.40, 0.23.40 → 0.23.45 | audit (delta, 2026-10-04) | rustls | HTTPS transport (RFC-ACDP-0008) |
+| `ring` | 0.17.14 | 0.17.14 | audit (2026-07-05) | briansmith | rustls crypto provider in every production build (via reqwest's `rustls-tls`); `aws-lc-rs` is in the dev/test graph only |
+
+**`zeroize` 1.9.0 is exempt, not audited.** Its new safe
+`optimization_barrier` reads a possibly-uninitialized byte on targets without
+stable `asm!`. The `bindings/acdp-wasm` wasm32 build is one of those targets
+(DECISIONS.md `322-zeroize`, finding Z-1). Native builds use the sound `asm!`
+path, and no known ACDP call site triggers the fault. **Exit criterion:**
+delta-audit zeroize 1.9.1 when it is released (RustCrypto/utils#1535 removes the
+crate's internal callers of `optimization_barrier`). Its guard line carries
+`allow-exempt:DECISIONS#322-zeroize`.
+
+**Supporting crypto crates are exempted, not audited.** #322 covered only the
+eleven crates above. The 35 support crates on the same signing, hashing, key
+generation, and TLS paths are covered by `[[exemptions.*]]` entries only, and
+are not on the guard list:
+
+- **RustCrypto support:** `ed25519`, `curve25519-dalek-derive`, `digest`,
+  `crypto-common`, `block-buffer`, `cpufeatures`, `hybrid-array`, `ctutils`,
+  `cmov`, `zeroize_derive`, `rfc6979`, `hmac`, `sec1`, `spki`, `pkcs8`,
+  `base16ct`, `base64ct`, `primeorder`, `primefield`, `wnaf`, `ff`, `group`,
+  `const-oid`, `der`, `crypto-bigint`, `typenum`, `cpubits`.
+- **Key generation:** `rand_core` (0.9.5, 0.10.1) and `getrandom` (0.2.17,
+  0.3.4, 0.4.3).
+- **TLS stack:** `rustls-webpki`, `rustls-pki-types`, `tokio-rustls`,
+  `hyper-rustls`, `webpki-roots`, `untrusted`.
+
+Certifying them, and adding each one to the guard list as it is certified, is a
+planned follow-up. `aws-lc-rs` and `aws-lc-sys` are dev-only and also exempted.
+
+**Coverage outside this repo's root lockfile.** The three bindings
+(`bindings/acdp-py`, `bindings/acdp-node`, `bindings/acdp-wasm`) have their
+own `Cargo.lock` files and **no `cargo vet` gate**. Today they resolve the same
+crypto-critical versions as the root, so the audits apply to them by version,
+but nothing enforces that parity.
 
 ### Contributor workflow
 
@@ -426,36 +462,84 @@ this, because it passes an exempted crate exactly like an audited one, so the
 `cargo-vet` CI job also runs
 [`scripts/check-crypto-vet.sh`](../scripts/check-crypto-vet.sh). That guard
 fails when a listed crate is exempted or only partially vetted, so moving an
-exemption to a bumped version no longer turns CI green. The only exceptions
-are the markers documented in the list file: `allow-exempt:#322-pending`,
-used while issue #322's re-certification is in progress, and
-`allow-exempt:DECISIONS#322-<crate>`, for a crate kept exempt under the #322
-concern rule with a DECISIONS.md entry. A marker left on a crate that is now
-fully audited also fails ("stale marker — remove it"). Run the guard locally
-with `scripts/check-crypto-vet.sh`, and run its self-tests with
-`scripts/test-check-crypto-vet.sh` (add `--with-network` to also exercise
+exemption to a bumped version no longer turns CI green.
+
+The guard is now **enforcing**: since #322 closed, ten of the eleven listed
+crates carry no marker. The list file documents two markers:
+
+- `allow-exempt:DECISIONS#322-<crate>` is for a crate kept exempt under the
+  #322 concern rule. It needs a DECISIONS.md entry carrying that anchor.
+  **Only `zeroize` uses it** (`322-zeroize`).
+- `allow-exempt:#322-pending` was the in-progress marker. No line uses it any
+  more. Adding it back needs a DECISIONS.md entry.
+
+A marker left on a crate that is now fully audited also fails ("stale marker —
+remove it"). A DECISIONS marker accepts an exemption at **any** version, so the
+guard does not stop someone moving zeroize's exemption to a newer release.
+Don't do that: the `322-zeroize` exit criterion is a delta audit of 1.9.1. Run
+the guard locally with `scripts/check-crypto-vet.sh`, and run its self-tests
+with `scripts/test-check-crypto-vet.sh` (add `--with-network` to also exercise
 `vet-facts.sh`). Both need `jq`.
 
-To review a crypto-critical bump:
+After any certify or exemption change, run `cargo vet --locked` to confirm
+green and commit the `supply-chain/` changes with your PR. Run `cargo vet prune`
+occasionally to drop exemptions that an imported audit now covers.
 
-1. Run `scripts/vet-facts.sh <crate> <locked> [<audited-base>]`. It downloads
-   the crates.io tarball(s) and checks them against the `Cargo.lock` checksum
-   (and the index checksum for the base). It then prints the facts an audit
-   note quotes: the diff stat with Cargo.lock excluded, the delta/full ratio
-   and the method it implies, `unsafe` code lines as `file:line`,
+### Upgrading a crypto-critical crate
+
+The `crypto` group in `.github/dependabot.yml` puts the direct crypto
+dependencies in their own PR: `ed25519-dalek`, `p256`, `sha2`, `zeroize`, and
+`rustls`. The transitive ones (`curve25519-dalek`, `signature`, `ecdsa`,
+`elliptic-curve`, `subtle`, `ring`) move only with a lock rewrite. The guard
+catches either case. When a bump turns `cargo-vet` red:
+
+1. **Get the facts.** Run `scripts/vet-facts.sh <crate> <new> <audited-base>`.
+   It downloads the crates.io tarball(s), checks them against the `Cargo.lock`
+   checksum (and the index checksum for the base), and prints the facts an
+   audit note quotes: the diff stat with Cargo.lock excluded, the delta/full
+   ratio and the method it implies, `unsafe` code lines as `file:line`,
    `forbid(unsafe_code)`, `asm!`, `build.rs`, `proc-macro`, powerful imports,
    and dependency changes.
-2. Read the code with `cargo vet diff <crate> <base> <locked> --mode=local`, or
-   `cargo vet inspect <crate> <locked> --mode=local` for a full audit.
-3. Record the audit with the non-interactive `cargo vet certify … --accept-all`
-   command, using the notes template. The criteria, the method rule (delta
-   vs. full), the notes template, the `who` / sign-off rule, and the concern
-   rule are all in DECISIONS.md "#322 supply-chain audit policy". Audit PRs
-   for these crates are never auto-merged.
+2. **Pick the method.** If the changed lines are ≥75% of the crate's `src/`
+   lines, or the release rewrites the crate's `unsafe` code, do a full audit.
+   Otherwise do a delta from the audited base.
+3. **Read the code.** Use `cargo vet diff <crate> <base> <new> --mode=local`,
+   or `cargo vet inspect <crate> <new> --mode=local` for a full audit.
+4. **Write the worksheet.** Add `supply-chain/worksheets/<crate>-<version>.md`
+   in the format of the existing ones. It covers provenance, the facts table,
+   a verdict on every `unsafe` cluster and powerful import, the features ACDP
+   compiles in, findings, and what is not claimed.
+5. **Certify.** Run the non-interactive command with the notes template:
 
-Then run `cargo vet --locked` to confirm green and commit the `supply-chain/`
-changes with your PR. Run `cargo vet prune` occasionally to drop exemptions that
-an imported audit now covers.
+   ```bash
+   cargo vet certify <crate> <base> <new> --criteria safe-to-deploy \
+       --who "Ajit Koti <ajitkoti@zer07labs.com>" --notes "$(cat notes.txt)" --accept-all
+   # full audit: cargo vet certify <crate> <new> …
+   git diff --stat supply-chain/imports.lock   # must be empty
+   cargo vet --locked && scripts/check-crypto-vet.sh
+   ```
+
+   `certify` removes the now-redundant exemption.
+6. **If the review finds a concern**, do **not** certify. A concern is unsound
+   or unexplained `unsafe`, unexpected I/O, a build script doing more than cfg
+   selection, vendored binaries, a RUSTSEC hit, or a review you cannot finish.
+   Instead:
+   - keep or add the exemption, with a `KEPT EXEMPT (#322)` note;
+   - add a DECISIONS.md entry anchored `322-<crate>` that lists the options;
+   - set the guard marker to `allow-exempt:DECISIONS#322-<crate>`.
+7. **Push to the Dependabot branch and turn auto-merge off**
+   (`gh pr merge --disable-auto <n>`).
+   - `dependabot-auto-merge.yml` turns on auto-merge for every patch or minor
+     bump, including the `crypto` group.
+   - In a 0.x crate, a breaking bump counts as "minor".
+   - So once your audit turns CI green, the PR would merge with no human review.
+8. **Get sign-off.** The maintainer posts an approving review that says which
+   worksheet they read. Only then is the PR merged.
+
+The criteria, the method rule, the notes template, the `who` / sign-off rule,
+and the concern rule are all in DECISIONS.md "#322 supply-chain audit policy".
+For these crates, "move the exemption to the new version" is no longer an
+available move.
 
 **Who audits.** The crypto-critical set is audited by the crate maintainers and
 should be `safe-to-deploy` with real inspection notes — treat a change there as
@@ -487,7 +571,9 @@ carries an advisory.
 
 **rustls RUSTSEC-2026-0285:** fixed by bumping `rustls` 0.23.43 → 0.23.45
 (`b547227`, 2026-09-19), with the `cargo vet` exemption moved to 0.23.45 in the
-same change set (`09197e0`). No `deny.toml` ignore entry was needed.
+same change set (`09197e0`). No `deny.toml` ignore entry was needed. #322 later
+replaced that exemption with a delta audit, 0.23.40 → 0.23.45, whose
+worksheet reads the fix (`supply-chain/worksheets/rustls-0.23.45.md`).
 
 Together: **`vet`** answers "did a human look at this code?", **`deny`**
 answers "is there a known-bad advisory or license here?", and the **provenance +

@@ -978,3 +978,108 @@ volatile-write site and adds the crate's only `asm!`.
   upstream issue is in `supply-chain/worksheets/zeroize-1.9.0.md`; nothing has been filed.
 
 **Status:** DECIDED.
+
+## #322 completion status (2026-10-04)
+
+Closing entry for issue #322 (plan `plans/supply-chain-recertify-322.md`, Phase 5). All
+five phases are done. Each one is a separate PR, never auto-merged, and needs the
+maintainer's approving review naming the worksheet they read (Policy 4).
+
+**Audited at the locked version (10 of the 11 Tier A crates).** Each has a
+`safe-to-deploy` audit by `Ajit Koti`, reviewed with Claude (Opus) assistance, with a
+worksheet in `supply-chain/worksheets/`:
+
+| Crate | Version | Method | Phase |
+|---|---|---|---|
+| `signature` | 3.0.0 | full | P2 |
+| `sha2` | 0.11.0 | full; two `Discretion:` lines (`322-sha2`) | P2 |
+| `ed25519-dalek` | 3.0.0 | delta from 2.2.0 | P3 |
+| `curve25519-dalek` | 5.0.0 | delta from 4.1.3; `docsrs` discretion | P3 |
+| `elliptic-curve` | 0.14.1 | full | P4 |
+| `ecdsa` | 0.17.0 | full; test-fixture discretion | P4 |
+| `p256` | 0.14.0 | full; test-fixture discretion | P4 |
+| `rustls` | 0.23.45 | delta from 0.23.40 (40 files, +732/-135; 0 `unsafe`) | P5 |
+| `subtle` | 2.6.1 | 2026-07-05 audit, still at the locked version | — |
+| `ring` | 0.17.14 | 2026-07-05 audit, still at the locked version | — |
+
+- The rustls delta contains the RUSTSEC-2026-0285 fix: handshake alignment is now
+  "no pending handshake data", rechecked at every key change.
+- Its only powerful import, `KeyLogFile` (`SSLKEYLOGFILE`), is opt-in through
+  `ClientConfig::key_log`. reqwest and ACDP never set it.
+- The production provider is ring (reqwest `rustls-tls`; rustls features `ring`, `std`,
+  `tls12`). aws-lc-rs is in the dev graph only.
+- The audit claims neither TLS protocol correctness nor certificate-validation
+  correctness.
+
+**What no audit claims.** No #322 audit claims cryptographic correctness, constant-time
+behaviour, side-channel resistance, or (for rustls) TLS protocol or certificate-validation
+correctness. `safe-to-deploy` here means the `unsafe` code, the build scripts, and the
+powerful imports were reasoned about at the exact bytes in `Cargo.lock`.
+
+**Remains exempt, and why.**
+- **`zeroize` 1.9.0** (`322-zeroize`).
+  - Z-1: the safe `optimization_barrier` reads a possibly-uninitialized byte on non-`asm!`
+    targets, and the published wasm32 binding builds that path.
+  - Exit criterion: delta-audit 1.9.1.
+  - The guard's DECISIONS marker accepts an exemption at any version. So a bump to 1.9.1
+    must be audited, not met by moving the exemption (`docs/supply-chain.md`).
+- **The 35 supporting crypto crates (Tier B)** were out of scope for #322. Each is covered
+  by an exemption only, and none is on the guard list:
+  - RustCrypto support: `ed25519`, `curve25519-dalek-derive`, `digest`, `crypto-common`,
+    `block-buffer`, `cpufeatures`, `hybrid-array`, `ctutils`, `cmov`, `zeroize_derive`,
+    `rfc6979`, `hmac`, `sec1`, `spki`, `pkcs8`, `base16ct`, `base64ct`, `primeorder`,
+    `primefield`, `wnaf`, `ff`, `group`, `const-oid`, `der`, `crypto-bigint`, `typenum`,
+    `cpubits`;
+  - key generation: `rand_core`, `getrandom`;
+  - TLS stack: `rustls-webpki`, `rustls-pki-types`, `tokio-rustls`, `hyper-rustls`,
+    `webpki-roots`, `untrusted`.
+- `aws-lc-rs` / `aws-lc-sys` are dev-only. Their exemptions over-claim `safe-to-deploy`
+  where `safe-to-run` would do.
+
+**Guard state.**
+- `scripts/check-crypto-vet.sh` is enforcing in the required `cargo-vet` check.
+- `scripts/crypto-critical.txt` has no `#322-pending` line. The only marker left is
+  `zeroize allow-exempt:DECISIONS#322-zeroize`.
+- The `#322-pending` marker type is still parsed, because the self-tests exercise it, but
+  it is unused.
+- The upgrade workflow is in `docs/supply-chain.md` "Upgrading a crypto-critical crate":
+  `vet-facts.sh` -> worksheet -> `certify` -> turn auto-merge off -> maintainer review.
+
+**Findings for ACDP (not vet concerns; owned by the maintainer).**
+- **E-1 (ed25519-dalek).** ACDP verifies with `VerifyingKey::verify`, not `verify_strict`,
+  so small-order keys and small-order `R` are accepted. Evaluate `verify_strict` or
+  `is_weak()` rejection at DID-key load. That needs spec input (RFC-ACDP-0002) and a
+  golden-vector review.
+- **P-1 (p256).** `NORMALIZE_S = false`: high-S verifies, so `ecdsa-p256` signature bytes
+  are malleable. ACDP's signer does not normalize either. One effect: a lifecycle-event
+  retry with a flipped signature gets `SchemaViolation` instead of `IdempotentReplay`
+  (`crates/acdp-server/src/registry/store.rs:585-596`). Recommendation: document
+  non-uniqueness in the spec registry, and emit low-S from ACDP signers.
+- **P-2 (p256).** `from_sec1_bytes` accepts the SEC1 compact tag `0x05`. ACDP's wire paths
+  cannot reach it, and fingerprints use the re-compressed point. Informational.
+- **P-3 (p256).** ACDP signs with P-256 as well as verifying. The review covered both
+  paths. Hygiene: `P256SigningKey::seed_bytes` passes the secret through a non-zeroized
+  `FieldBytes` temporary.
+- **Upstream drafts (text only, nothing filed).**
+  - Z-1 for RustCrypto/utils is in `supply-chain/worksheets/zeroize-1.9.0.md`.
+  - S-2 (aarch64 one-element-reference loads) for RustCrypto/hashes is in
+    `supply-chain/worksheets/sha2-0.11.0.md`.
+  - S-1 is already fixed upstream (RustCrypto/hashes#879).
+  - Filing these is the maintainer's call.
+
+**Follow-up issues to file (not filed by this work).**
+1. Certify the Tier B supporting crypto crates, cheap `forbid(unsafe_code)` ones first,
+   adding each to the guard list once certified. Also move the `aws-lc-*` exemptions to
+   `safe-to-run`.
+2. The bindings' lockfiles have no vet coverage (`bindings/acdp-py`, `acdp-node`,
+   `acdp-wasm`). Today they resolve the same Tier A versions, which nothing enforces. Add
+   a lock-parity check against the root for the guard-list crates.
+3. `acdp-registry-rs` has no `cargo vet` setup. Propose `cargo vet init` importing this
+   repo's `audits.toml`.
+4. zeroize 1.9.1 delta audit once released (the `322-zeroize` exit criterion).
+5. ACDP-side follow-ups for E-1 and P-1/P-3 above.
+6. Optional: have `dependabot-auto-merge.yml` skip the `crypto` group
+   (`fetch-metadata` exposes `dependency-group`), so step 7 of the upgrade workflow is
+   enforced rather than manual.
+
+**Status:** DONE (issue #322 closes on this entry once the Phase 5 PR merges).

@@ -37,6 +37,11 @@ cargo deny check
 cargo audit
 ```
 
+If you add or bump a dependency, `cargo vet --locked` must stay green. Bumping a
+crate listed in `scripts/crypto-critical.txt` needs a real audit, not an
+exemption. See
+[`docs/supply-chain.md`, "Upgrading a crypto-critical crate"](docs/supply-chain.md#upgrading-a-crypto-critical-crate).
+
 ## Branching and commits
 
 - Target the `main` branch.

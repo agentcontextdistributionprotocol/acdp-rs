@@ -1172,3 +1172,47 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
 - **Alternatives:** open a draft PR first, then re-run `certify`.
 - **Blast radius if wrong:** text only. It can be amended before merge.
 - **Status:** UNCONFIRMED
+
+## #322 Phase 4: elliptic-curve, ecdsa, p256 full audits; script diff stats used
+- **Plan:** plans/supply-chain-recertify-322.md (Phase 4; Phase 2 Edge cases)
+- **Assumed:** the plan's diff figures (elliptic-curve +3120/-3988, ecdsa 14 files
+  +1548/-1289, p256 28 files +1982/-1372) come from `cargo vet suggest`.
+- **Chose:** the `scripts/vet-facts.sh` figures (38 files +3422/-4284, 13 files
+  +1516/-1259, 27 files +1857/-1304). The ratios are 1.47, 0.83, and 0.91, all >= 0.75, so
+  the method rule says **full** for all three either way.
+- **Alternatives:** delta audits. Rejected: each delta is as large as or larger than the
+  crate and would inherit the one-line 2026-07-05 base notes.
+- **Blast radius if wrong:** none. Note text only.
+- **Status:** UNCONFIRMED
+
+## #322 Phase 4: Wycheproof `.blb` test fixtures are a Discretion line, not a concern
+- **Plan:** DECISIONS.md "#322 supply-chain audit policy" item 6 ("obfuscated or vendored
+  binary content")
+- **Assumed:** `p256/src/test_vectors/data/wycheproof.blb` (31,510 bytes; the audited
+  0.13.2 shipped it at 31,508) and `ecdsa/src/test_vectors/data/wycheproof-mock.blb`
+  (2 bytes) are blobby-encoded test vectors, read only through `include_bytes!` in the
+  `new_wycheproof_test!` macro under `cfg(test)`. They are not compiled into any non-test
+  build of any ACDP artifact.
+- **Chose:** certify, with one `Discretion:` line per crate naming the file and its
+  `cfg(test)` gate. No `322-p256` / `322-ecdsa` DECISIONS entry. The 31 KB blob was not
+  decoded record by record.
+- **Alternatives:** treat it as vendored binary content under the concern rule and keep
+  the exemptions.
+- **Blast radius if wrong:** reversible. Re-adding two exemptions and DECISIONS entries is
+  mechanical.
+- **Status:** UNCONFIRMED
+
+## #322 Phase 4: ECDSA malleability and the plan's "verification only" wording are findings, not vet concerns
+- **Plan:** plans/supply-chain-recertify-322.md Phase 4 Approach ("ACDP uses P-256 for
+  verification only")
+- **Assumed:** P-256 `NORMALIZE_S = false`, so high-S signatures verify and `ecdsa-p256`
+  signature bytes are malleable (worksheet P-1). ACDP also generates, exports, and signs
+  with P-256 keys (`crates/acdp-crypto/src/sign.rs:123-277`), so the plan's wording is
+  inaccurate (P-3). Neither is a `safe-to-deploy` question.
+- **Chose:** record P-1 to P-3 in `supply-chain/worksheets/p256-0.14.0.md` and a summary
+  in the p256 note; review the signing path as well; make no code or spec change in this
+  phase.
+- **Alternatives:** open a DECISIONS entry now for low-S normalization in ACDP signers.
+  Left to the maintainer: it is a spec / producer question.
+- **Blast radius if wrong:** none for the audits.
+- **Status:** UNCONFIRMED

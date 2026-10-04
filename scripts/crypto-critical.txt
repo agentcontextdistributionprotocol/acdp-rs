@@ -29,8 +29,8 @@ signature
 sha2
 zeroize           allow-exempt:DECISIONS#322-zeroize
 subtle
-p256              allow-exempt:#322-pending
-ecdsa             allow-exempt:#322-pending
-elliptic-curve    allow-exempt:#322-pending
+p256
+ecdsa
+elliptic-curve
 rustls            allow-exempt:#322-pending
 ring

@@ -31,6 +31,25 @@ criteria = "safe-to-deploy"
 version = "0.16.9"
 notes = "RustCrypto 'ecdsa' generic ECDSA over elliptic-curve traits; backs p256 verification. Reviewed 0.16.9: constant-time via rfc6979/signature, no unsafe of concern, no I/O. Canonical, latest 0.16.x. cargo audit clean 2026-07-05."
 
+[[audits.ecdsa]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "0.17.0"
+notes = """
+Scope: full audit of 0.17.0 (delta 0.16.9 -> 0.17.0 is 13 files, +1516/-1259 per scripts/vet-facts.sh = 0.83x the 3336 src lines, so full per the #322 method rule).
+Source: crates.io tarball sha256 c0681a4fc24c767085329728d8dfba959af91228aa4610cca4f8ce317ba46ae0 == Cargo.lock checksum.
+unsafe: 0 sites (grep; Cargo.toml lints forbid unsafe_code, but cargo caps lints for registry deps, so the grep is the evidence).
+asm/SIMD: none.
+build.rs / proc-macro: none.
+Powerful imports: none in compiled code (#![no_std]; include_str! for README docs). The only include_bytes! is in the new_wycheproof_test! macro in the dev module (feature dev, off in ACDP), expanded only by tests.
+Discretion: binary test fixture src/test_vectors/data/wycheproof-mock.blb (2 bytes, an empty blobby file) is read only by the cfg(test) wycheproof_mock test (src/dev.rs:308-319); not compiled into any non-test build.
+Verification path: Signature::from_slice requires 64 bytes and r, s in [1, n-1]; Verifier::verify hashes with C::Digest (SHA-256 for P-256) and runs hazmat::verify_prehashed; high-S is rejected only when C::NORMALIZE_S (false for P-256), so (r, n-s) also verifies (ACDP-relevant malleability finding P-1, p256 worksheet; not a vet concern). Signing is RFC 6979 (rfc6979 0.6) with non-vartime k*G.
+Zeroize: SigningKey has an explicit Drop zeroizing its NonZeroScalar (plus ZeroizeOnDrop marker); Signature::zeroize writes ONE. Fully initialized integers only, so zeroize 1.9.0's Z-1 (DECISIONS 322-zeroize, still exempt) is not triggered. Secret-derived temporaries in the RFC 6979 path (d.to_repr(), k_bytes, rfc6979 HMAC-DRBG state) are not zeroized, as in the audited 0.16.9; hygiene only, outside safe-to-deploy.
+New deps: der 0.8, digest 0.11, elliptic-curve 0.14, rfc6979 0.6, serdect 0.4, sha2 0.11 (optional), signature 3, spki 0.8; added zeroize 1.5. ACDP features: algorithm, alloc, der, digest, spki, std (root and py/node/wasm bindings identical). Tier B rfc6979, hmac, der, spki, digest still exempted.
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/ecdsa-0.17.0.md (issue #322 Phase 4 PR)."""
+
 [[audits.ed25519-dalek]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"
 criteria = "safe-to-deploy"
@@ -60,11 +79,47 @@ criteria = "safe-to-deploy"
 version = "0.13.8"
 notes = "RustCrypto 'elliptic-curve' trait/framework crate underpinning p256/ecdsa. Reviewed 0.13.8: generic curve arithmetic traits, constant-time helpers, no I/O/build script. Canonical, latest 0.13.x. cargo audit clean 2026-07-05."
 
+[[audits.elliptic-curve]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "0.14.1"
+notes = """
+Scope: full audit of 0.14.1 (delta 0.13.8 -> 0.14.1 is 38 files, +3422/-4284 per scripts/vet-facts.sh = 1.47x the 5243 src lines, so full per the #322 method rule).
+Source: crates.io tarball sha256 9d65aa39b3a5c1c9c1b745c9a019234bb7a21b77abcb4f4d266d706e2d577d65 == Cargo.lock checksum.
+unsafe: 4 sites, all reviewed and sound; crate root is #![deny(unsafe_code)] with a local allow at each. src/point/non_identity.rs:63,73 (NonIdentity::array_as_inner / slice_as_inner) and src/scalar/nonzero.rs:73,83 (NonZeroScalar::cast_array_as_inner / cast_slice_as_inner) cast &[Newtype; N] / &[Newtype] to the inner type; both newtypes are #[repr(transparent)] over a single field, the borrow keeps its lifetime and is shared (read-only), and the slice cast preserves length metadata.
+asm/SIMD: none.
+build.rs / proc-macro: none.
+Powerful imports: #![no_std] (no extern crate std; std feature only forwards); include_str! for README docs only. The getrandom feature (enabled in ACDP via p256 std) gives BlindedScalar::new/try_new access to getrandom SysRng (OS entropy only). No fs/net/process/env.
+Zeroize: SecretKey Drop, NonZeroScalar (zeroize then ONE), BlindedScalar Drop, and Zeroizing<FieldBytes> all target fully initialized limb/byte arrays (no Option/MaybeUninit/padded types), so zeroize 1.9.0's Z-1 (DECISIONS 322-zeroize, still exempt) is not triggered; barrier efficacy not claimed.
+New deps: generic-array -> hybrid-array 0.4, crypto-bigint 0.5 -> 0.7.5 (adds ctutils CtOption/Choice), crypto-common 0.2 (new), digest 0.11, ff/group 0.14, rand_core 0.10, sec1 0.8, pkcs8 0.11, base16ct 1; removed base64ct, serde_json, tap. ACDP features: alloc, arithmetic, digest, ff, getrandom, group, sec1, std (root and py/node/wasm bindings identical). Tier B deps (crypto-bigint, ctutils, hybrid-array, crypto-common, digest, ff, group, sec1, base16ct, rand_core, getrandom) still exempted.
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/elliptic-curve-0.14.1.md (issue #322 Phase 4 PR)."""
+
 [[audits.p256]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"
 criteria = "safe-to-deploy"
 version = "0.13.2"
 notes = "RustCrypto 'p256' (NIST P-256/secp256r1) used by ACDP for did:web ES256/P-256 verification-method support. Reviewed 0.13.2: pure Rust, no unsafe of concern, no I/O/build script; builds on ecdsa/elliptic-curve/primeorder. Canonical, latest 0.13.x. cargo audit clean 2026-07-05."
+
+[[audits.p256]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "0.14.0"
+notes = """
+Scope: full audit of 0.14.0 (delta 0.13.2 -> 0.14.0 is 27 files, +1857/-1304 per scripts/vet-facts.sh = 0.91x the 3486 src lines, so full per the #322 method rule).
+Source: crates.io tarball sha256 d2c9239b2dbc807adbbe147e8cf72ea7450c3a0aabe62cb8e75ff4ec22e1f72a == Cargo.lock checksum.
+unsafe: 0 sites (grep; no unsafe lint configured, so the grep is the evidence).
+asm/SIMD: none; no fiat-crypto. Field: Montgomery form via primefield macros over crypto-bigint 0.7 U256 with hand-written add/sub/reduce (field64.rs/field32.rs); scalar: Barrett reduction (scalar64.rs/scalar32.rs). cpubits selects the 64-bit files on x86_64, aarch64 and wasm32 (cpubits treats wasm32 as 64-bit). precomputed-tables is off in ACDP, so Backend = VariableOnly (k*G via GENERATOR * k; verification via vartime lincomb on public data).
+build.rs / proc-macro: none.
+Powerful imports: none (#![no_std]; include_str! for README docs; the getrandom feature only forwards to elliptic-curve/getrandom). tests/pkcs8.rs include_bytes! is integration-test only.
+Discretion: binary test fixture src/test_vectors/data/wycheproof.blb (31510 bytes of blobby-encoded Wycheproof vectors; the audited 0.13.2 shipped it at 31508 bytes) is read only by the new_wycheproof_test! macro in #[cfg(all(test, feature = "ecdsa"))] mod tests (src/ecdsa.rs:75-170); not compiled into any non-test build.
+ACDP use: verifies (VerifyingKey::from_sec1_bytes, Signature::from_slice, verify over SHA-256 of the content_hash string) and also signs (P256SigningKey: generate via getrandom SysRng, from_bytes, RFC 6979 sign, seed_bytes). Point validation: sec1 tag/length check, on-curve check or checked sqrt decompression in primeorder, identity rejected; cofactor 1. ACDP-relevant findings recorded in the worksheet, not vet concerns: P-1 NORMALIZE_S = false, so high-S verifies and ecdsa-p256 signature bytes are malleable; P-2 from_sec1_bytes also accepts the 0x05 compact tag (unreachable from ACDP wire paths); P-3 ACDP signs with P-256 too.
+Zeroize: Scalar is DefaultIsZeroes over a U256 limb array (no padding); no Option/MaybeUninit zeroization, so zeroize 1.9.0's Z-1 (DECISIONS 322-zeroize, still exempt) is not triggered, including on the wasm32 binding.
+New deps: ecdsa 0.17, elliptic-curve 0.14.1, primeorder 0.14, sha2 0.11, serdect 0.4; added primefield 0.14 and hash2curve 0.14 (optional, off). ACDP features: alloc, arithmetic, digest, ecdsa, ecdsa-core, getrandom, sha2, sha256, std (root and py/node/wasm bindings identical). Tier B primeorder, primefield, crypto-bigint, cpubits, sec1, ff, group, wnaf, hybrid-array, rfc6979, hmac still exempted.
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance. Behavioural evidence only: ACDP sig-002 conformance tests.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/p256-0.14.0.md (issue #322 Phase 4 PR)."""
 
 [[audits.ring]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"

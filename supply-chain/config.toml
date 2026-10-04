@@ -264,11 +264,6 @@ criteria = "safe-to-deploy"
 version = "1.0.5"
 criteria = "safe-to-deploy"
 
-[[exemptions.ecdsa]]
-version = "0.17.0"
-criteria = "safe-to-deploy"
-notes = "allow-exempt:#322-pending (issue #322)"
-
 [[exemptions.ed25519]]
 version = "3.0.0"
 criteria = "safe-to-deploy"
@@ -276,11 +271,6 @@ criteria = "safe-to-deploy"
 [[exemptions.either]]
 version = "1.18.0"
 criteria = "safe-to-run"
-
-[[exemptions.elliptic-curve]]
-version = "0.14.1"
-criteria = "safe-to-deploy"
-notes = "allow-exempt:#322-pending (issue #322)"
 
 [[exemptions.errno]]
 version = "0.3.14"
@@ -545,11 +535,6 @@ criteria = "safe-to-run"
 [[exemptions.once_cell]]
 version = "1.21.4"
 criteria = "safe-to-deploy"
-
-[[exemptions.p256]]
-version = "0.14.0"
-criteria = "safe-to-deploy"
-notes = "allow-exempt:#322-pending (issue #322)"
 
 [[exemptions.page_size]]
 version = "0.6.0"

@@ -250,8 +250,12 @@ let server = RegistryServer::new(InMemoryStore::default(), caps, "registry.examp
 # }
 ```
 
-The default is `NoopRateLimiter`. A production registry MUST supply a real
-implementation keyed per producing agent.
+The default is `NoopRateLimiter`. A production registry MUST enforce a
+per-producing-agent limit (RFC-ACDP-0008 §4.3), either by supplying a real
+`RateLimiter` via `with_rate_limiter` or by enforcing its own limiter in the
+host (for example at the HTTP layer, charging once identity is proven). The
+`RateLimiter` trait is the building block this crate offers, not the only
+conforming way to meet the requirement.
 
 ## Capabilities & profiles
 
@@ -259,7 +263,12 @@ Your registry advertises what it supports via a `CapabilitiesDocument` served at
 `GET /.well-known/acdp.json` (RFC-ACDP-0007). It MUST include `ed25519` in
 `supported_signature_algorithms` and `did:web` in `supported_did_methods`.
 
-The conformance profile your registry claims (`acdp-registry-core`,
-`-discovery`, `-federated`) determines which fixture set you must pass — see
-`acdp::profile` for the typed vocabulary and
-[Conformance & testing](conformance.md) for running the fixtures.
+The conformance profile(s) your registry claims determine which fixture set you
+must pass. The registered profiles and their required endpoints and fixtures
+are owned by the spec — see
+[`registries/profiles.md`](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/registries/profiles.md)
+(machine-readable: `registries/profiles.json`) rather than a list here, which
+would drift. `acdp::profile::Profile` is the typed vocabulary for the profiles
+this crate models; it can lag the spec registry, so treat the spec as
+authoritative. [Conformance & testing](conformance.md) covers running the
+fixtures.

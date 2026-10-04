@@ -179,7 +179,7 @@ jobs:
       # scripts/crypto-critical.txt to be fully audited at each locked
       # version (no "move the exemption" path), allowing only the markers
       # documented in that file (`allow-exempt:#322-pending` while #322 is
-      # in progress; `allow-exempt:DECISIONS#<anchor>` for a concern-rule
+      # in progress; `allow-exempt:DECISIONS#322-<crate>` for a concern-rule
       # crate). A stale marker on a now-audited crate also fails. Part of
       # the required `cargo-vet` check. Self-tests:
       # scripts/test-check-crypto-vet.sh.

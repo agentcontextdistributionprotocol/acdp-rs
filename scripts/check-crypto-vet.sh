@@ -146,8 +146,16 @@ while read -r name marker <&3 || [ -n "${name:-}" ]; do
             fi
             case "$marker" in
                 allow-exempt:DECISIONS#*)
+                    # The anchor must be exactly `322-<crate>`, and DECISIONS.md
+                    # must contain it as a whole token (not as a prefix of a
+                    # longer name such as `322-<crate>-x`).
                     anchor=${marker#allow-exempt:DECISIONS#}
-                    if [ ! -f "$decisions_file" ] || ! grep -qF -- "$anchor" "$decisions_file"; then
+                    if [ "$anchor" != "322-$name" ]; then
+                        fail "$name: marker '$marker' must name anchor '322-$name' exactly (got '$anchor')."
+                        continue
+                    fi
+                    if [ ! -f "$decisions_file" ] ||
+                        ! grep -qE -- "(^|[^A-Za-z0-9_-])${anchor}([^A-Za-z0-9_-]|\$)" "$decisions_file"; then
                         fail "$name: marker '$marker' names anchor '$anchor', which does not appear in $(basename "$decisions_file")."
                         continue
                     fi
@@ -156,7 +164,7 @@ while read -r name marker <&3 || [ -n "${name:-}" ]; do
             echo "check-crypto-vet: ok: $name ($unvetted) allowed exempt by '$marker'"
             ;;
         *)
-            fail "$name: unknown marker '$marker' (allowed: none, 'allow-exempt:#322-pending', 'allow-exempt:DECISIONS#<anchor>')."
+            fail "$name: unknown marker '$marker' (allowed: none, 'allow-exempt:#322-pending', 'allow-exempt:DECISIONS#322-<crate>')."
             ;;
     esac
 done 3<"$list_file"

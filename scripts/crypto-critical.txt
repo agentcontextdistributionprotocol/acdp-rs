@@ -12,9 +12,10 @@
 #   allow-exempt:#322-pending         re-certification still in progress (#322);
 #                                     passes while exempted, FAILS once the crate
 #                                     is fully vetted ("stale marker -- remove it").
-#   allow-exempt:DECISIONS#<anchor>   kept exempt under the #322 concern rule;
-#                                     passes only if <anchor> appears verbatim in
-#                                     DECISIONS.md; same stale-marker check.
+#   allow-exempt:DECISIONS#322-<crate>  kept exempt under the #322 concern rule;
+#                                     the anchor must be exactly 322-<crate> and
+#                                     appear as a whole token in DECISIONS.md;
+#                                     same stale-marker check.
 # Any other marker fails the guard. A line whose first non-blank character is
 # `#` is a comment, as is anything after whitespace followed by `#`.
 #

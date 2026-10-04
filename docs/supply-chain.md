@@ -426,7 +426,7 @@ fails when a listed crate is exempted or only partially vetted, so moving an
 exemption to a bumped version no longer turns CI green. The only exceptions
 are the markers documented in the list file: `allow-exempt:#322-pending`,
 used while issue #322's re-certification is in progress, and
-`allow-exempt:DECISIONS#<anchor>`, for a crate kept exempt under the #322
+`allow-exempt:DECISIONS#322-<crate>`, for a crate kept exempt under the #322
 concern rule with a DECISIONS.md entry. A marker left on a crate that is now
 fully audited also fails ("stale marker — remove it"). Run the guard locally
 with `scripts/check-crypto-vet.sh`, and run its self-tests with

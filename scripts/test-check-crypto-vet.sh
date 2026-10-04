@@ -139,19 +139,41 @@ criteria = "safe-to-deploy"
 version = "0.11.0"
 notes = "FAKE audit injected by scripts/test-check-crypto-vet.sh (scratch copy only)."
 EOF
-set_marker "$d/list.txt" sha2 "allow-exempt:DECISIONS#322-sha2-selftest"
-printf '\nAnchor: 322-sha2-selftest\n' >>"$d/DECISIONS.md"
+set_marker "$d/list.txt" sha2 "allow-exempt:DECISIONS#322-sha2"
+printf '\nAnchor: 322-sha2\n' >>"$d/DECISIONS.md"
 expect_fail "$d" sha2 "stale marker"
 
-# (c) a DECISIONS marker whose anchor does not exist.
-d=$(new_case c-missing-anchor)
+# (c) the plan's case: a DECISIONS marker naming a nonexistent anchor.
+d=$(new_case c-nonexistent-anchor)
 set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#nonexistent"
+expect_fail "$d" zeroize "must name anchor '322-zeroize' exactly"
+
+# (c1) the anchor is the right shape but DECISIONS.md lacks it.
+d=$(new_case c1-anchor-absent)
+set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize"
+expect_fail "$d" zeroize "does not appear in"
+
+# (c3) a prefix anchor (it would match as a substring) is rejected.
+d=$(new_case c3-prefix-anchor)
+set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322"
+expect_fail "$d" zeroize "must name anchor '322-zeroize' exactly"
+
+# (c4) another crate's anchor is rejected even though DECISIONS.md has it.
+d=$(new_case c4-other-crate-anchor)
+set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-sha2"
+printf '\nAnchor: 322-sha2\n' >>"$d/DECISIONS.md"
+expect_fail "$d" zeroize "must name anchor '322-zeroize' exactly"
+
+# (c5) DECISIONS.md has only a longer token (322-zeroize-extra): no match.
+d=$(new_case c5-longer-token-only)
+set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize"
+printf '\nAnchor: 322-zeroize-extra\n' >>"$d/DECISIONS.md"
 expect_fail "$d" zeroize "does not appear in"
 
 # (c2) a DECISIONS marker whose anchor exists passes.
 d=$(new_case c2-present-anchor)
-set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize-selftest"
-printf '\nAnchor: 322-zeroize-selftest\n' >>"$d/DECISIONS.md"
+set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize"
+printf '\nAnchor: 322-zeroize\n' >>"$d/DECISIONS.md"
 expect_pass "$d"
 
 # (d) an unknown marker.

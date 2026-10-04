@@ -996,11 +996,13 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   names the DECISIONS entry `'#322 <crate>'` (a space, not a hyphen), and it describes the
   check as `grep -q "<anchor>" DECISIONS.md`. A literal grep for `322-sha2` would not match
   a heading `#322 sha2`.
-- **Chose:** the guard runs `grep -qF` on the anchor text after `DECISIONS#`. The policy
-  entry (DECISIONS.md "#322 supply-chain audit policy", item 6) requires a concern-rule
-  entry to contain `322-<crate>` verbatim.
-- **Alternatives:** normalize hyphens to spaces before the grep (rejected: too clever, and
-  it matches looser text); require a markdown heading (rejected: the plan says grep).
+- **Chose:** after verifier feedback, the anchor must be exactly `322-<crate>` for that
+  line's crate, so `DECISIONS#322` and another crate's anchor both fail. DECISIONS.md must
+  contain `322-<crate>` as a whole token, so `322-<crate>-x` does not count. The policy
+  entry (DECISIONS.md "#322 supply-chain audit policy", items 6 and 7) uses `322-<crate>`
+  everywhere.
+- **Alternatives:** a plain substring grep (rejected by the verifier: `DECISIONS#322`
+  passed); normalize hyphens to spaces (rejected: matches looser text).
 - **Blast radius if wrong:** trivial. The text only changes when a concern-rule crate
   appears.
 - **Status:** UNCONFIRMED
@@ -1042,7 +1044,8 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
 ## #322 vet-facts: ratio rule vs. the plan's zeroize method
 - **Plan:** plans/supply-chain-recertify-322.md (Policy 2; Context table)
 - **Assumed:** with the exclusions, `scripts/vet-facts.sh zeroize 1.9.0 1.8.2` gives
-  12 files, +574/-194, which is 768 changed lines against 1,061 src lines, or 0.72. That
+  12 files, +574/-194. The plan's table note says -190, but the script measures -194,
+  within the plan's ±5%. That is 768 changed lines against 1,061 src lines, or 0.72. That
   is below 0.75, so the numeric rule implies "delta". The plan decides "full" for zeroize,
   under the rule's rewrite clause.
 - **Chose:** the script prints the numeric verdict and labels the rewrite clause as a

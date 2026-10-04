@@ -18,7 +18,8 @@ updates:
       # would open lockfile PRs for the whole transitive graph; the
       # transitive crypto crates (curve25519-dalek, signature, ecdsa,
       # elliptic-curve, subtle, ring) move only with a lock rewrite, which
-      # the guard catches. See scripts/crypto-critical.txt.
+      # the guard catches once that crate's pending marker is removed. See
+      # scripts/crypto-critical.txt.
       crypto:
         patterns:
           - "ed25519-dalek"

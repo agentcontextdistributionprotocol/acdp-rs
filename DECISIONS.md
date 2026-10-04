@@ -827,7 +827,7 @@ under the concern rule below.
    a RUSTSEC hit; or a review that cannot be finished. For such a crate:
    - Do not certify it.
    - Keep its exemption, with `notes = "KEPT EXEMPT (#322): <reason>; see DECISIONS.md
-     '#322 <crate>'"`.
+     '322-<crate>'"`.
    - Add a DECISIONS.md entry tagged `Needs: Fable decision`. It states the concern, the
      evidence (`file:line`), and the options: accept the exemption, pin an older audited
      version, or report upstream. It must contain the anchor text `322-<crate>`
@@ -840,8 +840,8 @@ under the concern rule below.
    `cargo metadata --locked --all-features`.
    - **No marker:** every locked version must be in `vetted_fully`.
    - **`allow-exempt:#322-pending`:** passes while the crate is still exempted.
-   - **`allow-exempt:DECISIONS#<anchor>`:** passes only if `<anchor>` appears verbatim
-     in DECISIONS.md.
+   - **`allow-exempt:DECISIONS#322-<crate>`:** the anchor must be exactly `322-<crate>`
+     for that line's crate, and DECISIONS.md must contain it as a whole token.
    - Both markers fail as **stale** once every locked version is fully vetted, which
      forces each phase to remove its own markers.
    - Any other marker fails, as does a listed crate that is not in `Cargo.lock`.
@@ -858,6 +858,6 @@ under the concern rule below.
    direct crypto deps only: `ed25519-dalek`, `p256`, `sha2`, `zeroize`, and `rustls`.
    `allow: dependency-type: all` is per ecosystem entry, so it would flood PRs for the
    whole transitive graph. Transitive Tier A crates move only through a lock rewrite,
-   and the guard catches that.
+   and the guard catches that once the crate's pending marker is removed.
 
 **Status:** DECIDED (maintainer-settled policy, recorded in Phase 1).

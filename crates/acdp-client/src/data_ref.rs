@@ -177,9 +177,12 @@ impl DataRefFetcher for HttpsDataRefFetcher {
         };
 
         // SSRF policy gate — RFC-ACDP-0006 §7.1/§7.2.
-        self.ssrf_policy
-            .check_url(uri)
-            .map_err(|e| AcdpError::SchemaViolation(format!("SSRF policy on data_ref: {e}")))?;
+        self.ssrf_policy.check_url(uri).map_err(|e| {
+            AcdpError::SchemaViolation(format!(
+                "{} data_ref location refused: {e}",
+                acdp_primitives::error::SSRF_POLICY_PREFIX
+            ))
+        })?;
 
         let mut resp = self
             .http

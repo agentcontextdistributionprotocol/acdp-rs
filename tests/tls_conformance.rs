@@ -406,11 +406,13 @@ async fn sec_01_cross_registry_pins_authority_dns() {
         Err(e) => e,
     };
     // The pinned builder → `pin_resolved_ip` rejects the loopback answer
-    // with `SchemaViolation` ("forbidden range"); it propagates unwrapped
-    // from `client_for`.
+    // with an SSRF `SchemaViolation` ("forbidden range"); `client_for`
+    // re-maps it to `cross_registry_resolution_failed`, the code
+    // RFC-ACDP-0007 §5 ("DNS resolution refused") and fixture fed-007
+    // require for a refused cross-registry authority (issue #321).
     assert!(
-        matches!(err, AcdpError::SchemaViolation(_)),
-        "SEC-01: expected SchemaViolation from the pinned DNS check, got {err:?}"
+        matches!(&err, AcdpError::CrossRegistryResolutionFailed(m) if m.contains("SSRF policy")),
+        "SEC-01: expected CrossRegistryResolutionFailed from the pinned DNS check, got {err:?}"
     );
 }
 

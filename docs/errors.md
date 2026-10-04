@@ -116,12 +116,15 @@ publish-request validation, which surfaces as `KeyResolution` rather than
 request/byte budget ran out; retrying reproduces it) — is
 **permanent**. Retrying won't help; fix the request or the key.
 
-> **DNS-rebinding refusals are permanent on every path.** `SafeDnsResolver`
-> refuses a hostname that resolves into a forbidden range at DNS time. That
-> refusal is `KeyResolution` on the `WebResolver` (`did:web`) path and
-> `SchemaViolation` everywhere else (`RegistryClient`, `HttpsDataRefFetcher`),
-> so `publish_with_retry` returns it on the first attempt. The per-path table
-> is in [security.md](security.md#dns-rebinding-protection-is-active).
+> **DNS-rebinding refusals are never `Http`.** `SafeDnsResolver` refuses a
+> hostname that resolves into a forbidden range at DNS time. For direct
+> callers that refusal is permanent: `KeyResolution` on the `WebResolver`
+> (`did:web`) path, and `SchemaViolation` on `RegistryClient` and
+> `HttpsDataRefFetcher` (detect it with `AcdpError::is_ssrf_policy_refusal()`).
+> So `publish_with_retry` returns it on the first attempt. The exception is
+> `CrossRegistryResolver`, which reports it as `CrossRegistryResolutionFailed`
+> because the spec mandates that code. The per-path table is in
+> [security.md](security.md#dns-rebinding-protection-is-active).
 
 `RegistryClient::publish_with_retry(req, idempotency_key, max_attempts)` uses
 exactly this predicate, with bounded backoff (250 ms → 500 ms → 1 s → 2 s):

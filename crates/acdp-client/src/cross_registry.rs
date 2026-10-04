@@ -404,7 +404,9 @@ impl CrossRegistryResolver {
         if caps.claims_profile(acdp_types::profile::Profile::RegistryReceipts) {
             policy.receipts = ReceiptPolicy::Require;
         }
-        VerifiedContext::fetch_with_policy(&registry, &self.did_resolver, &parsed, &policy).await
+        VerifiedContext::fetch_with_policy(&registry, &self.did_resolver, &parsed, &policy)
+            .await
+            .map_err(|e| ssrf_refusal_to_cross_registry(&authority, e))
     }
 
     /// Walk the `derived_from` graph rooted at `body` with cycle detection,
@@ -595,7 +597,8 @@ impl CrossRegistryResolver {
             .pinned(true)
             .ssrf_policy(self.ssrf_policy.clone())
             .build()
-            .await?;
+            .await
+            .map_err(|e| ssrf_refusal_to_cross_registry(authority, e))?;
         let mut cache = self.client_cache.lock().unwrap();
         Ok(cache.entry(authority.to_string()).or_insert(client).clone())
     }
@@ -632,7 +635,7 @@ impl CrossRegistryResolver {
                         "could not reach registry '{authority}': {e}"
                     ))
                 }
-                other => other,
+                other => ssrf_refusal_to_cross_registry(authority, other),
             })?;
         // Clamp to the resolver-wide ceiling so a registry advertising
         // an absurd `max-age` can't pin a stale doc indefinitely.
@@ -662,9 +665,98 @@ impl CrossRegistryResolver {
     }
 }
 
+/// Re-map an SSRF-policy refusal raised while talking to a foreign
+/// registry to `cross_registry_resolution_failed`, leaving every other
+/// error untouched.
+///
+/// `RegistryClient` reports such a refusal as the permanent
+/// [`AcdpError::SchemaViolation`] (issue #321), which is right for a
+/// direct caller. Inside cross-registry resolution, though, RFC-ACDP-0007
+/// §5 lists "DNS resolution refused" (and redirect-policy violations)
+/// under `cross_registry_resolution_failed` (HTTP 502), and fixture
+/// `fed-007` pins that code for a refused authority, so it is re-mapped
+/// here. This matches the URL-time SSRF check at the top of
+/// `resolve_inner`, which already reports `CrossRegistryResolutionFailed`.
+fn ssrf_refusal_to_cross_registry(authority: &str, e: AcdpError) -> AcdpError {
+    if e.is_ssrf_policy_refusal() {
+        AcdpError::CrossRegistryResolutionFailed(format!(
+            "could not reach registry '{authority}': {e}"
+        ))
+    } else {
+        e
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SSRF_CTX: &str = "acdp://localhost/550e8400-e29b-41d4-a716-446655440000";
+
+    /// `true` when `e` is the typed form of the wire code
+    /// `cross_registry_resolution_failed`.
+    fn is_cross_registry_wire_code(e: &AcdpError) -> bool {
+        let wire = acdp_primitives::WireError {
+            error: acdp_primitives::WireErrorBody {
+                code: "cross_registry_resolution_failed".into(),
+                message: String::new(),
+                details: None,
+            },
+        };
+        std::mem::discriminant(e) == std::mem::discriminant(&AcdpError::from_wire_error(wire))
+    }
+
+    /// fed-007 / RFC-ACDP-0007 §5 ("DNS resolution refused"): an
+    /// authority that resolves into a forbidden range is refused at the
+    /// resolver's pin-once DNS step and surfaces as
+    /// `cross_registry_resolution_failed`, not `schema_violation`.
+    #[tokio::test]
+    async fn resolve_maps_pin_time_ssrf_refusal_to_cross_registry_failure() {
+        let resolver = CrossRegistryResolver::new();
+        let err = resolver
+            .resolve(&CtxId::parse(SSRF_CTX).unwrap())
+            .await
+            .expect_err("localhost authority MUST be refused");
+        assert!(
+            is_cross_registry_wire_code(&err),
+            "expected cross_registry_resolution_failed, got {err:?}"
+        );
+        assert!(err.to_string().contains("SSRF policy"), "{err}");
+    }
+
+    /// Issue #321: the DNS-time `SafeDnsResolver` refusal, which a direct
+    /// `RegistryClient` caller sees as the permanent `SchemaViolation`, is
+    /// re-mapped to `cross_registry_resolution_failed` when it happens
+    /// inside the resolver (here on the capabilities fetch of a seeded,
+    /// unpinned client — the path that bypasses pin-once resolution).
+    #[tokio::test]
+    async fn resolve_maps_dns_time_ssrf_refusal_to_cross_registry_failure() {
+        let direct = RegistryClient::new("https://localhost").unwrap();
+        let direct_err = direct.capabilities().await.unwrap_err();
+        assert!(
+            direct_err.is_ssrf_policy_refusal(),
+            "direct caller sees the permanent SSRF SchemaViolation, got {direct_err:?}"
+        );
+
+        let resolver = CrossRegistryResolver::new();
+        resolver.seed_client("localhost", direct);
+        let err = resolver
+            .resolve(&CtxId::parse(SSRF_CTX).unwrap())
+            .await
+            .expect_err("localhost authority MUST be refused");
+        assert!(
+            is_cross_registry_wire_code(&err),
+            "expected cross_registry_resolution_failed, got {err:?}"
+        );
+        assert!(err.to_string().contains("SSRF policy"), "{err}");
+    }
+
+    /// Non-SSRF errors pass through the re-map untouched.
+    #[test]
+    fn ssrf_remap_leaves_other_errors_alone() {
+        let e = ssrf_refusal_to_cross_registry("r", AcdpError::SchemaViolation("bad".into()));
+        assert!(matches!(e, AcdpError::SchemaViolation(m) if m == "bad"));
+    }
 
     fn test_caps() -> CapabilitiesDocument {
         serde_json::from_value(serde_json::json!({

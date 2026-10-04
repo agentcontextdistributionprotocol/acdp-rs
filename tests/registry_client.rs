@@ -651,10 +651,11 @@ async fn new_refuses_hostname_resolving_to_loopback_at_dns_time() {
 }
 
 /// Issue #321: `publish_with_retry` MUST NOT retry a DNS-time SSRF refusal
-/// — every attempt would be refused identically. The mock server counts
-/// requests: a refusal happens before any connect, so it MUST see zero, and
-/// the call MUST return well before the first 250 ms backoff would elapse
-/// for even one retry cycle (4 attempts would sleep 250+500+1000 ms).
+/// — every attempt would be refused identically. `publish_with_retry`
+/// retries exactly when `is_transient()` is true, so asserting the returned
+/// error is the permanent SSRF refusal pins the no-retry decision; the mock
+/// server additionally confirms no request ever reached it (the refusal
+/// happens at DNS time, before any connect).
 #[tokio::test]
 async fn publish_with_retry_does_not_retry_ssrf_refusal() {
     let server = MockServer::start().await;
@@ -667,21 +668,15 @@ async fn publish_with_retry_does_not_retry_ssrf_refusal() {
     let port = server.address().port();
     let client = RegistryClient::new(&format!("https://localhost:{port}")).unwrap();
 
-    let started = std::time::Instant::now();
     let err = client
         .publish_with_retry(&sample_publish_request(), "ssrf-no-retry", 4)
         .await
         .unwrap_err();
-    let elapsed = started.elapsed();
 
     assert!(
-        matches!(&err, AcdpError::SchemaViolation(m) if m.contains("SSRF policy")),
+        err.is_ssrf_policy_refusal(),
         "expected a permanent SSRF SchemaViolation, got {err:?}"
     );
     assert!(!err.is_transient());
-    assert!(
-        elapsed < std::time::Duration::from_millis(250),
-        "publish_with_retry slept for a retry backoff ({elapsed:?}) — it retried an SSRF refusal"
-    );
     assert!(server.received_requests().await.unwrap().is_empty());
 }

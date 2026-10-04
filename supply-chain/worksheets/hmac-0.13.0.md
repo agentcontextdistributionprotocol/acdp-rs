@@ -33,7 +33,7 @@ its sha256 matches, and its extracted tree is byte-identical (`diff -r`) to the
 
 | Item | Finding |
 |---|---|
-| `unsafe` code lines | 0 (grep, comment lines excluded). No `#![forbid(unsafe_code)]` attribute in `src/`; `Cargo.toml` sets `[lints.rust] unsafe_code = "forbid"`, but Cargo caps lints for registry dependencies, so the grep is the evidence. |
+| `unsafe` code lines | 0 (grep, comment lines excluded). No `#![forbid(unsafe_code)]` attribute in `src/`; `Cargo.toml` sets `[lints.rust] unsafe_code = "forbid"`. The grep is the evidence. The `Cargo.toml` lint is only a corroborating hint: Cargo builds registry dependencies with `--cap-lints allow`, which caps `Cargo.toml` lints and source-level `forbid` attributes alike. |
 | asm / SIMD / intrinsics | none |
 | build.rs | none (`build = false`) |
 | proc-macro | no |

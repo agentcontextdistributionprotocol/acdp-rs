@@ -30,7 +30,7 @@ its sha256 matches, and its extracted tree is byte-identical (`diff -r`) to the
 
 | Item | Finding |
 |---|---|
-| `unsafe` code lines | 0. `#![forbid(unsafe_code)]` unconditional at `src/lib.rs:8`. |
+| `unsafe` code lines | 0 (grep of the full source, comment lines excluded; the grep is the evidence). `#![forbid(unsafe_code)]` at `src/lib.rs:8` is only a corroborating hint: Cargo builds registry dependencies with `--cap-lints allow`, which caps source-level `forbid` attributes as well as `Cargo.toml` lints. |
 | asm / SIMD / intrinsics | none |
 | build.rs | none (`build = false`) |
 | proc-macro | no |
@@ -38,7 +38,7 @@ its sha256 matches, and its extracted tree is byte-identical (`diff -r`) to the
 | Binary content | `tests/examples/p256-priv.der` (121 bytes, ASN.1 SEQUENCE) and `.pem`, loaded only by `tests/`. Not compiled into any non-test build. Recorded as a discretion line. |
 | Dependencies | optional `base16ct` 1, `ctutils` 0.4, `der` 0.8 (`oid`), `hybrid-array` 0.4.6, `serdect` 0.4, `subtle` 2, `zeroize` 1. Dev-only: `hex-literal`, `tempfile`. |
 | Features ACDP enables | `alloc`, `ctutils`, `default`, `der`, `point`, `std`, `subtle`, `zeroize` (root `--all-features` and py/node/wasm bindings identical). `pem`, `serde` off. |
-| Reached via | `elliptic-curve` 0.14.1. **On ACDP's untrusted-input path:** `p256::ecdsa::VerifyingKey::from_sec1_bytes` (called from `crates/acdp-did/src/key.rs:150` and the P-256 verify paths in `crates/acdp-types/src/{receipt,lifecycle,log,cosignature}.rs`) parses through `EncodedPoint::from_bytes`. |
+| Reached via | `elliptic-curve` 0.14.1. **On ACDP's untrusted-input path:** `p256::ecdsa::VerifyingKey::from_sec1_bytes` (called from `crates/acdp-crypto/src/verify.rs:59`, which every P-256 verify path reaches, `crates/acdp-crypto/src/fingerprint.rs:28`, and `crates/acdp-did/src/key.rs:150`) parses through `EncodedPoint::from_bytes`. |
 | Advisories | `cargo deny check advisories`: ok on 2026-10-04 |
 
 ## Behaviour (what was read)
@@ -47,7 +47,8 @@ its sha256 matches, and its extracted tree is byte-identical (`diff -r`) to the
   error on empty), validates it with `Tag::from_u8` (`:527-536`: 0, 2, 3, 4, 5 only),
   requires `input.len() == tag.message_len(field_size)` exactly, then copies into an
   `Array` of the uncompressed size (`1 + 2*n`, always `>= expected_len`). No panic path.
-- Invariant: `bytes[0]` is always a valid tag. Every constructor (`from_bytes`,
+- Invariant: `bytes[0]` is always a valid tag. Every constructor (`from_bytes` and `TryFrom<&[u8]>` `:308-310`,
+  `from_untagged_bytes` `:107-110` and `compress` `:174-181` via
   `from_affine_coordinates` `:114-134`, `identity`/`Default` = 0, `ct_select` /
   `conditional_select` choosing between two valid points, `Zeroize` resetting to identity
   `:449-452`) preserves it, and the field is private. So the `expect("invalid tag")` in

@@ -428,8 +428,8 @@ same signing, hashing, key generation, and TLS paths, issue #339 batch B1
 certified six (`ed25519`, `crypto-common`, `zeroize_derive`, `spki`, `ff`,
 `wnaf`) and batch B2 six more (`hmac`, `rfc6979`, `pkcs8`, `sec1`,
 `primefield`, `digest`; table above), and added them to the guard list. The
-remaining 23 are
-covered by `[[exemptions.*]]` entries only, and are not on the guard list:
+remaining 23 are covered by `[[exemptions.*]]` entries only, and are not on the
+guard list:
 
 - **RustCrypto support:** `curve25519-dalek-derive`, `block-buffer`,
   `cpufeatures`, `hybrid-array`, `ctutils`, `cmov`, `base16ct`, `base64ct`,
@@ -532,7 +532,8 @@ exemption to a bumped version no longer turns CI green.
 
 The guard is now **enforcing**: since #322 closed, every listed crate except
 `zeroize` carries no marker (twenty-two of the twenty-three, including the
-twelve Tier B crates added by #339 batches B1 and B2). The list file documents two markers:
+twelve Tier B crates added by #339 batches B1 and B2). The list file documents
+two markers:
 
 - `allow-exempt:DECISIONS#322-<crate>@<version>` is for a crate kept exempt
   under the #322 concern rule. **Only `zeroize` uses it**

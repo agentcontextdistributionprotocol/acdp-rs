@@ -47,7 +47,7 @@ its sha256 matches, and its extracted tree is byte-identical (`diff -r`) to the
 
 | Item | Finding |
 |---|---|
-| `unsafe` code lines | 0, including all macro bodies. `#![forbid(unsafe_code)]` unconditional at `src/lib.rs:4`. |
+| `unsafe` code lines | 0, including all macro bodies; (grep of the full source, comment lines excluded; the grep is the evidence). `#![forbid(unsafe_code)]` at `src/lib.rs:4` is only a corroborating hint: Cargo builds registry dependencies with `--cap-lints allow`, which caps source-level `forbid` attributes as well as `Cargo.toml` lints. |
 | asm / SIMD / intrinsics | none |
 | build.rs | none (`build = false`) |
 | proc-macro | no |

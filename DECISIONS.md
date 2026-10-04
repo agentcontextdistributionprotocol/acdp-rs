@@ -1182,10 +1182,12 @@ assistance, maintainer approval required before merge.
 | `primefield` | 0.14.0 | full (no prior audit) | `supply-chain/worksheets/primefield-0.14.0.md` |
 | `digest` | 0.11.3 | full (no prior audit of 0.11.x); test-fixture discretion | `supply-chain/worksheets/digest-0.11.3.md` |
 
-- All six have zero `unsafe` lines (grep), no `asm!`, no build script, and no proc-macro.
-  `pkcs8`, `sec1`, `primefield`, `digest` carry `#![forbid(unsafe_code)]`; `hmac` and
-  `rfc6979` set it only as a `Cargo.toml` lint, which Cargo caps for registry deps, so
-  the grep is the evidence.
+- All six have zero `unsafe` lines, no `asm!`, no build script, and no proc-macro. For
+  all six the evidence is a grep of the full source. `pkcs8`, `sec1`, `primefield` and
+  `digest` carry `#![forbid(unsafe_code)]`, and `hmac` and `rfc6979` set it as a
+  `Cargo.toml` lint, but both are only corroborating hints: Cargo builds registry
+  dependencies with `--cap-lints allow`, which caps source-level `forbid` attributes and
+  `Cargo.toml` lints alike.
 - `primefield` and `digest` are mostly `#[macro_export]` macros that expand in caller
   crates (`p256`; `sha2`, `hmac`), where their `forbid` does not apply. Every macro arm
   was read; none contains `unsafe` or a powerful import.

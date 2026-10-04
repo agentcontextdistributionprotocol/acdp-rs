@@ -30,8 +30,8 @@ its sha256 matches, and its extracted tree is byte-identical (`diff -r`) to the
   (`:102-619`), `monty_field_arithmetic!` (`:627-721`), `monty_field_reduce!`
   (`:726-747`), `field_op!` (`:752-781`), `monty_field_element_doc!` (`:787-808`),
   `fiat_monty_field_arithmetic!` (`fiat.rs:10-190`), `fiat_bernstein_yang_invert!`
-  (`:195-274`), `test_fiat_monty_field_arithmetic!` (`:285-327`), and the test/bench
-  macros in `dev.rs`. None contains `unsafe`, `asm!`, or a powerful import, so they inject
+  (`:195-274`), `test_fiat_monty_field_arithmetic!` (`:285-327`), the test/bench
+  macros in `dev.rs`, and the internal, unexported `monty_field_op!` (`monty.rs:512-550`). None contains `unsafe`, `asm!`, or a powerful import, so they inject
   none into their callers. In ACDP's graph, `p256` 0.14.0 expands `monty_field_params!`,
   `monty_field_element!`, `monty_field_element_doc!` and (in `#[cfg(test)]`)
   `test_primefield!` (`p256-0.14.0/src/arithmetic/{field,scalar}.rs`).
@@ -40,7 +40,7 @@ its sha256 matches, and its extracted tree is byte-identical (`diff -r`) to the
 
 | Item | Finding |
 |---|---|
-| `unsafe` code lines | 0, including all macro bodies. `#![forbid(unsafe_code)]` unconditional at `src/lib.rs:8`. |
+| `unsafe` code lines | 0, including all macro bodies; (grep of the full source, comment lines excluded; the grep is the evidence). `#![forbid(unsafe_code)]` at `src/lib.rs:8` is only a corroborating hint: Cargo builds registry dependencies with `--cap-lints allow`, which caps source-level `forbid` attributes as well as `Cargo.toml` lints. |
 | asm / SIMD / intrinsics | none |
 | build.rs | none (`build = false`) |
 | proc-macro | no |
@@ -58,10 +58,12 @@ its sha256 matches, and its extracted tree is byte-identical (`diff -r`) to the
   configured byte order, then `from_uint` (`:165-170`) range-checks against the modulus
   with `ct_lt` and returns a `CtOption`. `from_slice` (`:107-113`) length-checks with
   `Array::try_from`.
-- `from_hex_vartime`, `from_u32`, `from_u64`, `const_invert` (`:125-202`, `:388-395`)
-  `assert!`/`expect` on misuse; they are `const fn`s used for compile-time constants
-  (`PrimeField` consts `:484-492`), so a violation is a compile error in the curve crate,
-  not a runtime path.
+- `from_hex_vartime`, `from_u32`, `const_invert` (`:125-186`, `:388-395`) `assert!`/
+  `expect` on misuse; they are `const fn`s used for compile-time constants (`PrimeField`
+  consts `:484-492`), so a violation there is a compile error in the curve crate.
+  `from_u64` (`:195-202`) is also reached at runtime through `From<u64>` (`:896-904`), but
+  its only check is that the modulus exceeds 64 bits, a property of the curve parameters
+  and not of the input, so it cannot panic for P-256.
 - `Field::try_random` (`:440-449`): rejection sampling over `from_bytes`.
 - Arithmetic (`:316-424`) and all `subtle`/`ctutils` impls (`:721-801`) forward to
   `crypto-bigint`'s `ConstMontyForm`. `Ord`/`PartialOrd` (`:964-979`) are variable-time

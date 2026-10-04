@@ -49,7 +49,7 @@ version = "0.11.3"
 notes = """
 Scope: full audit of 0.11.3 (no prior audit of 0.11.x; 2857 src lines, all files read, including every arm of the #[macro_export] buffer_fixed!/buffer_ct_variable!/buffer_xof! macros, which expand in caller crates such as sha2 and hmac where this crate's forbid(unsafe_code) does not apply).
 Source: crates.io tarball sha256 f1dd6dbb5841937940781866fa1281a1ff7bd3bf827091440879f9994983d5c2 == Cargo.lock checksum.
-unsafe: 0 sites, including all macro bodies; #![forbid(unsafe_code)] unconditional at src/lib.rs:4.
+unsafe: 0 sites, including all macro bodies, per a grep of the full source (comment lines excluded); the grep is the evidence. #![forbid(unsafe_code)] at src/lib.rs:4 is only a corroborating hint (cargo builds registry deps with --cap-lints allow, which caps both Cargo.toml lints and source-level forbid attributes).
 asm/SIMD: none.
 build.rs / proc-macro: none (build = false; not a proc-macro).
 Powerful imports: none in compiled ACDP code (#![no_std]; alloc only behind alloc; include_str! for README docs). The three include_bytes! (src/dev.rs:36, 71; src/dev/mac.rs:147) are inside test-generating macros of the dev module (feature dev, off in ACDP).
@@ -173,7 +173,7 @@ version = "0.13.0"
 notes = """
 Scope: full audit of 0.13.0 (no prior audit; 466 src lines, all files read, including the digest::buffer_fixed! expansions it invokes at src/lib.rs:34-52).
 Source: crates.io tarball sha256 6303bc9732ae41b04cb554b844a762b4115a61bfaa81e3e83050991eeb56863f == Cargo.lock checksum.
-unsafe: 0 sites (grep; Cargo.toml lints forbid unsafe_code, but cargo caps lints for registry deps, so the grep is the evidence).
+unsafe: 0 sites, per a grep of the full source (comment lines excluded); the grep is the evidence. The Cargo.toml [lints.rust] unsafe_code = "forbid" is only a corroborating hint (cargo builds registry deps with --cap-lints allow, which caps both Cargo.toml lints and source-level forbid attributes).
 asm/SIMD: none.
 build.rs / proc-macro: none (build = false; not a proc-macro).
 Powerful imports: none (#![no_std], no alloc; include_str! for README docs only).
@@ -216,11 +216,11 @@ version = "0.11.0"
 notes = """
 Scope: full audit of 0.11.0 (no prior audit; 1153 src lines, all files read).
 Source: crates.io tarball sha256 451913da69c775a56034ea8d9003d27ee8948e12443eae7c038ba100a4f21cb7 == Cargo.lock checksum.
-unsafe: 0 sites; #![forbid(unsafe_code)] unconditional at src/lib.rs:8.
+unsafe: 0 sites, per a grep of the full source (comment lines excluded); the grep is the evidence. #![forbid(unsafe_code)] at src/lib.rs:8 is only a corroborating hint (cargo builds registry deps with --cap-lints allow, which caps both Cargo.toml lints and source-level forbid attributes).
 asm/SIMD: none.
 build.rs / proc-macro: none (build = false; not a proc-macro).
 Powerful imports: filesystem only, behind std (enabled in ACDP): std::path::Path (src/traits.rs:21-22) for the explicit caller-invoked trait helpers read_pkcs8_der_file / write_pkcs8_der_file (src/traits.rs:90-93, 170-173), delegating to der::SecretDocument; PEM variants need pem (off). Unused by the crate and by ACDP. No network, process or env access; getrandom::SysRng is behind the getrandom feature (off).
-Discretion: binary test fixtures tests/examples/*.der (13 small ASN.1 test keys) and .pem are read only by tests/; not compiled into any non-test build.
+Discretion: binary test fixtures tests/examples/*.der (14 small ASN.1 test keys) and .pem are read only by tests/; not compiled into any non-test build.
 Behaviour: PrivateKeyInfo::decode_value (src/private_key_info.rs:217-248) accepts version 0/1 only, rejects a version/public-key mismatch and delegates all parsing to der's bounded reader; Debug omits the private key. encrypted_private_key_info.rs compiles only with pkcs5 (off).
 New deps: der 0.8 (oid), spki 0.8; optional ctutils, getrandom, pkcs5, rand_core (all off). ACDP features: alloc, std (root and py/node/wasm bindings identical). Reached via elliptic-curve 0.14.1.
 Advisories: cargo deny check advisories clean on 2026-10-04.
@@ -234,11 +234,11 @@ version = "0.14.0"
 notes = """
 Scope: full audit of 0.14.0 (no prior audit; 2501 src lines, all files read, including every #[macro_export] macro body, which expands in caller crates such as p256 where this crate's forbid(unsafe_code) does not apply).
 Source: crates.io tarball sha256 c555a6e4eb7d4e158fcb028c835c3b8642206ddc279b5c6b202ef9a8bdb592f4 == Cargo.lock checksum.
-unsafe: 0 sites, including all macro bodies (monty_field_params!, monty_field_element!, monty_field_arithmetic!, monty_field_reduce!, field_op!, fiat_monty_field_arithmetic!, fiat_bernstein_yang_invert!, test/bench macros); #![forbid(unsafe_code)] unconditional at src/lib.rs:8.
+unsafe: 0 sites, including all macro bodies (monty_field_params!, monty_field_element!, monty_field_arithmetic!, monty_field_reduce!, field_op!, fiat_monty_field_arithmetic!, fiat_bernstein_yang_invert!, test/bench macros, and the internal unexported monty_field_op!), per a grep of the full source (comment lines excluded); the grep is the evidence. #![forbid(unsafe_code)] at src/lib.rs:8 is only a corroborating hint (cargo builds registry deps with --cap-lints allow, which caps both Cargo.toml lints and source-level forbid attributes).
 asm/SIMD: none.
 build.rs / proc-macro: none (build = false; not a proc-macro).
 Powerful imports: none (#![no_std], no alloc; include_str! for README docs only; dev.rs bench macros reference ::criterion and compile only where a bench invokes them).
-Behaviour: from_bytes/from_uint range-check against the modulus and return CtOption; const-fn constructors assert only at compile-time constant evaluation; arithmetic and subtle/ctutils impls forward to crypto-bigint ConstMontyForm; the macro-emitted DefaultIsZeroes zeroizes fully initialized values, so zeroize 1.9.0's Z-1 (DECISIONS 322-zeroize) is not triggered.
+Behaviour: from_bytes/from_uint range-check against the modulus and return CtOption; from_u64 asserts only that the modulus exceeds 64 bits (also reached at runtime via From<u64>, but it cannot fire for P-256), and the other const-fn assert/expect paths are used for compile-time constants; arithmetic and subtle/ctutils impls forward to crypto-bigint ConstMontyForm; the macro-emitted DefaultIsZeroes zeroizes fully initialized values, so zeroize 1.9.0's Z-1 (DECISIONS 322-zeroize) is not triggered.
 New deps: crypto-bigint 0.7.5, crypto-common 0.2, ff 0.14, rand_core 0.10, subtle 2.6, zeroize 1.7. No features defined. Reached via p256 0.14.0, primeorder 0.14.0, wnaf 0.14.1.
 Advisories: cargo deny check advisories clean on 2026-10-04.
 Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
@@ -251,7 +251,7 @@ version = "0.6.0"
 notes = """
 Scope: full audit of 0.6.0 (no prior audit; 513 src lines, all files read).
 Source: crates.io tarball sha256 b4a459cddafb3fe76b31fd8f1108007566c40301feb64dc7b54656eb7388172b == Cargo.lock checksum.
-unsafe: 0 sites (grep; Cargo.toml lints forbid unsafe_code, but cargo caps lints for registry deps, so the grep is the evidence).
+unsafe: 0 sites, per a grep of the full source (comment lines excluded); the grep is the evidence. The Cargo.toml [lints.rust] unsafe_code = "forbid" is only a corroborating hint (cargo builds registry deps with --cap-lints allow, which caps both Cargo.toml lints and source-level forbid attributes).
 asm/SIMD: none.
 build.rs / proc-macro: none (build = false; not a proc-macro).
 Powerful imports: none (#![no_std], no alloc; include_str! for README docs only).
@@ -299,7 +299,7 @@ version = "0.8.1"
 notes = """
 Scope: full audit of 0.8.1 (no prior audit; 1274 src lines, all files read).
 Source: crates.io tarball sha256 d56d437c2f19203ce5f7122e507831de96f3d2d4d3be5af44a0b0a09d8a80e4d == Cargo.lock checksum.
-unsafe: 0 sites; #![forbid(unsafe_code)] unconditional at src/lib.rs:8.
+unsafe: 0 sites, per a grep of the full source (comment lines excluded); the grep is the evidence. #![forbid(unsafe_code)] at src/lib.rs:8 is only a corroborating hint (cargo builds registry deps with --cap-lints allow, which caps both Cargo.toml lints and source-level forbid attributes).
 asm/SIMD: none.
 build.rs / proc-macro: none (build = false; not a proc-macro).
 Powerful imports: filesystem only, behind std (enabled in ACDP): std::path::Path (src/traits.rs:7-8) for the explicit caller-invoked trait helpers read_sec1_der_file / write_sec1_der_file (src/traits.rs:36-39, 66-69), delegating to der::SecretDocument; PEM variants need pem (off). Unused by the crate and by ACDP. No network, process or env access.

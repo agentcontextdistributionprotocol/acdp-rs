@@ -94,7 +94,8 @@ need to opt in explicitly. The intended seams:
 > These are **test-only**. Never construct a loopback-permitting policy in
 > production code — it reopens the SSRF surface the defaults close. The TLS
 > conformance suite (`tests/tls_conformance.rs`) uses exactly these seams to
-> drive the `fed-*` and `did-ssrf-*` fixtures against an in-process server.
+> drive the `fed-001..006` and `pub-001/003/006` fixtures against an in-process
+> server (the `did-ssrf-*` fixtures run in `tests/conformance.rs`).
 
 ## What the crate does *not* do
 

@@ -248,9 +248,12 @@ cargo run --example end_to_end --features client,test-transport  # publish→ret
 ## Testing
 
 ```bash
-cargo test --all-features                          # full suite
-cargo test --no-default-features                   # core (no HTTP)
+cargo test --workspace --all-features              # full suite
+cargo test -p acdp --no-default-features           # core (no HTTP)
 ```
+
+The full CI-equivalent pre-PR check set is in
+[CONTRIBUTING.md § Local checks](./CONTRIBUTING.md#local-checks).
 
 The suite includes:
 - Spec golden vectors (`tests/golden_vector.rs` — `sig-001`, `can-001`).
@@ -273,7 +276,7 @@ ACDP_SPEC_DIR=../agentcontextdistributionprotocol cargo test --test conformance
 ## Building docs
 
 ```bash
-RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo +nightly doc --all-features --no-deps --open
+RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo +nightly doc --workspace --all-features --no-deps --open
 ```
 
 ## Dependencies

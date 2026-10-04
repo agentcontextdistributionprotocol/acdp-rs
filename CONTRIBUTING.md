@@ -68,8 +68,8 @@ behavior MUST:
 
 ## Adding a new wire error code
 
-When ACDP adds a new error code (e.g. v0.1's `immutable_field` or
-`unsupported_embedding_model`), wire it through the library in three
+When ACDP adds a new error code (e.g. 0.5.0's `unsupported_media_type`),
+wire it through the library in three
 places:
 
 1. **`crates/acdp-primitives/src/error.rs` `AcdpError`** — add a typed
@@ -77,9 +77,11 @@ places:
 2. **`AcdpError::from_wire_error`** — add a `match` arm that converts
    the wire string into the new typed variant.
 3. **`crates/acdp-primitives/src/error.rs` tests
-   `all_25_wire_codes_round_trip`** — extend the exhaustive map so the
+   `all_26_wire_codes_round_trip`** — extend the exhaustive map so the
    count and the round-trip assertion stay accurate (rename the test to
-   match the new count).
+   match the new count). The spec-driven backstop
+   `wire_error_codes_cover_the_spec_enum` in `tests/conformance.rs` fails
+   if the spec's error-code enum gains a code this crate does not map.
 
 Also update `AcdpError::is_transient` if the new code is retryable, and
 `SupersessionReason` if the code uses a `details.reason` sub-vocabulary.

@@ -877,9 +877,10 @@ The worksheet is `supply-chain/worksheets/sha2-0.11.0.md`.
   `ptr::read(bp.add(1 + i))`.
 - `<*const T>::add` is UB if `bp` lies before the allocation. That happens when an
   unaligned block starts within the first `offset` bytes of an align-1 allocation.
-- The backend is reachable only with `--cfg sha2_backend="riscv-zknh"` (or
-  `sha2_256_backend` / `sha2_512_backend`) and a **nightly** toolchain
-  (`#![feature(riscv_ext_intrinsics)]`, `src/lib.rs:9-16`).
+- The backend is reachable only with `--cfg sha2_backend="riscv-zknh"` or
+  `--cfg sha2_256_backend="riscv-zknh"`. These are the only keys that select it, in both
+  `src/sha256.rs:5` and `src/sha512.rs:5`.
+- It also needs nightly (or stable with RUSTC_BOOTSTRAP=1, which is not a supported configuration) (`#![feature(riscv_ext_intrinsics)]`, `src/lib.rs:9-16`).
 - No Cargo feature enables it, so it is **unreachable in every ACDP build** and in every
   stable build.
 

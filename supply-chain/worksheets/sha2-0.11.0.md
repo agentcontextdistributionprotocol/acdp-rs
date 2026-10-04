@@ -11,7 +11,7 @@
 
 The review was finished. Every `unsafe` site was read and has a verdict below.
 - One opt-in backend contains code that is unsound for some inputs (finding S-1). It
-  needs nightly plus an explicit `--cfg`, so it is unreachable in every stable build.
+  needs nightly (or stable with RUSTC_BOOTSTRAP=1, which is not a supported configuration) plus an explicit `--cfg`, so it is unreachable in every stable build.
 - The backends that ACDP actually builds were found sound.
 
 ## Upstream status (2026-10-04)
@@ -43,7 +43,7 @@ To reproduce: `scripts/vet-facts.sh sha2 0.11.0 0.10.9`.
 
 | Item | Finding |
 |---|---|
-| `unsafe` code lines | 53 (list from vet-facts.sh; verdicts below) |
+| `unsafe` code lines | 50 non-comment `unsafe` code lines. `vet-facts.sh` reports 53 raw hits, but 3 of them are asm-template comments (`// left = unsafe { ptr::read(bp) };`) at `sha256/riscv_zknh/utils.rs:51` and `sha512/riscv_zknh/utils.rs:51,101`. Verdicts below. |
 | asm | `core::arch::asm!` in 4 files: `sha256/loongarch64_asm.rs`, `sha512/loongarch64_asm.rs`, `sha256/riscv_zknh/utils.rs`, and `sha512/riscv_zknh/utils.rs`. The x86, aarch64, and wasm backends use `core::arch` intrinsics only. |
 | build.rs / proc-macro | none / no |
 | Powerful imports | none. The crate is `#![no_std]`; the only `include_str!` is the README doc string. |
@@ -56,8 +56,14 @@ To reproduce: `scripts/vet-facts.sh sha2 0.11.0 0.10.9`.
 
 A `cfg_if!` chain chooses the backend:
 
-1. A forced backend via `--cfg sha2_backend` / `sha2_256_backend` / `sha2_512_backend`:
-   `soft`, `riscv-zknh`, `x86-sha`, `aarch64-sha2`, `x86-avx2`, or `aarch64-sha3`. Each
+1. A forced backend via `--cfg`. The cfg keys select these backends:
+   - `soft`: `sha2_backend` or `sha2_256_backend`, in both files.
+   - `riscv-zknh`: `sha2_backend` or `sha2_256_backend`, in both `sha256.rs:5` and
+     `sha512.rs:5`. `sha2_512_backend` has no riscv-zknh arm, an upstream quirk.
+   - `x86-sha` / `aarch64-sha2`: `sha2_256_backend`.
+   - `x86-avx2` / `aarch64-sha3`: `sha2_512_backend`.
+
+   Each
    forced SIMD backend is guarded by a `compile_error!` unless the matching
    `target_feature` is statically enabled, so the `unsafe` call is justified at compile
    time.
@@ -117,10 +123,10 @@ How it goes wrong:
   outside the block. The code accepts that because aligned words cannot cross a page.
 
 Reachability:
-- Only with `--cfg sha2_backend="riscv-zknh"` (or `sha2_256_backend` /
-  `sha2_512_backend`).
-- That cfg turns on `#![feature(riscv_ext_intrinsics)]` (`lib.rs:9-16`), so it is
-  **nightly-only**.
+- Only with `--cfg sha2_backend="riscv-zknh"` or `--cfg sha2_256_backend="riscv-zknh"`.
+  These are the only keys that select it, in both `sha256.rs:5` and `sha512.rs:5`.
+- That cfg turns on `#![feature(riscv_ext_intrinsics)]` (`lib.rs:9-16`), so it needs
+  **nightly (or stable with RUSTC_BOOTSTRAP=1, which is not a supported configuration)**.
 - No Cargo feature enables it, so it is unreachable in ACDP's builds and in any
   stable-toolchain build.
 

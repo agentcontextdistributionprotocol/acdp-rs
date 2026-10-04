@@ -42,3 +42,12 @@ ecdsa
 elliptic-curve
 rustls
 ring
+
+# Tier B (#339), added as each crate is certified.
+# Batch B1:
+wnaf
+ff
+spki
+crypto-common
+zeroize_derive
+ed25519

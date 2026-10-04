@@ -208,10 +208,6 @@ criteria = "safe-to-run"
 version = "0.7.5"
 criteria = "safe-to-deploy"
 
-[[exemptions.crypto-common]]
-version = "0.2.2"
-criteria = "safe-to-deploy"
-
 [[exemptions.ctutils]]
 version = "0.4.2"
 criteria = "safe-to-deploy"
@@ -248,10 +244,6 @@ criteria = "safe-to-deploy"
 version = "0.2.7"
 criteria = "safe-to-deploy"
 
-[[exemptions.ed25519]]
-version = "3.0.0"
-criteria = "safe-to-deploy"
-
 [[exemptions.either]]
 version = "1.18.0"
 criteria = "safe-to-run"
@@ -263,10 +255,6 @@ criteria = "safe-to-deploy"
 [[exemptions.fastrand]]
 version = "2.5.0"
 criteria = "safe-to-run"
-
-[[exemptions.ff]]
-version = "0.14.0"
-criteria = "safe-to-deploy"
 
 [[exemptions.fiat-crypto]]
 version = "0.3.0"
@@ -740,10 +728,6 @@ criteria = "safe-to-deploy"
 version = "0.6.5"
 criteria = "safe-to-deploy"
 
-[[exemptions.spki]]
-version = "0.8.0"
-criteria = "safe-to-deploy"
-
 [[exemptions.stable_deref_trait]]
 version = "1.2.1"
 criteria = "safe-to-deploy"
@@ -988,10 +972,6 @@ criteria = "safe-to-deploy"
 version = "0.6.5"
 criteria = "safe-to-run"
 
-[[exemptions.wnaf]]
-version = "0.14.1"
-criteria = "safe-to-deploy"
-
 [[exemptions.writeable]]
 version = "0.6.4"
 criteria = "safe-to-deploy"
@@ -1032,10 +1012,6 @@ criteria = "safe-to-deploy"
 version = "1.9.0"
 criteria = "safe-to-deploy"
 notes = "KEPT EXEMPT (#322): safe optimization_barrier reads possibly-uninit byte as u8 on non-asm targets (src/barrier.rs:92-100); see DECISIONS.md '322-zeroize'"
-
-[[exemptions.zeroize_derive]]
-version = "1.5.0"
-criteria = "safe-to-deploy"
 
 [[exemptions.zerotrie]]
 version = "0.2.5"

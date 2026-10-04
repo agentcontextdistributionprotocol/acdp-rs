@@ -364,12 +364,15 @@ have. Refresh them with `cargo vet` (updates `imports.lock`).
 
 ### The crypto-critical set
 
-The eleven crates that implement or underpin ACDP's signature and TLS security
-are listed in [`scripts/crypto-critical.txt`](../scripts/crypto-critical.txt).
-Issue #322 (completed 2026-10-04) re-certified them at the versions in
-`Cargo.lock`. **Ten of the eleven are covered by our own audit at the locked
-version. `zeroize` is the one deliberate exception:** it stays exempt under the
-#322 concern rule. The per-crate review worksheets are in
+The seventeen crates that implement or underpin ACDP's signature and TLS
+security are listed in
+[`scripts/crypto-critical.txt`](../scripts/crypto-critical.txt): the eleven
+Tier A crates, which issue #322 (completed 2026-10-04) re-certified at the
+versions in `Cargo.lock`, and the six Tier B support crates certified so far by
+issue #339 (batch B1: `wnaf`, `ff`, `spki`, `crypto-common`, `zeroize_derive`,
+`ed25519`). **Sixteen of the seventeen are covered by our own audit at the
+locked version. `zeroize` is the one deliberate exception:** it stays exempt
+under the #322 concern rule. The per-crate review worksheets are in
 [`supply-chain/worksheets/`](../supply-chain/worksheets/), and the notes are in
 `supply-chain/audits.toml`.
 
@@ -396,6 +399,12 @@ latest release, and no open advisory.
 | `elliptic-curve` | 0.14.1 | 0.13.8, 0.14.1 | audit (full, 2026-10-04) | RustCrypto | Curve trait framework |
 | `rustls` | 0.23.45 | 0.23.40, 0.23.40 → 0.23.45 | audit (delta, 2026-10-04) | rustls | HTTPS transport (RFC-ACDP-0008) |
 | `ring` | 0.17.14 | 0.17.14 | audit (2026-07-05) | briansmith | the only rustls crypto provider, in production (via reqwest's `rustls-tls`) and in the TLS test harness; `aws-lc-rs` is not in the graph (#339) |
+| `ed25519` | 3.0.0 | 3.0.0 | audit (full, 2026-10-04, #339 B1; discretion note on test-only fixtures) | RustCrypto | `Signature` byte container under ed25519-dalek |
+| `crypto-common` | 0.2.2 | 0.2.2 | audit (full, 2026-10-04, #339 B1) | RustCrypto | Size/key-init traits under `digest`, `sha2`, `elliptic-curve` |
+| `zeroize_derive` | 1.5.0 | 1.5.0 | audit (full, 2026-10-04, #339 B1) | RustCrypto | `ZeroizeOnDrop` derive on `acdp-crypto`'s `SigningKey` |
+| `spki` | 0.8.0 | 0.8.0 | audit (full, 2026-10-04, #339 B1; discretion note on test-only fixtures) | RustCrypto | SPKI / `AlgorithmIdentifier` types under `ecdsa` |
+| `ff` | 0.14.0 | 0.14.0 | audit (full, 2026-10-04, #339 B1) | zkcrypto | Field traits under the P-256 stack |
+| `wnaf` | 0.14.1 | 0.14.1 | audit (full, 2026-10-04, #339 B1) | RustCrypto | Variable-time wNAF multiplication under `primeorder` (P-256 verify) |
 
 **`zeroize` 1.9.0 is exempt, not audited.** Its new safe
 `optimization_barrier` reads a possibly-uninitialized byte on targets without
@@ -406,23 +415,24 @@ delta-audit zeroize 1.9.1 when it is released (RustCrypto/utils#1535 removes the
 crate's internal callers of `optimization_barrier`). Its guard line carries
 `allow-exempt:DECISIONS#322-zeroize@1.9.0`, which pins the exemption to 1.9.0.
 
-**Supporting crypto crates are exempted, not audited.** #322 covered only the
-eleven crates above. The 35 support crates on the same signing, hashing, key
-generation, and TLS paths are covered by `[[exemptions.*]]` entries only, and
-are not on the guard list:
+**Most supporting crypto crates are still exempted, not audited.** #322
+covered only the eleven Tier A crates. Of the 35 support crates (Tier B) on the
+same signing, hashing, key generation, and TLS paths, issue #339 batch B1
+certified six (`ed25519`, `crypto-common`, `zeroize_derive`, `spki`, `ff`,
+`wnaf`; table above) and added them to the guard list. The remaining 29 are
+covered by `[[exemptions.*]]` entries only, and are not on the guard list:
 
-- **RustCrypto support:** `ed25519`, `curve25519-dalek-derive`, `digest`,
-  `crypto-common`, `block-buffer`, `cpufeatures`, `hybrid-array`, `ctutils`,
-  `cmov`, `zeroize_derive`, `rfc6979`, `hmac`, `sec1`, `spki`, `pkcs8`,
-  `base16ct`, `base64ct`, `primeorder`, `primefield`, `wnaf`, `ff`, `group`,
+- **RustCrypto support:** `curve25519-dalek-derive`, `digest`, `block-buffer`,
+  `cpufeatures`, `hybrid-array`, `ctutils`, `cmov`, `rfc6979`, `hmac`, `sec1`,
+  `pkcs8`, `base16ct`, `base64ct`, `primeorder`, `primefield`, `group`,
   `const-oid`, `der`, `crypto-bigint`, `typenum`, `cpubits`.
 - **Key generation:** `rand_core` (0.9.5, 0.10.1) and `getrandom` (0.2.17,
   0.3.4, 0.4.3).
 - **TLS stack:** `rustls-webpki`, `rustls-pki-types`, `tokio-rustls`,
   `hyper-rustls`, `webpki-roots`, `untrusted`.
 
-Certifying them, and adding each one to the guard list as it is certified, is a
-planned follow-up.
+Certifying them in batches (#339), and adding each one to the guard list as it
+is certified, is in progress.
 
 **`aws-lc-rs` is not in the dependency graph (#339).** It used to come in only
 through the TLS test harness (`axum-server`'s `tls-rustls` feature and the dev
@@ -511,8 +521,9 @@ this, because it passes an exempted crate exactly like an audited one, so the
 fails when a listed crate is exempted or only partially vetted, so moving an
 exemption to a bumped version no longer turns CI green.
 
-The guard is now **enforcing**: since #322 closed, ten of the eleven listed
-crates carry no marker. The list file documents two markers:
+The guard is now **enforcing**: since #322 closed, every listed crate except
+`zeroize` carries no marker (sixteen of the seventeen, including the six Tier B
+crates added by #339 batch B1). The list file documents two markers:
 
 - `allow-exempt:DECISIONS#322-<crate>@<version>` is for a crate kept exempt
   under the #322 concern rule. **Only `zeroize` uses it**

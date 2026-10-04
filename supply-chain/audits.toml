@@ -1,6 +1,23 @@
 
 # cargo-vet audits file
 
+[[audits.crypto-common]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "0.2.2"
+notes = """
+Scope: full audit of 0.2.2 (no prior audit, ours or imported; 853 src lines, every file read).
+Source: crates.io tarball sha256 ce6e4c961d6cd6c9a86db418387425e8bdeaf05b3c8bc1411e6dca4c252f1453 == Cargo.lock checksum.
+unsafe: 0 sites (full-source grep; forbid is capped by --cap-lints for registry deps, so the grep is the evidence); #![forbid(unsafe_code)] is at src/lib.rs:8.
+asm/SIMD: none.
+build.rs / proc-macro: none.
+Powerful imports: none directly (#![no_std]). OS entropy by delegation: with the `getrandom` feature (on in ACDP via elliptic-curve) Generate::try_generate/generate read getrandom::SysRng (src/generate.rs:28-45; generate panics on OS RNG failure, documented). Explicit key-generation API; the syscall lives in getrandom (Tier B, still exempted). ACDP passes its own SysRng to generate_from_rng and does not call these.
+Behaviour: size/constructor traits (KeyInit, KeyIvInit, InnerIvInit, ...) with length-checked slice constructors, Generate impls, and hazmat SerializableState. Observation CC-1 (not a vet concern): the [u128; N] SerializableState impls use an 8-byte element size (src/hazmat.rs:162-168), so serialize/deserialize always panic (safe copy_from_slice / unwrap, never UB); unused in ACDP's graph; fixed upstream in RustCrypto/traits#2471 (unreleased).
+New deps: hybrid-array 0.4.7; optional getrandom 0.4 (sys_rng), rand_core 0.10. ACDP features: getrandom, rand_core (root and py/node/wasm bindings identical). Tier B hybrid-array, getrandom, rand_core still exempted.
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/crypto-common-0.2.2.md (https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/355, issue #339 batch B1)."""
+
 [[audits.curve25519-dalek]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"
 criteria = "safe-to-deploy"
@@ -50,6 +67,24 @@ Advisories: cargo deny check advisories clean on 2026-10-04.
 Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
 Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/ecdsa-0.17.0.md (issue #322 Phase 4 PR)."""
 
+[[audits.ed25519]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "3.0.0"
+notes = """
+Scope: full audit of 3.0.0 (no prior audit, ours or imported; 947 src lines, every src file read, plus tests/ for imports and fixtures).
+Source: crates.io tarball sha256 29fcf32e6c73d1079f83ab4d782de2d81620346a5f38c6237a86a22f8368980a == Cargo.lock checksum.
+unsafe: 0 sites (full-source grep; forbid is capped by --cap-lints for registry deps, so the grep is the evidence); #![forbid(unsafe_code)] is at src/lib.rs:6.
+asm/SIMD: none.
+build.rs / proc-macro: none (optional zerocopy derives are off; on repr(C)/repr(transparent) u8 arrays with no padding they would be layout-sound).
+Powerful imports: none (#![no_std]; alloc only behind `alloc`; include_str! README for docs only).
+Discretion: binary test fixtures tests/examples/{pkcs8-v1,pkcs8-v2,pubkey}.der (48/116/44 bytes), each byte-identical to the base64 body of its sibling .pem; read only by tests/pkcs8.rs via include_bytes!; not compiled into any non-test build.
+Behaviour: Signature is an unvalidated 64-byte R||s container (from_slice length check, hex Display/FromStr with mixed-case rejection, optional serde/zeroize); optional RFC 8410 PKCS#8/SPKI KeypairBytes/PublicKeyBytes with OID and nested OCTET STRING checks. ACDP uses only the Signature container (from_slice / to_bytes / from_components): from_slice on verify (crates/acdp-crypto/src/verify.rs:38), to_bytes on sign (crates/acdp-crypto/src/sign.rs:67-68,104-105), and ed25519-dalek's own from_components/to_bytes conversions (ed25519-dalek-3.0.0/src/signature.rs:167,173); all verification checks are in ed25519-dalek/curve25519-dalek (audited; safe-to-deploy only; correctness not claimed). Hygiene note (feature-gated, off): without `zeroize`, KeypairBytes Drop does not clear the secret, and to_pkcs8_der skips its zeroize on early-return errors.
+New deps: signature 3 (audited 3.0.0); optional pkcs8 0.11, serdect 0.4, zeroize 1, zerocopy 0.8. ACDP features: none (ed25519-dalek uses default-features = false and ACDP leaves ed25519-dalek/alloc off; root and py/node/wasm bindings identical).
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/ed25519-3.0.0.md (https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/355, issue #339 batch B1)."""
+
 [[audits.ed25519-dalek]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"
 criteria = "safe-to-deploy"
@@ -95,6 +130,23 @@ New deps: generic-array -> hybrid-array 0.4, crypto-bigint 0.5 -> 0.7.5 (adds ct
 Advisories: cargo deny check advisories clean on 2026-10-04.
 Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
 Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/elliptic-curve-0.14.1.md (issue #322 Phase 4 PR)."""
+
+[[audits.ff]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "0.14.0"
+notes = """
+Scope: full audit of 0.14.0 (no prior audit, ours or imported; 771 src lines, every src file read). The optional ff_derive proc-macro (feature `derive`) is not in ACDP's Cargo.lock and was not reviewed.
+Source: crates.io tarball sha256 a1f686ab92a9fb0eaf188f6c6c87b89490baa6fdb0db4544ba4dc47f7942489f == Cargo.lock checksum.
+unsafe: 0 sites (full-source grep; forbid is capped by --cap-lints for registry deps, so the grep is the evidence); #![forbid(unsafe_code)] is at src/lib.rs:7.
+asm/SIMD: none.
+build.rs / proc-macro: none (not a proc-macro; optional ff_derive dependency is off and absent from the lock).
+Powerful imports: none (#![no_std]; alloc only behind `alloc`).
+Behaviour: Field/PrimeField/FromUniformBytes/PrimeFieldBits trait definitions with default methods (pow, pow_vartime, from_str_vartime, from_u128), Montgomery batch inversion (src/batch.rs), generic sqrt helpers (src/helpers.rs). Only panics are assert!/unwrap on broken Field invariants or mismatched scratch lengths.
+New deps: rand_core 0.10, subtle 2.2.1 (both default-features = false); optional bitvec, byteorder, ff_derive (not in the lock). ACDP features: alloc only (root and py/node/wasm bindings identical).
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/ff-0.14.0.md (https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/355, issue #339 batch B1)."""
 
 [[audits.p256]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"
@@ -199,14 +251,66 @@ Advisories: cargo deny check advisories clean on 2026-10-04.
 Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
 Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/signature-3.0.0.md (issue #322 Phase 2 PR)."""
 
+[[audits.spki]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "0.8.0"
+notes = """
+Scope: full audit of 0.8.0 (no prior audit, ours or imported; 828 src lines, every src file read, plus tests/ and benches/ for imports and fixtures).
+Source: crates.io tarball sha256 1d9efca8738c78ee9484207732f728b1ef517bbb1833d6fc0879ca898a522f6f == Cargo.lock checksum.
+unsafe: 0 sites (full-source grep; forbid is capped by --cap-lints for registry deps, so the grep is the evidence); #![forbid(unsafe_code)] is at src/lib.rs:8.
+asm/SIMD: none.
+build.rs / proc-macro: none (optional `arbitrary` derive is off).
+Powerful imports: filesystem only behind the `std` feature (off in every ACDP build): DecodePublicKey::read_public_key_{der,pem}_file and EncodePublicKey::write_public_key_{der,pem}_file (src/traits.rs:55-70,105-122) take a caller-supplied Path and delegate to der::Document; explicit, documented API, not ambient I/O. No net/process/env.
+Discretion: binary test fixtures tests/examples/{ed25519-pub,p256-pub,rsa2048-pub}.der (44/91/294 bytes), each byte-identical to the base64 body of its sibling .pem; read only by tests/*.rs and the nightly benches/mod.rs via include_bytes!; not compiled into any non-test build.
+Behaviour: AlgorithmIdentifier and SubjectPublicKeyInfo DER structs plus encode/decode traits; all parsing delegated to der (no own length or buffer arithmetic). ACDP never decodes SPKI (P-256 keys are SEC1 points); the crate is pulled in by ecdsa's `spki` feature.
+New deps: der 0.8 (oid); optional arbitrary, base64ct, digest, sha2. ACDP features: alloc only (root and py/node/wasm bindings identical). Tier B der still exempted.
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/spki-0.8.0.md (https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/355, issue #339 batch B1)."""
+
 [[audits.subtle]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"
 criteria = "safe-to-deploy"
 version = "2.6.1"
 notes = "dalek 'subtle' constant-time primitives (Choice/ConditionallySelectable) guarding against timing side-channels across the crypto stack. Reviewed 2.6.1: no_std, no I/O, no concerning unsafe. Canonical, latest 2.x. cargo audit clean 2026-07-05."
 
+[[audits.wnaf]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "0.14.1"
+notes = """
+Scope: full audit of 0.14.1 (no prior audit, ours or imported; 718 src lines, every file read).
+Source: crates.io tarball sha256 795ca18b3fdb5e62bf982199278341ddcf7ebf7d32e25e212ad05d496e95f6fa == Cargo.lock checksum.
+unsafe: 0 sites (full-source grep; forbid is capped by --cap-lints for registry deps, so the grep is the evidence); #![forbid(unsafe_code)] is at src/lib.rs:8.
+asm/SIMD: none.
+build.rs / proc-macro: none (build = false; not a proc-macro).
+Powerful imports: none (#![no_std]; alloc only behind `alloc`; include_str! README for docs only).
+Behaviour: generic variable-time wNAF tables and Straus multiscalar multiplication over group::Group; all digit/table accesses are bounds-checked slice indexing. Observation W-1 (not a vet concern): under debug_assertions digit() panics for window sizes 7 and 8 (src/lib.rs:71-80,120,126); ACDP only uses W = 5 via primeorder (projective.rs:39), and upstream master already fixes it.
+New deps: hybrid-array 0.4.13, ff 0.14, group 0.14, primefield 0.14 (all default-features = false). ACDP features: none (primeorder uses default-features = false; root and py/node/wasm bindings identical).
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/wnaf-0.14.1.md (https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/355, issue #339 batch B1)."""
+
 [[audits.zeroize]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"
 criteria = "safe-to-deploy"
 version = "1.8.2"
 notes = "RustCrypto 'zeroize'. Secure zeroing; acdp-crypto SigningKey seed uses ZeroizeOnDrop. Reviewed 1.8.2: volatile writes + compiler fences, minimal audited unsafe. Canonical, latest 1.x. cargo audit clean 2026-07-05."
+
+[[audits.zeroize_derive]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "1.5.0"
+notes = """
+Scope: full audit of 1.5.0 (no prior audit, ours or imported; src/lib.rs is the only source file, 870 lines incl. the cfg(test) module, read in full).
+Source: crates.io tarball sha256 3c50655cbb0fe3fc43170059e702f1ce5e19b84cec58dc87b037a09935c2f328 == Cargo.lock checksum.
+unsafe: 0 sites (full-source grep; forbid is capped by --cap-lints for registry deps, so the grep is the evidence); #![forbid(unsafe_code)] is at src/lib.rs:4. The generated code contains no unsafe either (every quote! block read).
+asm/SIMD: none.
+build.rs / proc-macro: no build.rs. proc-macro = true: derives Zeroize and ZeroizeOnDrop. Pure token-to-token codegen with syn/quote: reads only the input item and its #[zeroize(drop|bound|skip)] attributes, emits Zeroize/Drop/ZeroizeOnDrop impls that call zeroize's public traits; no fs/net/process/env, no env!/include_*!, no tracked access, no static state; malformed input fails via panic!/assert! (compile errors).
+Powerful imports: none.
+ACDP use: zeroize `derive` feature (acdp-crypto); one #[derive(ZeroizeOnDrop)] on SigningKey(ed25519_dalek::SigningKey) (crates/acdp-crypto/src/sign.rs:26), whose generated Drop is a no-op because ed25519_dalek::SigningKey implements ZeroizeOnDrop but not Zeroize (ed25519-dalek-3.0.0/src/signing.rs:719-726); a field implementing Zeroize (with or without ZeroizeOnDrop) instead takes the AssertZeroize path and has zeroize() called. Erasure semantics belong to zeroize 1.9.0, still exempt under DECISIONS 322-zeroize; this audit does not cover zeroize.
+New deps: proc-macro2 1, quote 1, syn 2 (full, extra-traits, visit); host-only. ACDP features: default (none defined); root and py/node/wasm bindings identical.
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance, or that zeroization clears memory.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/zeroize_derive-1.5.0.md (https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/355, issue #339 batch B1)."""

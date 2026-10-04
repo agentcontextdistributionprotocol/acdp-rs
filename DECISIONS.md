@@ -1136,3 +1136,32 @@ need `safe-to-deploy` coverage again. `docs/supply-chain.md` says not to.
 
 **Status:** DONE (PR for #339, aws-lc part). Follow-up 1 of the #322 completion status
 no longer includes the `aws-lc-*` move.
+
+## #339 Tier B batch B1: six support crates certified (2026-10-04)
+
+Issue #339, plan `plans/remaining-issues-2026-10.md` P6, batch B1 (PR #355). The #322 audit
+policy above applies unchanged: built-in `safe-to-deploy`, notes template, `who` per Policy 4,
+concern rule, maintainer approving review before merge.
+
+| Crate | Version | Method | Worksheet finding |
+|---|---|---|---|
+| `wnaf` | 0.14.1 | full (no base) | W-1: debug-build panic for window sizes 7/8; ACDP uses W = 5; fixed upstream |
+| `ff` | 0.14.0 | full (no base) | none; optional `ff_derive` not in any lock |
+| `spki` | 0.8.0 | full (no base) | `std`-gated caller-path file helpers (off); test-fixture discretion |
+| `crypto-common` | 0.2.2 | full (no base) | CC-1: `[u128; N]` `SerializableState` always panics (unused); fixed upstream (RustCrypto/traits#2471) |
+| `zeroize_derive` | 1.5.0 | full (no base) | pure codegen proc-macro; generated code has no `unsafe` |
+| `ed25519` | 3.0.0 | full (no base) | none on ACDP paths (no features enabled); test-fixture discretion |
+
+- All six are `#![forbid(unsafe_code)]` with 0 `unsafe` lines, no build.rs, and no asm. No
+  concern-rule trigger, so none was kept exempt.
+- W-1 and CC-1 are panics in safe code, not memory-safety issues, and are unreachable from
+  ACDP. Both are already fixed on upstream master; there is nothing to report.
+- Each crate's exemption is removed and the crate is added to `scripts/crypto-critical.txt`
+  without a marker (17 guarded crates; only `zeroize` keeps a marker).
+- The bindings' lockfiles (py, node, wasm) resolve the same six versions and checksums as the
+  root, so `scripts/check-bindings-lock-parity.sh` passes with the larger list. Its self-test
+  now derives the expected crate count from the list instead of hard-coding 11.
+- Remaining Tier B: 29 crates, batches B2-B7.
+
+**Status:** AUTHORED. Merges only after the maintainer's approving review naming the six
+worksheets (Policy 4).

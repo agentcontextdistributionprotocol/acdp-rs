@@ -1,8 +1,0 @@
-name: auto-merge
-on: pull_request
-permissions:
-  contents: write
-  pull-requests: write
-jobs:
-  call:
-    uses: agentcontextdistributionprotocol/acdp-ci/.github/workflows/auto-merge.yml@v1

@@ -186,6 +186,16 @@ jobs:
       # scripts/test-check-crypto-vet.sh.
       - name: Crypto-critical crates are audited, or exempt by DECISIONS.md
         run: scripts/check-crypto-vet.sh
+      # Bindings lock parity (#340): bindings/acdp-{py,node,wasm} have their
+      # own Cargo.lock with no cargo-vet gate, so the root audits cover them
+      # only by version. Every crypto-critical (version, checksum) in a
+      # binding lockfile must also be in the root Cargo.lock. Part of the
+      # required `cargo-vet` check; the self-test runs first so a broken
+      # parser cannot pass silently.
+      - name: Bindings lock-parity guard self-test
+        run: scripts/test-check-bindings-lock-parity.sh
+      - name: Bindings lockfiles match the root for crypto-critical crates
+        run: scripts/check-bindings-lock-parity.sh
 
   semver:
     name: cargo-semver-checks (advisory)

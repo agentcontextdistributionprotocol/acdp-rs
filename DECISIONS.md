@@ -1761,3 +1761,117 @@ the rest of batch B7.
 
 **Status:** AUTHORED. Pending the maintainer's approving review naming the worksheets read
 (Policy 4); never auto-merged.
+
+## #339 322-rustls-webpki: rustls-webpki 0.103.15 certified safe-to-deploy (full), W-O8 recorded as an observation (2026-10-05)
+
+Critical decision C1 of plan `plans/b7-webpki-getrandom.md` (W2), issue #339, batch B7b.
+Anchor: `322-rustls-webpki`. The worksheet is
+`supply-chain/worksheets/rustls-webpki-0.103.15.md`. An independent Claude (Opus) verifier
+checked it and gave PASS after three rounds.
+
+**Why this went to a Claude (Fable) decision review.** `rustls-webpki` decides whether every
+ACDP HTTPS peer (a `did:web` host, a registry, a `data_ref` origin) is who it claims to be. It
+does this through `rustls` 0.23.45's `WebPkiServerVerifier` under `reqwest`. Guarding it as
+"audited" would signal more than the vet criterion delivers unless the notes scope the claim.
+
+**Evidence (worksheet `file:line`).**
+- `unsafe` 0, no `asm!`, no FFI, no `build.rs`, no proc-macro (l.174-177). The decision
+  reviewer confirmed this with its own grep.
+- Every line of all 19 `src/` files was read, 10,040 lines; the six partition totals sum to
+  10,040 (l.53-65). The compiled set (17 files, 5,880 non-test lines) comes from rustc
+  dep-info, not only from reading `cfg`s (l.99-103).
+- There are 25 panic-macro sites, each with a reachability argument. None is reachable from a
+  server-presented chain, from CRL bytes or from a caller-supplied name (l.219-245, l.294-295).
+- The RUSTSEC-2023-0053 budget is present and fatal (l.269-279):
+  - `Budget` is at `verify_cert.rs:292-345` and is consumed at `:126`, before every recursive
+    descent.
+  - `error.rs:357-375` maps exhaustion to `ControlFlow::Break`.
+  - Recursion depth is capped at 6 (`:847`, `:802-805`; l.265-268).
+- All five advisories (2023-0053, 2026-0049, -0098, -0099, -0104) are mapped to the code that
+  carries each fix (l.340-346). `cargo deny check advisories` was clean on 2026-10-05 (l.183).
+- CRL parsing and revocation checking are compiled but never reached (l.297-336). None of
+  ACDP's five `Client::builder` sites configures CRLs, so rustls passes `revocation = None`.
+  The code was still read in full and is panic-free.
+- Upstream test suite at tag `v/0.103.15` with ACDP's features: 398 passed, 0 failed, and
+  both BetterTLS suites passed (l.107-112). 10,000,000 mutation iterations produced 0 panics
+  (l.113-138).
+- **W-O8.** Path building re-parses every peer-supplied intermediate on each budgeted call
+  (`verify_cert.rs:108`), and that parsing is outside the budget.
+  - The cost is bounded by about 200,000 x the bytes of intermediates, and rustls caps the
+    Certificate message at 64 KiB (`rustls-0.23.45/src/msgs/deframer/handshake.rs:376`).
+  - Measured: 0.5-1 s of CPU per malicious handshake, worst 758 ms. Plain degenerate chains
+    stop within 66 ms (l.139-167, l.280-285, l.399-405).
+  - It is still present on upstream `main` (`verify_cert.rs:149-150`, 2026-10-05), and no
+    upstream issue tracks it.
+- Concerns under Policy 6: none (l.410-421). The worksheet recommends option 1 (l.423-436).
+
+**Options.**
+1. *(chosen)* Certify `safe-to-deploy`, full audit of 0.103.15. A `Not claimed:` line in the
+   notes excludes path-validation, name-constraint and revocation correctness.
+2. Certify with a `Discretion:` line for W-O8 and an upstream report.
+3. Keep exempt under the concern rule with `allow-exempt:DECISIONS#322-rustls-webpki@0.103.15`.
+
+**Decision: option 1.** Claude (Fable) took it on 2026-10-05, after checking for itself the
+budget, the fatal-error mapping, the depth cap, the rustls message cap and upstream `main`.
+The reasons:
+- **The flip criteria are not met.** They were: a panic or unbounded work reachable from a
+  server-presented chain; an open RUSTSEC on 0.103.15; a review that could not be finished.
+  W-O8 is bounded on both axes (200,000 calls x a 64 KiB message). Its ceiling is seconds of
+  CPU on slow hardware, not unbounded, and the measured 758 ms sits well inside it.
+- **W-O8 is not a concern-rule trigger.** The rule lists: `unsafe`; unexpected net/fs/process
+  access; a build.rs or proc-macro beyond cfg; obfuscated or binary content; a RUSTSEC hit; an
+  unfinishable review. A deliberate CPU budget is none of these. Option 3 is therefore not
+  available on this evidence, and using the marker without a trigger would misuse the Policy 7
+  semantics.
+- **W-O8 does not get a `Discretion:` line.** In this repo a `Discretion:` line records a
+  defect or hazard that the reviewer chose to certify past: `der` D-1/D-2 (non-termination),
+  `cpufeatures` CF-1, `getrandom` LR-1/LR-2, and the test-only I/O in `webpki-roots`. W-O8 is
+  upstream's deliberate, tested design. The 200,000-call limit is copied from mozilla::pkix
+  (`verify_cert.rs:336-338`) and pinned by `test_too_many_path_calls` (`:981`), and it is the
+  RUSTSEC-2023-0053 fix itself. A `Discretion:` line would tell importers that something is
+  being overlooked when nothing is. So it is recorded as an `Observations:` line with the
+  measured cost, as wnaf W-1 and cpufeatures CF-2 were.
+- **Rule for later reviews.** `Discretion:` is for a defect or hazard certified past, with its
+  reachability argument. `Observations:` is for a non-defect property that importers should
+  know, including a bounded DoS cost.
+- **The scoping does not over-claim.** `docs/supply-chain.md` already defines what
+  `safe-to-deploy` claims here and carries the certificate-validation carve-out for `rustls`;
+  W4 extends it to `rustls-webpki`. The two crates at the same boundary were certified with
+  the same scoping: `rustls` 0.23.45 and `webpki-roots` 1.0.9 both say "Not claimed:
+  certificate-validation correctness", and `webpki-roots` adds a "This is a trust boundary"
+  sentence. The rustls-webpki notes carry both.
+- **An exemption would understate a finished audit.** It would record a full 10,040-line read,
+  a 10M-iteration mutation loop and a worst-case timing study as "unaudited", as `322-getrandom`
+  already noted. `imports.lock` carries certified notes, including W-O8, to importers; an
+  exemption carries nothing.
+
+**Upstream.** Nothing was filed.
+- W-O8 is a performance-hardening suggestion (parse the intermediates once per
+  `build_chain`), not a vulnerability. Filing it as a plain enhancement issue under the
+  project's name, after the PR merges so the worksheet link exists, is recommended but
+  optional. It is not a condition of this certification.
+- W-O1 is already fixed on upstream `main`.
+- W-O2 (keyCertSign enforcement) landed on `main` in 2026-06. It is validation behaviour,
+  which the audit does not claim.
+
+**State after the decision (W3/W4):**
+- An `[[audits.rustls-webpki]]` full `safe-to-deploy` audit of 0.103.15 is added. It has the
+  worksheet's `Scope:` and `Not claimed:` wording, an `Observations:` line (W-O8, W-O1, W-O2),
+  a `Role:` line that says "This is a trust boundary", and no `Discretion:` line.
+- `[[exemptions.rustls-webpki]]` 0.103.15 is removed from `supply-chain/config.toml`.
+- `scripts/crypto-critical.txt` lists `rustls-webpki` under `# Batch B7:` with no marker.
+- `docs/supply-chain.md`'s "What a `safe-to-deploy` audit here claims" paragraph extends the
+  rustls carve-out to "(for rustls and rustls-webpki) TLS protocol and certificate-validation
+  correctness".
+- The worksheet's Verdict line changes from RECOMMENDED to CERTIFIED.
+
+**Exit criterion and re-audit trigger.** Nothing pending upstream gates this certification.
+The next `rustls-webpki` bump gets the normal Policy 2 audit. That review should:
+- check whether intermediates are now parsed once per `build_chain`, and drop the W-O8
+  observation if so;
+- note whether issuer keyCertSign enforcement (W-O2) landed, since that changes validation
+  behaviour on the trust boundary.
+
+A new RUSTSEC entry against 0.103.15 reopens the audit; the `cargo deny` CI gate catches it.
+
+**Status:** DECIDED (Fable, 2026-10-05).

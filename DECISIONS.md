@@ -1775,35 +1775,35 @@ does this through `rustls` 0.23.45's `WebPkiServerVerifier` under `reqwest`. Gua
 "audited" would signal more than the vet criterion delivers unless the notes scope the claim.
 
 **Evidence (worksheet `file:line`).**
-- `unsafe` 0, no `asm!`, no FFI, no `build.rs`, no proc-macro (l.174-177). The decision
+- `unsafe` 0, no `asm!`, no FFI, no `build.rs`, no proc-macro (l.175-178). The decision
   reviewer confirmed this with its own grep.
 - Every line of all 19 `src/` files was read, 10,040 lines; the six partition totals sum to
-  10,040 (l.53-65). The compiled set (17 files, 5,880 non-test lines) comes from rustc
-  dep-info, not only from reading `cfg`s (l.99-103).
+  10,040 (l.54-66). The compiled set (17 files, 5,880 non-test lines) comes from rustc
+  dep-info, not only from reading `cfg`s (l.100-104).
 - There are 25 panic-macro sites, each with a reachability argument. None is reachable from a
-  server-presented chain, from CRL bytes or from a caller-supplied name (l.219-245, l.294-295).
-- The RUSTSEC-2023-0053 budget is present and fatal (l.269-279):
+  server-presented chain, from CRL bytes or from a caller-supplied name (l.220-246, l.295-296).
+- The RUSTSEC-2023-0053 budget is present and fatal (l.270-280):
   - `Budget` is at `verify_cert.rs:292-345` and is consumed at `:126`, before every recursive
     descent.
   - `error.rs:357-375` maps exhaustion to `ControlFlow::Break`.
-  - Recursion depth is capped at 6 (`:847`, `:802-805`; l.265-268).
+  - Recursion depth is capped at 6 sub-CAs, so at most 7 frames (`:847`, `:802-805`; l.266-269).
 - All five advisories (2023-0053, 2026-0049, -0098, -0099, -0104) are mapped to the code that
-  carries each fix (l.340-346). `cargo deny check advisories` was clean on 2026-10-05 (l.183).
-- CRL parsing and revocation checking are compiled but never reached (l.297-336). None of
+  carries each fix (l.341-347). `cargo deny check advisories` was clean on 2026-10-05 (l.184).
+- CRL parsing and revocation checking are compiled but never reached (l.298-337). None of
   ACDP's five `Client::builder` sites configures CRLs, so rustls passes `revocation = None`.
   The code was still read in full and is panic-free.
 - Upstream test suite at tag `v/0.103.15` with ACDP's features: 398 passed, 0 failed, and
-  both BetterTLS suites passed (l.107-112). 10,000,000 mutation iterations produced 0 panics
-  (l.113-138).
+  both BetterTLS suites passed (l.108-113). 10,000,000 mutation iterations produced 0 panics
+  (l.114-139).
 - **W-O8.** Path building re-parses every peer-supplied intermediate on each budgeted call
   (`verify_cert.rs:108`), and that parsing is outside the budget.
   - The cost is bounded by about 200,000 x the bytes of intermediates, and rustls caps the
     Certificate message at 64 KiB (`rustls-0.23.45/src/msgs/deframer/handshake.rs:376`).
   - Measured: 0.5-1 s of CPU per malicious handshake, worst 758 ms. Plain degenerate chains
-    stop within 66 ms (l.139-167, l.280-285, l.399-405).
+    stop within 66 ms (l.140-168, l.281-286, l.400-406).
   - It is still present on upstream `main` (`verify_cert.rs:149-150`, 2026-10-05), and no
     upstream issue tracks it.
-- Concerns under Policy 6: none (l.410-421). The worksheet recommends option 1 (l.423-436).
+- Concerns under Policy 6: none (l.411-422). The worksheet recommends option 1 (l.424-437).
 
 **Options.**
 1. *(chosen)* Certify `safe-to-deploy`, full audit of 0.103.15. A `Not claimed:` line in the
@@ -1831,8 +1831,9 @@ The reasons:
   RUSTSEC-2023-0053 fix itself. A `Discretion:` line would tell importers that something is
   being overlooked when nothing is. So it is recorded as an `Observations:` line with the
   measured cost, as wnaf W-1 and cpufeatures CF-2 were.
-- **Rule for later reviews.** `Discretion:` is for a defect or hazard certified past, with its
-  reachability argument. `Observations:` is for a non-defect property that importers should
+- **Rule for later reviews.** `Discretion:` is for a defect, a hazard, or an item in a concern-rule
+  category (such as test-only binary fixtures or packaged scripts) that is certified past, with
+  its reachability or harmlessness argument. `Observations:` is for a non-defect property that importers should
   know, including a bounded DoS cost.
 - **The scoping does not over-claim.** `docs/supply-chain.md` already defines what
   `safe-to-deploy` claims here and carries the certificate-validation carve-out for `rustls`;

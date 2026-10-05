@@ -28,7 +28,7 @@ dependencies = [
  "bs58",
  "chrono",
  "ed25519-dalek",
- "getrandom 0.4.3",
+ "getrandom",
  "hex",
  "p256",
  "rand_core",
@@ -147,8 +147,7 @@ dependencies = [
  "acdp",
  "base64",
  "chrono",
- "getrandom 0.2.17",
- "getrandom 0.4.3",
+ "getrandom",
  "hex",
  "serde_json",
  "uuid",
@@ -301,7 +300,7 @@ checksum = "1a52aa3fcda4e6302a9f48734f234d35d4721b96f8fe07d073f07ce9df4f0271"
 dependencies = [
  "cpubits",
  "ctutils",
- "getrandom 0.4.3",
+ "getrandom",
  "hybrid-array",
  "num-traits",
  "rand_core",
@@ -315,7 +314,7 @@ version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ce6e4c961d6cd6c9a86db418387425e8bdeaf05b3c8bc1411e6dca4c252f1453"
 dependencies = [
- "getrandom 0.4.3",
+ "getrandom",
  "hybrid-array",
  "rand_core",
 ]
@@ -509,19 +508,6 @@ dependencies = [
  "futures-task",
  "pin-project-lite",
  "slab",
-]
-
-[[package]]
-name = "getrandom"
-version = "0.2.17"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
-dependencies = [
- "cfg-if",
- "js-sys",
- "libc",
- "wasi",
- "wasm-bindgen",
 ]
 
 [[package]]
@@ -1206,7 +1192,7 @@ version = "1.26.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2ef6dac1e96601b4fb3acccccff2139741fcb757cb9a36089bf5be91cfb285ce"
 dependencies = [
- "getrandom 0.4.3",
+ "getrandom",
  "js-sys",
  "wasm-bindgen",
 ]
@@ -1220,12 +1206,6 @@ dependencies = [
  "same-file",
  "winapi-util",
 ]
-
-[[package]]
-name = "wasi"
-version = "0.11.1+wasi-snapshot-preview1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 
 [[package]]
 name = "wasm-bindgen"

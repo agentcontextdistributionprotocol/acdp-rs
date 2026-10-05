@@ -170,27 +170,31 @@ wasm-pack test --node
 need **no `getrandom` backend** on any wasm target. That holds at
 *runtime* — no exported verification (nor the deterministic Ed25519
 witness mint) draws randomness. It does **not** hold at *compile time*
-for `wasm32-unknown-unknown`: the core crates pull two randomness sources
-**unconditionally**, and each emits a hard `compile_error!` on that
-target unless a backend is wired:
+for `wasm32-unknown-unknown`: the core crates pull **`getrandom 0.4`**
+**unconditionally**, from two places, and it emits a hard
+`compile_error!` on that target unless a backend is wired:
 
-1. **`getrandom 0.2`** via `rand_core 0.6` / `OsRng` (a non-optional
-   dependency of `acdp-crypto`) → enabled with the getrandom **`js`
-   feature**.
-2. **`getrandom 0.4`** via **`uuid` v4** (a non-optional dependency of
-   `acdp-primitives`) → enabled with the getrandom **`wasm_js` feature**
-   *plus* `--cfg getrandom_backend="wasm_js"` (set in
-   `.cargo/config.toml`). `uuid` additionally needs its own **`js`
-   feature** for its v4 RNG shim.
+- `acdp-crypto` key generation (`getrandom::SysRng`, used with
+  `rand_core` 0.10, which has no `OsRng`); and
+- **`uuid` v4** (a non-optional dependency of `acdp-primitives`).
 
-All three are wired here, **target-gated to `wasm32` only** (see
+The backend is the getrandom **`wasm_js` feature** (on the
+`getrandom_wasm` alias in `Cargo.toml`), plus
+`--cfg getrandom_backend="wasm_js"` in `.cargo/config.toml`, which is
+inert at 0.4.3 and kept for forward compatibility. `uuid` additionally
+needs its own **`js` feature** for its v4 RNG shim. (An older direct
+`getrandom 0.2` dependency with the `js` feature, for the former
+`rand_core 0.6` / `OsRng` path, was removed in #363; nothing in this
+binding's graph uses 0.2 any more.)
+
+Both are wired here, **target-gated to `wasm32` only** (see
 `Cargo.toml` and `.cargo/config.toml`), so a native `cargo test` is
-untouched. `crypto.getRandomValues` (the `js` backend) is the CSPRNG
+untouched. `crypto.getRandomValues` (the `wasm_js` backend) is the CSPRNG
 RFC-ACDP-0001 §5.10 names for the browser, so the choice is spec-blessed
 — but it is never invoked on the verify path; it is present only to link.
 
 A future `producer` feature (reserved, not yet wired) would expose fresh
-key generation (`SigningKey::generate`, the only `OsRng` caller) and is
+key generation (`SigningKey::generate`, the only `SysRng` caller) and is
 where a runtime randomness draw would actually occur.
 
 ## Security notes

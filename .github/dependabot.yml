@@ -72,12 +72,15 @@ updates:
       interval: monthly
     open-pull-requests-limit: 5
     ignore:
-      # getrandom is intentionally DUAL-MAJOR here: 0.2 (with the `js`
-      # feature, for the rand_core/OsRng path) plus a 0.4 alias
-      # (`getrandom_wasm`, with `wasm_js`, for uuid v4). A major bump of
-      # the 0.2 pin drops the `js` feature and breaks the wasm build
-      # (this is what PR #122 did). Keep it pinned; bump by hand if ever
-      # needed.
+      # getrandom majors are bumped by hand here. The binding now has one
+      # major, 0.4 (the `getrandom_wasm` alias, `wasm_js` feature), shared
+      # with acdp-crypto's SysRng and uuid v4; the old direct 0.2 (`js`)
+      # dependency was removed in #363. getrandom renames its wasm backend
+      # feature across majors (`js` -> `wasm_js`; a major bump of the old
+      # 0.2 pin broke the wasm build in PR #122), and the binding's major
+      # must move with the root workspace's acdp-crypto pin anyway
+      # (scripts/check-bindings-lock-parity.sh), so a Dependabot major PR
+      # against this directory alone is never the right change.
       #
       # This rule alone does not retroactively cancel an in-flight
       # Dependabot run: #133's run started before this ignore rule merged

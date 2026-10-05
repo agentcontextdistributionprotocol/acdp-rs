@@ -54,7 +54,7 @@ bindings.
 | Build-time behaviour | Pure `syn` parse → AST rewrite → `quote!` (`syn` with `full`, `quote`, `proc-macro2`). No `std::{fs,net,process,env}`, `env!`, `include_bytes!`, no file reads, no environment reads, no `Command`. The only `include_str!` is the README doc (`:1`). Errors are emitted as `compile_error!` through `syn::Error::into_compile_error` (`:7-26`). |
 | Dependencies | `proc-macro2` 1.0.66, `quote` 1.0.31, `syn` 2.0.27 (`full`). No dev deps. |
 | Features ACDP enables | none (the crate defines none) |
-| Where it is compiled | Only as a dependency of `curve25519-dalek` 5.0.0, under `[target.'cfg(all(not(curve25519_dalek_backend = "fiat"), not(curve25519_dalek_backend = "serial"), target_arch = "x86_64"))'.dependencies]` (`curve25519-dalek-5.0.0/Cargo.toml:157`). So it builds **only for x86_64 targets**. `cargo tree -i` finds it in root `--target all` and in py and node on `x86_64-unknown-linux-gnu`. It is **not** in the host aarch64 build, and **not** in `acdp-wasm` on `wasm32-unknown-unknown` (only in `--target all`, which includes x86_64). wasm32 builds use the serial u32 backend and never compile this macro or its output. |
+| Where it is compiled | Only as a dependency of `curve25519-dalek` 5.0.0, under `[target.'cfg(all(not(curve25519_dalek_backend = "fiat"), not(curve25519_dalek_backend = "serial"), target_arch = "x86_64"))'.dependencies]` (`curve25519-dalek-5.0.0/Cargo.toml:157`). So it builds **only for x86_64 targets**. It is compiled on **all x86_64 targets** ACDP builds. `cargo tree -i` finds it in root `--target all`, including x86_64 Linux, macOS and Windows. The py and node release matrices also ship `x86_64-apple-darwin` (`.github/workflows/acdp-py-release.yml:60`, `.github/workflows/bindings-release.yml:55`) alongside `x86_64-unknown-linux-gnu`. It is **not** in the host aarch64 build, and **not** in `acdp-wasm` on `wasm32-unknown-unknown` (only in `--target all`, which includes x86_64). wasm32 builds use the serial u32 backend and never compile this macro or its output. |
 | Advisories | `cargo deny check advisories`: ok on 2026-10-04 |
 
 ## What the macro generates
@@ -66,10 +66,13 @@ bindings.
 #[inline(always)] /* #[cfg(target_feature = "F")] only if the fn had #[test] */ /* doc/cfg/allow/deny/rustfmt::skip passed through */
 vis fn f(args) -> R {
     #[target_feature(enable = "F")] /* #[inline] if the fn had #[inline] or #[inline(always)] */
-    unsafe fn _impl_f(args) -> R { body }
+    unsafe fn _impl_f(args) -> R { body }   // body is now an unsafe context
     unsafe { _impl_f(args) }
 }
 ```
+
+The body is spliced in unchanged in text, but it now sits inside an `unsafe fn`, so it
+becomes an unsafe context (see "The generated `unsafe`" below).
 
 **On an `impl` block** (`process_impl`, `:247-278`), every `fn` item is rewritten through the
 `outer == Some(..)` branch (`:420-450`). The output is a safe method containing a local trait
@@ -102,8 +105,16 @@ are rejected (`:248-249`, `:255`, `:303-306`). Unknown attributes are also rejec
 - The README (`:9`, `:23-30`, `:81-82`) documents this: the attribute "moves the `unsafe`
   from the function prototype into the macro name". Applying `#[unsafe_target_feature]` is
   therefore the user's `unsafe` assertion, much like writing `unsafe impl`.
-- The macro does nothing else unsafe:
-  - It passes the function body through verbatim.
+- **The user's "safe" function body becomes an unsafe context.** The macro splices the body
+  unchanged in text into the generated `unsafe fn _impl_f` (`:436` on impls, `:459` on free
+  fns), so it is no longer the body of a safe fn. `curve25519-dalek` 5.0.0 is edition 2024
+  (`Cargo.toml:13`). There `unsafe_op_in_unsafe_fn` only warns, and `--cap-lints` silences
+  that warning for registry deps. So unsafe operations (for example the register-only
+  `core::arch::x86_64` intrinsics; see the `#![allow(unused_unsafe)]` note at
+  `packed_simd.rs:6-9`) compile inside such bodies with **no `unsafe` token**. A full-source
+  grep of `curve25519-dalek` therefore **undercounts** its unsafe operations. Every
+  `#[unsafe_target_feature]` body in that crate has to be read as unsafe code.
+- Apart from that, the macro does nothing unsafe:
   - It keeps argument types, generics and where-clauses (`:416-418`).
   - It turns `_` patterns into fresh identifiers (`:354-375`).
   - It does not change visibility.

@@ -31,8 +31,9 @@ bindings.
 
 - No prior audit of `der` exists in `audits.toml` or the imported sets, so this is a **full**
   audit.
-- `src/` is 14,534 lines in 55 files.
-- **Read in full: the non-test code of all 55 `src/` files**, every line except `///` / `//!`
+- `src/` is 14,534 lines in 56 `.rs` files. An earlier draft said 55; that was a miscount
+  of the number only. The file list below has always named all 56.
+- **Read in full: the non-test code of all 56 `src/` files**, every line except `///` / `//!`
   doc-comment lines:
   - `lib.rs`, `bytes.rs`, `string.rs`, `datetime.rs`, `decode.rs`, `document.rs`,
     `encode.rs`, `encode_ref.rs`, `encoding_rules.rs`, `error.rs`, `header.rs`, `length.rs`,
@@ -159,7 +160,9 @@ has the body `any.try_into()`. The only `TryInto<bool>` is the blanket impl that
 
 **Why they are not a concern-rule trigger, and are unreachable in ACDP:**
 - Neither involves `unsafe`. On native targets a stack overflow hits the guard page and
-  aborts, and the release-mode case is a hang. Both trigger on *any* input once the API is
+  aborts. `der` is also compiled into `acdp-wasm` (`wasm32-unknown-unknown`), which has no
+  guard page. There the overflow ends in a wasm trap rather than a native abort. That path is still unreachable from ACDP (see below). The release-mode
+  case is a hang. Both trigger on *any* input once the API is
   called, so they are not attacker-selected parsing paths.
 - No ACDP crate calls `der` at all (see Facts). Of `der`'s dependents in ACDP's graph:
   - `sec1` 0.8.1 and `pkcs8` 0.11.0 construct and decode `ContextSpecific` fields but never

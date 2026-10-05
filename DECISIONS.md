@@ -1329,7 +1329,7 @@ Batch B5 of issue #339 (plan P6) ran under the unchanged "#322 supply-chain audi
 | `base64ct` | 1.8.3 | full (no prior audit); all files read | 4 (`decode_in_place` raw-pointer chunking, `from_utf8_unchecked`) | `supply-chain/worksheets/base64ct-1.8.3.md` |
 | `rustls-pki-types` | 1.15.1 | full (no prior audit); all files read; embedded DER blobs decoded | 1 (`[u16; 8] -> [u8; 16]` value transmute) | `supply-chain/worksheets/rustls-pki-types-1.15.1.md` |
 | `const-oid` | 0.10.2 | full (no prior audit); hand-written files read; feature-gated generated OID DB shape-checked by script | 1 (`repr(transparent)` DST cast) | `supply-chain/worksheets/const-oid-0.10.2.md` |
-| `der` | 0.8.1 | full (no prior audit); non-test code of all 55 `src/` files read, doc comments skimmed, some test modules grep-only | 4 (`repr(transparent)` DST casts) | `supply-chain/worksheets/der-0.8.1.md` |
+| `der` | 0.8.1 | full (no prior audit); non-test code of all 56 `src/` files read, doc comments skimmed, some test modules grep-only | 4 (`repr(transparent)` DST casts) | `supply-chain/worksheets/der-0.8.1.md` |
 | `curve25519-dalek-derive` | 0.1.1 | full (no prior audit); all files read, plus curve25519-dalek 5.0.0's dispatch | 0 executed; 5 in generated templates | `supply-chain/worksheets/curve25519-dalek-derive-0.1.1.md` |
 
 Each `unsafe` site is quoted with its invariant in the worksheet and in the `audits.toml`
@@ -1357,7 +1357,9 @@ caller-named path.
   blanket `TryInto`.
 - Both were confirmed: a stack overflow and abort in debug builds, and a hang or overflow in
   release builds.
-- Neither involves `unsafe`. ACDP parses no DER, and no dependent on its path compares
+- Neither involves `unsafe`. On native targets the stack overflow aborts at the guard page.
+  In `acdp-wasm` (wasm32, which has no guard page) it would end in a wasm trap; it is still
+  unreachable there. ACDP parses no DER, and no dependent on its path compares
   context-specific values or calls `bool::try_from(AnyRef)`.
 - Both are recorded as `Discretion:` lines. Recommend an upstream report to
   RustCrypto/formats; this audit did not file one.
@@ -1365,10 +1367,16 @@ caller-named path.
 **`curve25519-dalek-derive`.** It is a proc-macro, and its generated safe wrappers call
 `#[target_feature]` functions in `unsafe` with no check. Soundness belongs to the macro's
 user.
+- The user's "safe" function body becomes the body of a generated `unsafe fn` (`src/lib.rs:436`,
+  `:459`), so it is an unsafe context. curve25519-dalek 5.0.0 is edition 2024, where
+  `unsafe_op_in_unsafe_fn` only warns, and `--cap-lints` silences that warning. So unsafe
+  operations compile in those bodies with no `unsafe` token, and a full-source grep of
+  curve25519-dalek undercounts its unsafe operations.
 - In ACDP the only user is curve25519-dalek 5.0.0. Its vector backend is `pub(crate)`, and
   every entry goes through `get_selected_backend()` cpufeatures detection, as its own audit
   records.
-- It is compiled only for x86_64. It is absent from the aarch64 host build and from the
+- It is compiled on all x86_64 targets, including Linux, macOS and Windows; the py and node
+  releases ship `x86_64-apple-darwin` and `x86_64-unknown-linux-gnu`. It is absent from the aarch64 host build and from the
   wasm32 binding.
 
 **`base64ct`** is lock-only: it is compiled into no ACDP build, because `spki`'s `base64`

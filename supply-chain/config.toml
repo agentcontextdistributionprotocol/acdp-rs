@@ -176,10 +176,6 @@ criteria = "safe-to-deploy"
 version = "0.10.2"
 criteria = "safe-to-deploy"
 
-[[exemptions.cpubits]]
-version = "0.1.1"
-criteria = "safe-to-deploy"
-
 [[exemptions.cpufeatures]]
 version = "0.3.1"
 criteria = "safe-to-deploy"
@@ -312,10 +308,6 @@ criteria = "safe-to-run"
 version = "0.4.3"
 criteria = "safe-to-deploy"
 
-[[exemptions.group]]
-version = "0.14.0"
-criteria = "safe-to-deploy"
-
 [[exemptions.h2]]
 version = "0.4.19"
 criteria = "safe-to-deploy"
@@ -354,10 +346,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.hyper]]
 version = "1.11.1"
-criteria = "safe-to-deploy"
-
-[[exemptions.hyper-rustls]]
-version = "0.27.9"
 criteria = "safe-to-deploy"
 
 [[exemptions.hyper-util]]
@@ -526,10 +514,6 @@ criteria = "safe-to-run"
 
 [[exemptions.potential_utf]]
 version = "0.1.6"
-criteria = "safe-to-deploy"
-
-[[exemptions.primeorder]]
-version = "0.14.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.proc-macro2]]
@@ -756,10 +740,6 @@ criteria = "safe-to-deploy"
 version = "2.7.2"
 criteria = "safe-to-deploy"
 
-[[exemptions.tokio-rustls]]
-version = "0.26.4"
-criteria = "safe-to-deploy"
-
 [[exemptions.tokio-util]]
 version = "0.7.19"
 criteria = "safe-to-deploy"
@@ -802,10 +782,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.unicode-ident]]
 version = "1.0.24"
-criteria = "safe-to-deploy"
-
-[[exemptions.untrusted]]
-version = "0.9.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.url]]

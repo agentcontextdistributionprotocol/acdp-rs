@@ -1953,8 +1953,8 @@ applied unchanged.
   - `der` 0.8.1 (D-1/D-2, unreachable recursion bugs);
   - test-fixture, generated-file, packaged-file or test-only-I/O discretion notes, all
     harmless and outside any non-test build: `ed25519`, `spki`, `hmac`, `pkcs8`, `sec1`,
-    `digest`, `untrusted`, `tokio-rustls`, `typenum`, `webpki-roots`, `rustls-pki-types`,
-    `hybrid-array`, `ecdsa` and `p256`;
+    `digest`, `untrusted`, `tokio-rustls`, `typenum`, `webpki-roots`, `rustls-pki-types` and
+    `hybrid-array` (Tier B), plus `ecdsa` and `p256` (Tier A);
   - and the Tier A `sha2` (`322-sha2`) and `curve25519-dalek` (nightly `docsrs` path) lines.
   - The full list is every `Discretion:` line in `supply-chain/audits.toml`.
 - **Certified with a recorded observation instead of a discretion:** `rustls-webpki` 0.103.15

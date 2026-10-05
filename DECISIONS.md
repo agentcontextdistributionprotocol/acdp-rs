@@ -1397,3 +1397,132 @@ No concern was found, and nothing in this batch was kept exempt. Remaining Tier 
 
 **Status:** AUTHORED. Pending the maintainer's approving review naming the worksheets read
 (Policy 4); never auto-merged.
+
+## #339 322-cpufeatures: cpufeatures 0.3.1 certified with a Discretion line (2026-10-04, decided 2026-10-05)
+
+Concern-rule entry for issue #339, batch B6. Anchor: `322-cpufeatures`. The worksheet is
+`supply-chain/worksheets/cpufeatures-0.3.1.md`.
+
+**Finding (CF-1).** On x86, `__detect_target_features!` reads CPUID leaf 7 (sub-leaves 0
+and 1) without reading leaf 0 to check the maximum supported basic leaf. Evidence:
+`src/x86.rs:49-51` (`[cpuid(1), cpuid_count(7, 0), cpuid_count(7, 1)]`).
+
+- On Intel, a basic leaf above the maximum returns the highest basic leaf's data, so on a
+  CPU or VM whose maximum basic leaf is below 7 the "leaf 7" bits are bits of another leaf.
+- In ACDP's graph the leaf-7 checks are:
+  - `sha` (EBX bit 29), used by `sha2` 0.11.0 for SHA-NI SHA-256 (`src/sha256.rs:55`);
+  - `avx2` (EBX bit 5), used by `sha2` for SHA-512 (`src/sha512.rs:50`) and by
+    `curve25519-dalek` 5.0.0 (`src/backend.rs:67`).
+- A spurious bit would make those crates run `#[target_feature]` code the CPU lacks.
+- Every `unsafe`/`asm!` site in cpufeatures is itself sound (worksheet table).
+- Reachability:
+  - compiled into the x86_64 builds (the root crate on Linux/Windows, and the py/node
+    x86_64 wheels);
+  - not compiled for wasm32 (`compile_error!`, `src/lib.rs:25-31`);
+  - aarch64 is unaffected.
+
+The B6 review held the crate back by default ("default to not certifying") and put the
+following options up for decision:
+1. Certify with a `Discretion:` line.
+2. Keep it exempt until upstream ships a fix.
+3. Pin back. This is not possible: `sha2` 0.11.0 requires `cpufeatures` `^0.3`
+   (`Cargo.toml:79-80`).
+
+**Decision (Fable, 2026-10-05): option 1, certify `safe-to-deploy` (full) with a
+`Discretion:` line.** Fable verified CF-1 from source independently. The reasons recorded
+are below. The platform facts are the decision reviewer's, and the B6 review did not
+re-measure them.
+
+- CF-1 is a correctness gap in a **safe** function whose input (CPUID) is not
+  attacker-controlled. Every `unsafe`/`asm!` site in the crate is sound.
+- The predicates ACDP's graph evaluates cannot misfire on any supported platform:
+  - `sha` is ANDed (by `sha2`) with leaf-1 SSE2, SSSE3 and SSE4.1.
+  - `avx2` is ANDed inside cpufeatures with leaf-1 AVX and the XCR0 XMM+YMM state, gated
+    on OSXSAVE (`src/x86.rs:68-71`, `:92`, `:126`).
+- Every CPU with those leaf-1 bits has a native maximum basic leaf of at least 0xA.
+- No QEMU CPU model that exposes SSE4.1 or AVX has a level below 0xA.
+- The firmware "Limit CPUID Maxval" setting caps the maximum at leaf 2 or 3. That yields
+  zeros or a false AND, and Linux and Windows clear the setting.
+- Rosetta 2 reports a maximum basic leaf of 0xD (measured).
+- Only a manual hypervisor `level=` override on an AVX-class CPU model reaches the gap, and
+  then the result is a deterministic `SIGILL`.
+- The decision keeps ACDP consistent with the already-certified `sha2` 0.11.0 and
+  `curve25519-dalek` 5.0.0 audits, whose notes rest on this detection.
+
+**Upstream.** RustCrypto/utils#1510 (opened 2026-07-26) already tracks this, and fix PR
+RustCrypto/utils#1528 (opened 2026-09-02, still open) gates leaves 1, 7.0 and 7.1 on
+`CPUID.0:EAX`. The B6 worksheet's earlier statement that nothing had been filed upstream
+was stale, and its draft upstream issue is superseded. It must not be filed.
+
+**State after the decision:**
+- An `[[audits.cpufeatures]]` full `safe-to-deploy` audit of 0.3.1 has been added. Its notes
+  carry the `Discretion:` paragraph, observation CF-2 (Apple `sysctlbyname` panics if a node
+  is missing), and "Not claimed: correctness of feature detection on every CPU
+  configuration".
+- `[[exemptions.cpufeatures]]` has been removed.
+- `scripts/crypto-critical.txt` lists `cpufeatures` with no marker.
+
+**Exit criterion:** delta-audit the cpufeatures release that carries #1528.
+
+**Status:** DECIDED (Fable, 2026-10-05).
+
+## #339 Tier B batch B6: cpufeatures, block-buffer, cmov, hybrid-array, crypto-bigint certified (2026-10-04)
+
+Batch B6 of issue #339 (plan P6, "real unsafe/asm") ran under the "#322 supply-chain audit
+policy", unchanged:
+- built-in `safe-to-deploy` only;
+- no claim of cryptographic correctness or constant-time behaviour;
+- `who = "Ajit Koti <ajitkoti@zer07labs.com>"`;
+- reviewed with Claude (Opus) assistance;
+- maintainer approval required before merge.
+
+| Crate | Version | Method | `unsafe` / `asm!` | Worksheet |
+|---|---|---|---|---|
+| `cpufeatures` | 0.3.1 | full; all 589 src lines read; Discretion line (`322-cpufeatures`) | 11 / 1 | `supply-chain/worksheets/cpufeatures-0.3.1.md` |
+| `block-buffer` | 0.12.1 | full; all 756 src lines read | 21 / 0 | `supply-chain/worksheets/block-buffer-0.12.1.md` |
+| `cmov` | 0.5.4 | full; all 1,702 src lines read | 25 / 7 | `supply-chain/worksheets/cmov-0.5.4.md` |
+| `hybrid-array` | 0.4.14 | full; non-table src read, 552-entry size table script-checked; CI-files discretion | 37 / 0 | `supply-chain/worksheets/hybrid-array-0.4.14.md` |
+| `crypto-bigint` | 0.7.5 | full; 37,233 compiled lines (150 files) read in full by seven Claude sub-reviews, with `unsafe` sites and file/line counts confirmed by the main review; 8,702 uncompiled lines (44 files) grep-only | 14 (13 compiled) / 0 | `supply-chain/worksheets/crypto-bigint-0.7.5.md` |
+
+**Soundness of the `unsafe` and `asm!` sites.**
+- Each worksheet gives every `unsafe` and `asm!` site a written invariant and verdict. All
+  are sound as written.
+- `cmov`'s `asm!` operand and option declarations (`nomem`, `nostack`, `pure`, the flags
+  clobber, register widths) were checked against each instruction.
+- `cmov`'s `NonZero`/`Ordering` writes:
+  - Their soundness rests on the ISA rule that `CMOVcc`/`CSEL` leave one of their two
+    operands, together with the fact that each element's final value is a whole element of
+    one operand.
+  - The remainder path's `word_to_slice` (`src/slice.rs:399-403`) briefly stores 0 through
+    the integer view. That is not UB, because nothing reads the element at the `NonZero`
+    type in between.
+- Constant-time behaviour and branch-freedom are **not** claimed.
+
+**Per-artifact backends.**
+
+| Build | `cmov` | `cpufeatures` |
+|---|---|---|
+| x86_64 | x86 `asm!` | CPUID path |
+| aarch64 | aarch64 `asm!` | `sysctlbyname` / `AT_HWCAP` paths |
+| wasm32 binding | pure-Rust soft path | not compiled |
+
+`crypto-bigint` compiles the same file set on the host and on wasm32 (from rustc dep-info).
+
+**Observations (not vet concerns).**
+- BB-1: block-buffer's `Clone` `SAFETY` comment is stale.
+- CB-R1: crypto-bigint `floor_root_vartime` panics for large exponents. This is safe code,
+  and nothing in ACDP's graph calls it.
+- CF-2: cpufeatures panics on Apple if a `hw.optional.*` node is missing.
+
+**Guard list.**
+- The five crates were added under `# Batch B6:` with no marker.
+- The list now guards 44 crates: 11 Tier A plus 33 Tier B.
+- 43 of them are covered by our own audits. `zeroize` is again the sole deliberate exception
+  (`322-zeroize`).
+- All three binding lockfiles lock the same five versions and checksums as the root.
+
+**Remaining Tier B:** 2 crates (35 minus the 33 certified in B1-B6): `getrandom` (0.2.17,
+0.3.4, 0.4.3) and `rustls-webpki`, both batch B7.
+
+**Status:** AUTHORED. Pending the maintainer's approving review naming the worksheets read
+(Policy 4); never auto-merged.

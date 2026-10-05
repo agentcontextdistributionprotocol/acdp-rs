@@ -77,3 +77,9 @@ rustls-pki-types
 const-oid
 der
 curve25519-dalek-derive
+# Batch B6:
+cpufeatures
+block-buffer
+cmov
+hybrid-array
+crypto-bigint

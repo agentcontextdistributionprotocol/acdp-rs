@@ -364,19 +364,20 @@ have. Refresh them with `cargo vet` (updates `imports.lock`).
 
 ### The crypto-critical set
 
-The thirty-nine crates that implement or underpin ACDP's signature and TLS
+The forty-four crates that implement or underpin ACDP's signature and TLS
 security are listed in
 [`scripts/crypto-critical.txt`](../scripts/crypto-critical.txt): the eleven
 Tier A crates, which issue #322 (completed 2026-10-04) re-certified at the
-versions in `Cargo.lock`, and the twenty-eight Tier B support crates certified so far
+versions in `Cargo.lock`, and the thirty-three Tier B support crates certified so far
 by issue #339 (batch B1: `wnaf`, `ff`, `spki`, `crypto-common`, `zeroize_derive`,
 `ed25519`; batch B2: `hmac`, `rfc6979`, `pkcs8`, `sec1`, `primefield`,
 `digest`; batch B3: `untrusted`, `cpubits`, `hyper-rustls`, `group`,
 `tokio-rustls`, `primeorder`; batch B4: `rand_core`, `ctutils`, `webpki-roots`,
 `typenum`; batch B5: `base16ct`, `base64ct`, `rustls-pki-types`, `const-oid`,
-`der`, `curve25519-dalek-derive`). **Thirty-eight of the thirty-nine are covered
-by our own audit at every locked version. `zeroize` is the one deliberate exception:** it stays exempt
-under the #322 concern rule. The per-crate review worksheets are in
+`der`, `curve25519-dalek-derive`; batch B6: `cpufeatures`, `block-buffer`,
+`cmov`, `hybrid-array`, `crypto-bigint`). **Forty-three of the forty-four are
+covered by our own audit at every locked version. `zeroize` is the one deliberate
+exception:** it stays exempt under the #322 concern rule. The per-crate review worksheets are in
 [`supply-chain/worksheets/`](../supply-chain/worksheets/), and the notes are in
 `supply-chain/audits.toml`.
 
@@ -431,6 +432,11 @@ latest release, and no open advisory.
 | `const-oid` | 0.10.2 | 0.10.2 | audit (full, 2026-10-04, #339 B5; generated OID database shape-checked, feature off) | RustCrypto | OID type under der and digest |
 | `der` | 0.8.1 | 0.8.1 | audit (full, 2026-10-04, #339 B5; discretion notes on two safe-code recursion bugs unreachable from ACDP) | RustCrypto | ASN.1 DER codec under ecdsa, sec1, spki (ACDP itself parses no DER) |
 | `curve25519-dalek-derive` | 0.1.1 | 0.1.1 | audit (full, 2026-10-04, #339 B5; generated `unsafe` relies on curve25519-dalek's runtime CPU dispatch) | dalek-cryptography | `#[unsafe_target_feature]` proc-macro for curve25519-dalek's x86_64 AVX2/AVX-512 backends |
+| `cpufeatures` | 0.3.1 | 0.3.1 | audit (full, 2026-10-04, #339 B6; discretion note on the x86 CPUID max-leaf gap, DECISIONS.md `322-cpufeatures`; correctness of feature detection on every CPU configuration not claimed) | RustCrypto | Runtime CPU-feature detection for sha2 and curve25519-dalek SIMD backends |
+| `block-buffer` | 0.12.1 | 0.12.1 | audit (full, 2026-10-04, #339 B6; 21 `unsafe` lines verdicted) | RustCrypto | Block buffering under digest (sha2, hmac) |
+| `cmov` | 0.5.4 | 0.5.4 | audit (full, 2026-10-04, #339 B6; x86/aarch64 `asm!` checked for memory safety; constant-time behaviour not claimed) | RustCrypto | Conditional-move primitives under ctutils |
+| `hybrid-array` | 0.4.14 | 0.4.14 | audit (full, 2026-10-04, #339 B6; size table script-checked; discretion note on packaged CI files) | RustCrypto | Fixed-size arrays under digest, crypto-bigint, elliptic-curve, sec1 |
+| `crypto-bigint` | 0.7.5 | 0.7.5 | audit (full, 2026-10-04, #339 B6; the 37,233 compiled lines were read in full by seven Claude sub-reviews, with every `unsafe` site and the file/line counts independently confirmed by the main review; uncompiled `boxed`/`der`/`rlp` modules grep-only; constant-time behaviour not claimed) | RustCrypto | Big-integer arithmetic under the P-256 stack |
 
 **`zeroize` 1.9.0 is exempt, not audited.** Its new safe
 `optimization_barrier` reads a possibly-uninitialized byte on targets without
@@ -441,7 +447,18 @@ delta-audit zeroize 1.9.1 when it is released (RustCrypto/utils#1535 removes the
 crate's internal callers of `optimization_barrier`). Its guard line carries
 `allow-exempt:DECISIONS#322-zeroize@1.9.0`, which pins the exemption to 1.9.0.
 
-**Most supporting crypto crates are still exempted, not audited.** #322
+**`cpufeatures` 0.3.1 is audited with a discretion note.** On x86 it reads
+CPUID leaf 7 without checking the maximum basic leaf (`src/x86.rs:49-51`), so
+on a CPU or VM whose maximum basic leaf is below 7 the leaf-7 bits can be
+spurious (DECISIONS.md `322-cpufeatures`). Every `unsafe` and `asm!` site is
+sound. The predicates ACDP's graph uses (`sha` ANDed with SSSE3 and SSE4.1;
+`avx2` ANDed with AVX and the XCR0 YMM state) cannot misfire on any supported
+platform; only a manual hypervisor CPUID-level override on an AVX-class CPU
+model reaches the gap, and the result is a deterministic `SIGILL`. Upstream
+tracks it as RustCrypto/utils#1510, with the fix open in #1528. **Exit
+criterion:** delta-audit the cpufeatures release carrying #1528.
+
+**Two supporting crypto crates are still exempted, not audited.** #322
 covered only the eleven Tier A crates. Of the 35 support crates (Tier B) on the
 same signing, hashing, key generation, and TLS paths, issue #339 batch B1
 certified six (`ed25519`, `crypto-common`, `zeroize_derive`, `spki`, `ff`,
@@ -449,13 +466,12 @@ certified six (`ed25519`, `crypto-common`, `zeroize_derive`, `spki`, `ff`,
 `primefield`, `digest`), batch B3 six more (`untrusted`, `cpubits`,
 `hyper-rustls`, `group`, `tokio-rustls`, `primeorder`), batch B4 four more
 (`rand_core` at both locked versions, `ctutils`, `webpki-roots`, `typenum`),
-and batch B5 six more (`base16ct`, `base64ct`, `rustls-pki-types`, `const-oid`,
-`der`, `curve25519-dalek-derive`; table above), and added them to the guard
-list. The remaining 7 are covered by `[[exemptions.*]]` entries only, and are
-not on the guard list:
+batch B5 six more (`base16ct`, `base64ct`, `rustls-pki-types`, `const-oid`,
+`der`, `curve25519-dalek-derive`), and batch B6 five more (`cpufeatures`,
+`block-buffer`, `cmov`, `hybrid-array`, `crypto-bigint`; table above), and
+added them to the guard list. The remaining 2 are covered by
+`[[exemptions.*]]` entries only, and are not on the guard list:
 
-- **RustCrypto support:** `block-buffer`, `cpufeatures`, `hybrid-array`,
-  `cmov`, `crypto-bigint`.
 - **Key generation:** `getrandom` (0.2.17, 0.3.4, 0.4.3).
 - **TLS stack:** `rustls-webpki`.
 
@@ -552,8 +568,8 @@ fails when a listed crate is exempted or only partially vetted, so moving an
 exemption to a bumped version no longer turns CI green.
 
 The guard is now **enforcing**: since #322 closed, every listed crate except
-`zeroize` carries no marker (thirty-eight of the thirty-nine, including the
-twenty-eight Tier B crates added by #339 batches B1, B2, B3, B4 and B5). The list file documents
+`zeroize` carries no marker (forty-three of the forty-four, including the
+thirty-three Tier B crates added by #339 batches B1-B6). The list file documents
 two markers:
 
 - `allow-exempt:DECISIONS#322-<crate>@<version>` is for a crate kept exempt

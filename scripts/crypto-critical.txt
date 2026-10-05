@@ -85,3 +85,4 @@ hybrid-array
 crypto-bigint
 # Batch B7:
 getrandom
+rustls-webpki

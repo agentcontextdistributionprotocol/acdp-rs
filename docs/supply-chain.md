@@ -442,7 +442,8 @@ latest release, and no open advisory.
 `optimization_barrier` reads a possibly-uninitialized byte on targets without
 stable `asm!`. The `bindings/acdp-wasm` wasm32 build is one of those targets
 (DECISIONS.md `322-zeroize`, finding Z-1). Native builds use the sound `asm!`
-path, and no known ACDP call site triggers the fault. **Exit criterion:**
+path, and no known ACDP call site triggers the fault. Z-1 is reported
+upstream as RustCrypto/utils#1549. **Exit criterion:**
 delta-audit zeroize 1.9.1 when it is released (RustCrypto/utils#1535 removes the
 crate's internal callers of `optimization_barrier`). Its guard line carries
 `allow-exempt:DECISIONS#322-zeroize@1.9.0`, which pins the exemption to 1.9.0.

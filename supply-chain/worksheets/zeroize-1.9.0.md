@@ -139,7 +139,8 @@ hits Z-1 only for a *niche-encoded* `Z` whose niche is not at offset 0.
 - `src/barrier.rs` on master is byte-identical to 1.9.0, so the safe `pub fn` is still
   affected.
 - 1.9.1 is unreleased.
-- Z-1 has not been reported upstream; the draft issue is below.
+- Z-1 was reported upstream on 2026-10-05 as RustCrypto/utils#1549, using the issue text
+  below.
 
 **Downgrade to 1.8.2: not recommended.** It means lock churn across three bindings, a
 fight with Dependabot bumping it back, and an MSRV change (1.60 vs 1.85).
@@ -170,7 +171,7 @@ The review does not claim:
 
 `zeroize_derive 1.5.0` remains exempted (Tier B).
 
-## Draft upstream issue: RustCrypto/utils (Z-1). Text only; NOT filed.
+## Upstream issue: RustCrypto/utils (Z-1). Filed 2026-10-05 as RustCrypto/utils#1549.
 
 > **Title:** zeroize 1.9.0: the `optimization_barrier` non-asm fallback reads possibly
 > uninitialized memory as `u8` (UB from safe code)

@@ -910,14 +910,15 @@ Borrows, and 0.10.9, which we audited, used the identical pattern.
 **Interim state.**
 - The `[[exemptions.sha2]]` entry stays, with `notes = "KEPT EXEMPT (#322): …"`.
 - The guard marker is `allow-exempt:DECISIONS#322-sha2`.
-- Upstream has not been reported yet; that is pending this decision.
+- Upstream has not been reported yet; that is pending this decision. (Since filed:
+  RustCrypto/hashes#920.)
 
 **Decision (Fable, after independent verification, 2026-10-04): option 1.** sha2 0.11.0 is
 certified `safe-to-deploy` (full) with two `Discretion:` note lines, under the Policy 6
 carve-out: the riscv-zknh finding is unreachable in any stable build. S-1 is fixed upstream
 in RustCrypto/hashes#879 (lands in 0.11.1, unreleased). S-2 is unfixed upstream. The
-exemption and the guard marker are removed. The draft upstream issue for S-2 is in
-`supply-chain/worksheets/sha2-0.11.0.md`; nothing has been filed.
+exemption and the guard marker are removed. S-2 was filed upstream on 2026-10-05 as
+RustCrypto/hashes#920 (text from `supply-chain/worksheets/sha2-0.11.0.md`).
 
 **Status:** DECIDED.
 
@@ -969,7 +970,8 @@ volatile-write site and adds the crate's only `asm!`.
 **Interim state.**
 - The `[[exemptions.zeroize]]` entry stays, with `notes = "KEPT EXEMPT (#322): …"`.
 - The guard marker is `allow-exempt:DECISIONS#322-zeroize`.
-- Upstream has not been reported yet; that is pending this decision.
+- Upstream has not been reported yet; that is pending this decision. (Since filed:
+  RustCrypto/utils#1549.)
 
 **Decision (Fable, after independent verification, 2026-10-04): option 1, keep exempt.**
 - The carve-out does not apply: `bindings/acdp-wasm` is a published ACDP artifact, and its
@@ -980,17 +982,18 @@ volatile-write site and adds the crate's only `asm!`.
   (merged 2026-09-11) removes the internal callers of `optimization_barrier`. If the safe
   `pub fn` remains unchanged but unused internally, it then qualifies for the discretion
   carve-out, provided no ACDP artifact calls it.
-- The exemption and the `allow-exempt:DECISIONS#322-zeroize` marker stay. The draft
-  upstream issue is in `supply-chain/worksheets/zeroize-1.9.0.md`; nothing has been filed.
+- The exemption and the `allow-exempt:DECISIONS#322-zeroize` marker stay. Z-1 was filed
+  upstream on 2026-10-05 as RustCrypto/utils#1549 (text from
+  `supply-chain/worksheets/zeroize-1.9.0.md`).
 
 **Status:** DECIDED.
 
 ## #322 completion status (2026-10-04)
 
 Closing entry for issue #322 (plan `plans/supply-chain-recertify-322.md`, Phase 5). All
-five phases are authored; PRs #334, #335, #336 (and the Phase 5 PR) are pending the
-maintainer's approving review. Each one is a separate PR, never auto-merged, and needs the
-maintainer's approving review naming the worksheet they read (Policy 4).
+five phases are merged, each as a separate PR: #332 (Phase 1), #334 (Phase 2), #335
+(Phase 3), #336 (Phase 4) and #345 (Phase 5), all merged 2026-10-04. #338, the first
+Phase 5 PR, was closed unmerged and superseded by #345. Issue #322 closed on 2026-10-04.
 
 **Audited at the locked version (10 of the 11 Tier A crates).** Each has a
 `safe-to-deploy` audit by `Ajit Koti`, reviewed with Claude (Opus) assistance, with a
@@ -1072,14 +1075,16 @@ powerful imports were reasoned about at the exact bytes in `Cargo.lock`.
 - **P-3 (p256).** ACDP signs with P-256 as well as verifying. The review covered both
   paths. Hygiene: `P256SigningKey::seed_bytes` passes the secret through a non-zeroized
   `FieldBytes` temporary.
-- **Upstream drafts (text only, nothing filed).**
-  - Z-1 for RustCrypto/utils is in `supply-chain/worksheets/zeroize-1.9.0.md`.
-  - S-2 (aarch64 one-element-reference loads) for RustCrypto/hashes is in
-    `supply-chain/worksheets/sha2-0.11.0.md`.
+- **Upstream reports (filed 2026-10-05).**
+  - Z-1: RustCrypto/utils#1549 (text from `supply-chain/worksheets/zeroize-1.9.0.md`).
+  - S-2 (aarch64 one-element-reference loads): RustCrypto/hashes#920 (text from
+    `supply-chain/worksheets/sha2-0.11.0.md`).
   - S-1 is already fixed upstream (RustCrypto/hashes#879).
-  - Filing these is the maintainer's call.
 
-**Follow-up issues to file (not filed by this work).**
+**Follow-up issues (since filed: 1 = #339, 2 = #340, 3 = acdp-registry-rs#387 (closed;
+cargo vet set up) with the guard in acdp-registry-rs#405 and the
+re-vet / pin-parity ask in acdp-registry-rs#411, 4 = #341, 5 = #342 / #343,
+6 = #344).**
 1. Certify the Tier B supporting crypto crates, cheap `forbid(unsafe_code)` ones first,
    adding each to the guard list once certified. Also move the `aws-lc-*` exemptions to
    `safe-to-run`.
@@ -1097,8 +1102,8 @@ powerful imports were reasoned about at the exact bytes in `Cargo.lock`.
 (Done in Phase 5, no longer a follow-up: `dependabot-auto-merge.yml` skips the `crypto`
 group.)
 
-**Status:** AUTHORED. Issue #322 closes on this entry once PRs #334, #335, #336 and the
-Phase 5 PR merge after the maintainer's approving reviews.
+**Status:** DONE. PRs #332, #334, #335, #336 and #345 merged on 2026-10-04 (#338
+superseded by #345), and issue #322 is closed.
 
 ## #339 aws-lc-rs dropped from the graph instead of re-exempted as safe-to-run (2026-10-04)
 

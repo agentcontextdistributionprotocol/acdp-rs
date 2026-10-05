@@ -810,9 +810,14 @@ under the concern rule below.
 4. **`who` and sign-off.** `who = "Ajit Koti <ajitkoti@zer07labs.com>"`. The `Method:`
    line is exact. Open the PR as a draft first, so the URL exists before `certify`
    runs. The per-crate findings worksheet goes in the PR body. **Audit PRs are never
-   auto-merged.** The maintainer posts an approving GitHub review that says they read
-   the worksheet for `<crates>`. `/ship` holds the merge until that review exists, even
-   when CI is green; check with `gh pr view <n> --json reviews`.
+   auto-merged.** **Approval (amended 2026-10-05, maintainer decision
+   `322-policy4-approval`):** the maintainer approves an audit PR by merging it by hand
+   themselves, and by posting a PR comment that names the worksheets for `<crates>`
+   that they read. No approving GitHub review is required: the author cannot approve
+   their own PR. An agent's merge, including one made on a standing "merge when green"
+   instruction, is not this approval. `/ship` never merges an audit PR; it stops on
+   green CI and waits for the maintainer. Check the comment with
+   `gh pr view <n> --json comments`.
 5. **Record command.** Run it non-interactively, with flags verified on cargo-vet 0.10.2:
    `cargo vet certify <crate> <from> [<to>] --criteria safe-to-deploy --who "…"
    --notes "$(cat notes.txt)" --accept-all`. Omit `<to>` for a full audit. Then
@@ -1968,3 +1973,44 @@ applied unchanged.
 - Plan Q4: whether to amend the Policy 4 wording to match how self-authored PRs are approved.
 
 **Status:** AUTHORED with #364. Issue #339 closes when #364 merges.
+
+## #322 322-policy4-approval: audit PR approval is the maintainer's manual merge plus a PR comment (2026-10-05)
+
+Maintainer decision, dated 2026-10-05. Anchor: `322-policy4-approval`. It settles plan Q4 of
+`plans/b7-webpki-getrandom.md`, listed as a follow-up in "#339 completion status".
+
+**The gap.** Policy 4 of "#322 supply-chain audit policy" required an approving GitHub review
+from the maintainer before an audit PR merged. The maintainer is also the PR author, and
+GitHub does not let an author approve their own PR, so that review could never exist.
+
+**Decision.** For an audit PR, the maintainer's approval is:
+- their own manual merge of the PR, done by hand by the maintainer (an agent's merge,
+  including one on a standing "merge all PRs when green" instruction, does not count); and
+- a PR comment, posted by the maintainer, that names the worksheets they read.
+
+No approving GitHub review is required. Audit PRs are still never auto-merged, and `/ship`
+does not merge one at all: it stops on green CI and waits for the maintainer. Policy 4 now
+carries this wording, marked as amended 2026-10-05. `docs/supply-chain.md` (step 8, "Get
+sign-off") says the same.
+
+**Other acknowledgements.** Text elsewhere that asks for the maintainer's acknowledgement
+"at PR review" (for example the proposed Policy 6 second limb in `322-getrandom`, and the
+matching `supply-chain/audits.toml` and worksheet lines) now means a PR comment from the
+maintainer that states the acknowledgement, on the PR the maintainer merges. The second limb
+still awaits that acknowledgement; this entry does not supply it.
+
+**Not retroactive.** This changes the policy text from 2026-10-05 on. It does not rewrite
+what happened before it:
+- The audit PRs #355, #356, #357, #358, #359, #360, #362 and #364 were merged with 0 GitHub
+  reviews.
+- #355-#360 have no PR comment. #362 and #364 each have one comment, posted by the agent
+  that merged them on the maintainer's standing instruction. Those comments name the
+  worksheets the Claude (Opus) verifiers covered, not worksheets the maintainer read. So
+  none of these PRs is recorded as meeting the amended rule.
+- Dated records written under the old wording are left as written. Examples are the
+  `**Status:**` lines above that say "Pending the maintainer's approving review" or "Merges
+  only after the maintainer's approving review", the #339 batch B1 entry's "maintainer approving
+  review before merge", and the "acknowledgement at PR review" lines. They record the
+  policy text in force when each was authored.
+
+**Status:** DECIDED (maintainer, 2026-10-05).

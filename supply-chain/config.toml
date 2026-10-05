@@ -108,16 +108,8 @@ criteria = "safe-to-run"
 version = "0.8.0"
 criteria = "safe-to-run"
 
-[[exemptions.base16ct]]
-version = "1.0.0"
-criteria = "safe-to-deploy"
-
 [[exemptions.base64]]
 version = "0.23.1"
-criteria = "safe-to-deploy"
-
-[[exemptions.base64ct]]
-version = "1.8.3"
 criteria = "safe-to-deploy"
 
 [[exemptions.bitflags]]
@@ -172,10 +164,6 @@ criteria = "safe-to-run"
 version = "0.5.4"
 criteria = "safe-to-deploy"
 
-[[exemptions.const-oid]]
-version = "0.10.2"
-criteria = "safe-to-deploy"
-
 [[exemptions.cpufeatures]]
 version = "0.3.1"
 criteria = "safe-to-deploy"
@@ -204,10 +192,6 @@ criteria = "safe-to-run"
 version = "0.7.5"
 criteria = "safe-to-deploy"
 
-[[exemptions.curve25519-dalek-derive]]
-version = "0.1.1"
-criteria = "safe-to-deploy"
-
 [[exemptions.data-encoding]]
 version = "2.11.1"
 criteria = "safe-to-run"
@@ -219,10 +203,6 @@ criteria = "safe-to-run"
 [[exemptions.deadpool-runtime]]
 version = "0.1.4"
 criteria = "safe-to-run"
-
-[[exemptions.der]]
-version = "0.8.1"
-criteria = "safe-to-deploy"
 
 [[exemptions.der-parser]]
 version = "10.0.0"
@@ -607,10 +587,6 @@ criteria = "safe-to-run"
 [[exemptions.rustix]]
 version = "1.1.4"
 criteria = "safe-to-run"
-
-[[exemptions.rustls-pki-types]]
-version = "1.15.1"
-criteria = "safe-to-deploy"
 
 [[exemptions.rustls-webpki]]
 version = "0.103.15"

@@ -1,6 +1,64 @@
 
 # cargo-vet audits file
 
+[[audits.base16ct]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "1.0.0"
+notes = """
+Scope: full audit of 1.0.0 (no prior audit of base16ct). src/ is 381 lines. All 6 src files, Cargo.toml and .orig were read in full. tests/lib.rs and benches/mod.rs were inspected (test-only).
+Source: crates.io tarball sha256 fd307490d624467aa6f74b0eabb77633d1f758a7b25f12bceb0b22e08d9726f6 == Cargo.lock checksum (the root and the py/node/wasm binding lockfiles are identical).
+unsafe: 4 code lines, all from_utf8_unchecked on bytes the crate wrote itself (full-source grep, comment lines excluded; there is no forbid/deny attribute, and lints are capped by --cap-lints for registry deps, so the grep is the evidence).
+- src/lower.rs:35 and src/upper.rs:35 (encode_str). encode first takes dst.get_mut(..2n), which is checked and returns Err if dst is short. The zip of the n source bytes with chunks_exact_mut(2) writes every output byte, so caller-supplied junk in dst is fully overwritten. encode_nibble receives only src >> 4 or src & 0x0f (0..=15) and returns 0x30-0x39 or 0x61-0x66 (0x41-0x46 for upper). The output is all ASCII.
+- src/lower.rs:49 and src/upper.rs:49 (encode_string). The input is a zeroed Vec of the exact length, fully written by encode as above.
+- len*2 cannot overflow, because a [u8] holds at most isize::MAX bytes.
+- Empirical check (release build with debug assertions on): every 2-byte input was encoded into 0x00- and 0xFF-prefilled buffers and gave identical output, matching format!'s hex. 20k random inputs were compared to a reference and round-tripped.
+asm/SIMD: none.
+build.rs / proc-macro: none; not a proc-macro.
+Powerful imports: none. #![no_std], alloc only behind a feature, no include_*/env!/std::{fs,net,process,env}.
+New deps: none. ACDP features: alloc (every build). Reached via sec1 0.8.1 (HexDisplay; FromStr for EncodedPoint) and elliptic-curve 0.14.1. ACDP calls it nowhere; its own hex is the hex crate.
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour (the crate advertises constant-time encoding; that is not claimed or verified), side-channel resistance.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/base16ct-1.0.0.md (issue #339 Tier B batch B5 PR)."""
+
+[[audits.base64ct]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "1.8.3"
+notes = """
+Scope: full audit of 1.8.3 (no prior audit of base64ct). src/ is 2092 lines. All 14 src files, Cargo.toml and .orig were read in full. tests/*.rs were inspected (test-only).
+Source: crates.io tarball sha256 2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06 == Cargo.lock checksum (the root and the py/node/wasm binding lockfiles are identical).
+unsafe: 4 code lines, all in src/encoding.rs inside impl<T: Alphabet> Encoding for T (full-source grep, comment lines excluded; lib.rs only warns on unsafe_code, and lints are capped by --cap-lints for registry deps, so the grep is the evidence). Alphabet is a pub trait in the private mod alphabet, so it is sealed: only the 8 in-crate alphabets reach this code.
+- :125 decode_in_place loop. With chunk < len/4, the in-bounds bounds are 4c+4 <= len and 3c+3 <= len. p3 and p4 come from as_mut_ptr/as_ptr, which std documents as not materializing references, so they may be mixed. The shared &*p4 ends before the overlapping write *p3. The data is u8, so there is no alignment or validity requirement.
+- :155 decode_in_place tail. dst_rem_len = floor(3l/4) <= 2 < tmp_out.len(), and dlen = 3k + floor(3l/4) <= 4k + l = buf.len(). So copy_nonoverlapping (from a stack array) and get_unchecked(..dlen) stay in bounds.
+- :231 encode, from_utf8_unchecked on a caller-supplied buffer. elen comes from checked_mul and is checked <= dst.len(). Every byte is written: the full chunks by the zip (&mut iterators, source pulled first), the padded remainder by encode_3bytes plus the PAD mask, and the unpadded remainder copied from tmp_out. encode_6bits only receives 0..=63.
+- :245 encode_string. The input is a zeroed Vec of the exact length, fully written as above.
+- Empirical check (release build with debug assertions on), all 8 alphabets: every 1-, 2- and 3-byte input (2^24) was encoded into 0x00- and 0xFF-prefilled buffers. The outputs were identical, ASCII/UTF-8, and round-tripped through decode and decode_in_place. Also 20k random inputs, and 200k garbage decodes with no panic. Miri was not run.
+asm/SIMD: none.
+build.rs / proc-macro: none; not a proc-macro.
+Powerful imports: none. #![no_std]. std only adds in-memory io::Read/io::Write adaptors and From<Error> for io::Error. No include_bytes!, env!, std::{fs,net,process,env}.
+New deps: none (dev: base64, proptest). ACDP features: not compiled in any ACDP build. It is lock-only (its only dependent is spki's optional base64 feature, off), and cargo tree -i is empty for the root, acdp --no-default-features (host/wasm32) and the py/node/wasm bindings.
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour (the crate advertises constant-time encoding/decoding; that is not claimed or verified), side-channel resistance.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/base64ct-1.8.3.md (issue #339 Tier B batch B5 PR)."""
+
+[[audits.const-oid]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "0.10.2"
+notes = """
+Scope: full audit of 0.10.2 (no prior audit of const-oid). src/ is 6839 lines. Every hand-written file was read in full: lib.rs 399, arcs 180, buffer 52, checked 31, encoder 170, error 89, parser 131, traits 25, db.rs 147, plus Cargo.toml and .orig. src/db/generated.rs (5615 lines, compiled only with the db feature, which is off in every ACDP build) was checked mechanically rather than line by line: it holds only pub mod headers, 1492 pub const ... = ObjectIdentifier::new_unwrap("<digits>") items and the DB tuple table. tests/*.rs were inspected (test-only).
+Source: crates.io tarball sha256 a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c == Cargo.lock checksum (the root and the py/node/wasm binding lockfiles are identical).
+unsafe: 1 code line (full-source grep, comment lines excluded; the #![deny(unsafe_code)] at lib.rs:9 and the #[allow] at :319 are capped by --cap-lints for registry deps, so the grep is the evidence). src/lib.rs:320, in ObjectIdentifierRef::from_bytes_unchecked (pub(crate)), casts &[u8] to &ObjectIdentifierRef, which is #[repr(transparent)] { ber: [u8] }. The layout and the slice-length metadata are identical, the reference is shared and read-only, and the signature ties the lifetime to the input. BER well-formedness is a library invariant: from_bytes validates before the cast, and as_oid_ref passes internally built or validated buffers. A violation could only reach the expect("OID malformed") in Arcs::next (a panic, not UB). No other unsafe exists.
+asm/SIMD: none.
+build.rs / proc-macro: none; not a proc-macro.
+Powerful imports: none. #![no_std], only the README include_str!, no env!/std::{fs,net,process,env}.
+Behaviour: the panics are by design (new_unwrap/Error::panic for const construction) or unreachable for crate-built buffers. Hygiene only: Encoder::finish stores the cursor as u8, which would truncate for MAX_SIZE > 255. ACDP uses the default 39, and the result is a wrong length via checked split_at, not UB.
+New deps: optional arbitrary (off). ACDP features: none (db and arbitrary off). Reached via der 0.8.1 (oid) and digest 0.11.3 (oid).
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/const-oid-0.10.2.md (issue #339 Tier B batch B5 PR)."""
+
 [[audits.cpubits]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"
 criteria = "safe-to-deploy"
@@ -76,6 +134,43 @@ New deps: digest 0.10 -> 0.11 (block-api), ff/group 0.13 -> 0.14 (optional), ran
 Advisories: cargo deny check advisories clean on 2026-10-04.
 Not claimed: cryptographic correctness (serial, fiat, AVX2, IFMA, new hash_to_curve), constant-time behaviour, side-channel resistance. Behavioural evidence only: ACDP sig-001 golden vector pins Ed25519 output.
 Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/curve25519-dalek-5.0.0.md (issue #322 Phase 3 PR)."""
+
+[[audits.curve25519-dalek-derive]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "0.1.1"
+notes = """
+Scope: full audit of 0.1.1 (no prior audit of curve25519-dalek-derive). src/lib.rs (466 lines, the whole crate), README.md, tests/tests.rs, Cargo.toml and .orig were read in full. Also read: curve25519-dalek 5.0.0's target condition, build.rs backend selection, src/backend.rs dispatch, and backend visibility.
+Source: crates.io tarball sha256 f46882e17999c6cc590af592290432be3bce0428cb0d5f8b6715e4dc7b383eb3 == Cargo.lock checksum (the root and the py/node/wasm binding lockfiles are identical).
+unsafe: 0 executed by this crate. The 5 grep hits (src/lib.rs:428, :436, :446, :459, :460) are all inside quote! output templates, i.e. generated code (full-source grep, comment lines excluded; there is no forbid/deny attribute and lints are capped by --cap-lints for registry deps, so the grep is the evidence). Generated code: #[unsafe_target_feature("F")] turns fn f into a safe #[inline(always)] wrapper that defines #[target_feature(enable = "F")] unsafe fn _impl_f with the original body and calls it in unsafe {}. On impls it uses a local trait __Impl_f__ for self methods, and on mods it applies the same rewrite to each fn/impl. unsafe_target_feature_specialize clones a mod per feature set (m_<features>), with #[for_target_feature] item filtering and an optional #[cfg]. Already-unsafe fns only gain #[target_feature]. The body, types and generics pass through verbatim.
+Soundness: calling a target_feature fn on a CPU without the feature is UB, and the wrapper checks nothing, so the macro moves that precondition onto the user, as its README documents ("moves the unsafe ... into the macro name"). The sole user in ACDP's graph, curve25519-dalek 5.0.0, discharges it: every annotated fn is in backend::vector, backend is pub(crate), and every entry goes through get_selected_backend() (src/backend.rs:55-75), which selects avx512/avx2 only after cpufeatures detection and otherwise falls back to serial. This matches the curve25519-dalek 4.1.3 -> 5.0.0 audit. Test-only caveat: tests/tests.rs:146-147 calls an avx2 wrapper with no check (crate tests on x86 only; never in ACDP builds).
+asm/SIMD: none emitted except #[target_feature] attributes.
+build.rs / proc-macro: proc-macro = true; no build.rs. Build-time behaviour is a pure syn parse, AST rewrite and quote!, with errors via compile_error!. No fs, env, process or network access.
+Powerful imports: none (only the README include_str!).
+New deps: proc-macro2 1.0.66, quote 1.0.31, syn 2.0.27 (full). It is compiled only where curve25519-dalek 5.0.0 targets x86_64 without a forced fiat/serial backend: present for root --target all and py/node on x86_64-linux, absent on host aarch64 and on acdp-wasm wasm32 (serial u32 backend).
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance, cpufeatures detection correctness (a separate Tier B crate), or the soundness of any other user of this macro.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/curve25519-dalek-derive-0.1.1.md (issue #339 Tier B batch B5 PR)."""
+
+[[audits.der]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "0.8.1"
+notes = """
+Scope: full audit of 0.8.1 (no prior audit of der). src/ is 14534 lines in 55 files. What was read: the non-test code of all 55 src files, in full, except ///-and-//! doc-comment lines. That includes the code behind features ACDP leaves off (real, ber, pem, heapless, arbitrary, time). Doc comments (including the lib.rs crate docs) were skimmed. In-file #[cfg(test)] modules were read for most files and grep-checked (no unsafe/fs/include) for the rest, and a script confirmed that no non-test code follows them. tests/*.rs were grep-checked (test-only). Cargo.toml and .orig were read.
+Source: crates.io tarball sha256 a69dedd701da44b0536442edf09c81a64b0ab97a7a4a5e3d1971f00027cbc63d == Cargo.lock checksum (the root and the py/node/wasm binding lockfiles are identical).
+unsafe: 4 code lines (full-source grep, comment lines excluded; the #![deny(unsafe_code)] at lib.rs:8 and the per-site #[allow] are capped by --cap-lints for registry deps, so the grep is the evidence). All four are #[repr(transparent)] DST newtype reference casts: src/bytes.rs:29 (&[u8] -> &BytesRef([u8])), src/string.rs:26 (&str -> &StringRef(str)), src/asn1/octet_string.rs:37 (&BytesRef -> &OctetStringRef { inner: BytesRef }) and src/asn1/sequence.rs:55 (&BytesRef -> &SequenceRef { body: BytesRef }). In each, the layout and the slice-length metadata are identical, the source is a live shared reference (a real &str for StringRef, so UTF-8 holds), the result is read-only, and the signature ties the lifetime. The only check new_unchecked skips is len <= u32::MAX, a library invariant used only by len()'s debug_assert plus `as u32`, so a violation would give a wrong Length and not UB. Every unchecked caller passes an already-bounded slice anyway.
+asm/SIMD: none.
+build.rs / proc-macro: none (build = false); not a proc-macro. der_derive (derive feature) is off.
+Powerful imports: filesystem only through explicit std APIs on caller-named paths: Document::read_der_file/write_der_file and SecretDocument::read_der_file/write_der_file (src/document.rs:11, :119-131, :300-312; write_secret_file uses mode 0o600). The pem variants are off. Neither ACDP nor der's dependents on ACDP's path (ecdsa, sec1, spki, pkcs8) call these; sec1/spki/pkcs8 only wrap them in their own opt-in *_file APIs, which ACDP does not call. scripts/vet-facts.sh misses this brace import (use std::{fs, path::Path}). io::Write blanket Writer, no clock reads, no net/process/env, no include_bytes!.
+Discretion: D-1. ValueOrd for ContextSpecific/Application/Private (src/asn1/internal_macros.rs:276-286) never terminates: Implicit calls self.value_cmp, and Explicit with equal headers bounces through DerOrd. Confirmed: a debug build hits a stack overflow and aborts, and a release build hangs (Implicit) or overflows (Explicit).
+Discretion: D-2. impl TryFrom<AnyRef> for bool (src/asn1/boolean.rs:49-55) calls any.try_into(), which recurses through the blanket TryInto. Confirmed: a debug build overflows the stack, and a release build hangs.
+Neither D-1 nor D-2 is memory unsafety (safe code; stack overflow aborts at the guard page on native). Both are unreachable in every ACDP artifact: ACDP calls der nowhere and parses no DER (P-256 via from_sec1_bytes, signatures via from_slice), and ecdsa 0.17.0 / sec1 0.8.1 / spki 0.8.0 / pkcs8 0.11.0 never compare context-specific values or call bool::try_from(AnyRef) (grep). Recommend an upstream report; not filed by this audit.
+Empirical: 300k random and semi-structured inputs through 25 decoders (including &OctetStringRef and &SequenceRef, which exercise the casts) with no panic (release build with debug assertions on). Miri was not run. Nesting is bounded at 64 (reader/position.rs:20).
+New deps: optional arbitrary, bytes, const-oid, der_derive, derive_arbitrary, flagset, heapless, pem-rfc7468, time, zeroize. ACDP features: alloc, oid, std, zeroize (every build). Reached via ecdsa 0.17.0, sec1 0.8.1, spki 0.8.0.
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance, or DER encoding/canonicality correctness.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/der-0.8.1.md (issue #339 Tier B batch B5 PR)."""
 
 [[audits.digest]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"
@@ -411,6 +506,24 @@ New deps: none (lock dependency set identical); requirement floors aws-lc-rs 1.1
 Advisories: cargo deny check advisories clean on 2026-10-04 (RUSTSEC-2026-0285 patched >= 0.23.45).
 Not claimed: TLS protocol correctness (including completeness of the RUSTSEC-2026-0285 fix), certificate-validation correctness, cryptographic correctness, constant-time behaviour, side-channel resistance.
 Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/rustls-0.23.45.md (issue #322 Phase 5 PR)."""
+
+[[audits.rustls-pki-types]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "1.15.1"
+notes = """
+Scope: full audit of 1.15.1 (no prior audit of rustls-pki-types). src/ is 4103 lines. All 5 .rs files (lib 1172, server_name 1224, pem 562, base64 750, alg_id 395), src/data/README.md, Cargo.toml and .orig were read in full. The tarball ships no tests/ or benches/.
+Source: crates.io tarball sha256 2f4925028c7eb5d1fcdaf196971378ed9d2c1c4efc7dc5d011256f76c99c0a96 == Cargo.lock checksum (root and py/node binding lockfiles identical; absent from the wasm lockfile).
+unsafe: 1 code line (full-source grep, comment lines excluded; there is no forbid/deny attribute, and lints are capped by --cap-lints for registry deps, so the grep is the evidence). src/server_name.rs:532 is mem::transmute::<[u16; 8], [u8; 16]>, a by-value transmute between 16-byte arrays with no padding, and every bit pattern is a valid [u8; 16]. It has no input precondition, so it is sound for every value, including IPv6 text parsed from attacker-influenced host strings via ServerName::try_from.
+asm/SIMD: none.
+build.rs / proc-macro: none; not a proc-macro.
+Powerful imports: (1) Filesystem only through the explicit std API PemObject::from_pem_file/pem_file_iter (src/pem.rs:9, :36-56), which opens a caller-named path. reqwest (ACDP's path) parses PEM from memory (pem_reader_iter over a reader, pem_slice_iter, from_buf), and ACDP never calls the file API. (2) UnixTime::now reads SystemTime (src/lib.rs:964-970). (3) The std::net hits are value conversions only, with no sockets. (4) There are 19 include_bytes! in src/alg_id.rs.
+Discretion: the 19 include_bytes! blobs (src/data/alg-*.der, 5-65 bytes) are AlgorithmIdentifier value encodings. All were hex-dumped and decoded: the OIDs for id-ecPublicKey with the P-256/P-384/P-521/secp256k1 curves, ecdsa-with-SHA256/384/512, Ed25519, Ed448, ML-DSA-44/65/87, rsaEncryption and the PKCS#1 SHA-2 variants with NULL, and RSASSA-PSS with SHA-2/MGF1 params. They are constant data, never executed.
+Behaviour: the PEM parser caps a section at 256 MiB, &line[11..pos] is only reached after the 11-byte "-----BEGIN " prefix (pos >= 11), and the in-crate base64 decoder has no unsafe. Private-key Debug impls elide the key.
+New deps: zeroize 1 (alloc); web-time (wasm-unknown + web, off). ACDP features: alloc, default, std on the root (normal via reqwest/rustls/rustls-webpki/webpki-roots under client; dev via axum-server/rcgen test harness). Not compiled in the py/node bindings.
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour (including of its base64 decoder for secret PEM sections), side-channel resistance, or DNS-name/IP/PEM parsing correctness.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/rustls-pki-types-1.15.1.md (issue #339 Tier B batch B5 PR)."""
 
 [[audits.sec1]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"

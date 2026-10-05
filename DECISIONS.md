@@ -1681,3 +1681,76 @@ the x32/ILP32 arms with `compile_error!`), and drop these `Discretion:` lines th
 
 **Status:** DECIDED (Fable, 2026-10-05). The Policy 6 second limb and the upstream filing await
 the maintainer's acknowledgement at PR review.
+
+## #339 Tier B batch B7a: getrandom 0.2.17, 0.3.4, 0.4.3 certified (2026-10-05)
+
+Batch B7a of issue #339 (plan `plans/b7-webpki-getrandom.md`, PR-G) ran under the "#322
+supply-chain audit policy". Its terms:
+- built-in `safe-to-deploy` only;
+- no claim of cryptographic correctness, constant-time behaviour or RNG output quality;
+- `who = "Ajit Koti <ajitkoti@zer07labs.com>"`;
+- reviewed with Claude (Opus) assistance;
+- the maintainer must approve before merge.
+
+The `linux_raw` decision (C2) went to a Claude (Fable) decision review; see `322-getrandom`.
+
+| Crate | Version | Method | `unsafe` code lines / `asm!` blocks | Worksheet |
+|---|---|---|---|---|
+| `getrandom` | 0.4.3 | full; all 2,582 src lines (35 files) read in two Claude sub-review partitions, with every `unsafe` site, `unsafe fn` and `asm!` block verdicted by the main review; four Discretion lines (GR4-1/GR4-2 `linux_raw`, `322-getrandom`; GR4-3 nightly `extern_impl`; GR4-4 tier-3 esp-idf) | 109 / 9 | `supply-chain/worksheets/getrandom-0.4.3.md` |
+| `getrandom` | 0.2.17 | full; all 1,739 src lines (24 files) read the same way; one Discretion line (GR2-1 tier-3 esp-idf) | 56 / 0 | `supply-chain/worksheets/getrandom-0.2.17.md` |
+| `getrandom` | 0.3.4 | full; all 2,445 src lines (31 files) read the same way; certified at `safe-to-deploy` although its exemption was `safe-to-run` (dev-only; the `rand_core` 0.9.5 B4 precedent); three Discretion lines (GR3-1/GR3-2 `linux_raw`, GR3-3 tier-3 esp-idf); `build.rs` `rustc -vV` spawn judged to be cfg selection | 92 / 9 | `supply-chain/worksheets/getrandom-0.3.4.md` |
+
+**Method evidence common to all three versions.**
+- Compiled sets come from rustc dep-info, per target and per backend/feature, with the
+  scratch crate depending on the exact version.
+- A tarball copy was built as a path dependency with `unsafe_op_in_unsafe_fn` set to `deny`:
+  - 0.4.3 builds clean on every combination that builds at all.
+  - 0.2.17 and 0.3.4 fail by design, since they use editions 2018 and 2021. Every hit maps to
+    a site-table row.
+- Fill tests (lengths 0..=4096, a 1 MiB + 7 buffer, 16 concurrent first-use threads) ran:
+  - natively;
+  - under Miri on darwin, linux-gnu and windows-msvc;
+  - in Docker on aarch64 Linux (for 0.4.3 and 0.3.4 also with the forced `/dev/urandom`
+    fallback; for 0.2.17 also with the syscall-only `linux_disable_fallback`);
+  - for 0.4.3 and 0.2.17, on wasm32 under Node.
+
+**Per-artifact backends** (from dep-info):
+
+| Build | 0.4.3 (`sys_rng`; `wasm_js` on wasm) | 0.2.17 (via ring) | 0.3.4 (dev-only) |
+|---|---|---|---|
+| linux-gnu | libc `getrandom` via `dlsym`, `/dev/urandom` after polling `/dev/random` | getrandom(2) syscall, same file fallback | same as 0.4.3 |
+| apple-darwin | `getentropy` | `getentropy` | `getentropy` |
+| windows-msvc | `ProcessPrng` (result checked) | `BCryptGenRandom`, `RtlGenRandom` fallback | `ProcessPrng` (result only debug-asserted, GR3-O1) |
+| wasm32 binding | Web Crypto `getRandomValues` | `js.rs`, compiled but never called (#363) | not built |
+
+**Observations (not vet concerns).**
+- GR2-O1: `bindings/acdp-wasm` carries a vestigial getrandom 0.2 dependency, and the comments
+  in `bindings/acdp-wasm/Cargo.toml:52-57` and `.github/dependabot.yml:75-80` are stale.
+  Follow-up: #363. The audit PR changes no code.
+- GR3-O1: in 0.3.4, `ProcessPrng`'s return value is checked only by `debug_assert!`. 0.4.3
+  checks it.
+- GR4-O3 / GR3-O3: `wasi_p2_3` / `wasi_p2` rely on std's runtime `align_to` returning a prefix
+  and suffix shorter than 8. This is the default on `wasm32-wasip2`, which is not an ACDP
+  target.
+- In both newer versions: a dead `__msan_unpoison` declaration, and a debug-only futex
+  `debug_assert` that can trip on `EINTR`.
+
+**Guard list.**
+- `getrandom` was added under `# Batch B7:` with no marker. It covers every locked version
+  (0.2.17, 0.3.4, 0.4.3).
+- The list now guards 45 crates: 11 Tier A and 34 Tier B.
+- 44 of them are covered by our own audits. `zeroize` is again the sole deliberate exception
+  (`322-zeroize`).
+- The py, node and wasm binding lockfiles lock 0.2.17 and 0.4.3 with the root's checksums;
+  0.3.4 appears only in the root lock.
+
+**Remaining Tier B:** 1 crate (35 minus the 34 certified in B1-B7a), `rustls-webpki`, which is
+the rest of batch B7.
+
+**Maintainer items for this PR:**
+- the proposed Policy 6 second limb (`322-getrandom`), with its fallback;
+- whether to file the drafted upstream `linux_raw` report;
+- plan Q4: how a self-authored PR's approval is evidenced.
+
+**Status:** AUTHORED. Pending the maintainer's approving review naming the worksheets read
+(Policy 4); never auto-merged.

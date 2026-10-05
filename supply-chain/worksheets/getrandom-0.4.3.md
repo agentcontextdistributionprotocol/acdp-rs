@@ -97,7 +97,7 @@ all three binding lockfiles lock 0.4.3 with this checksum.
 | Item | Finding |
 |---|---|
 | `unsafe` | 114 `src/` lines with the token (109 code lines per `vet-facts.sh`); 6 `unsafe fn`; 4 bench lines; no `unsafe impl`. No `forbid(unsafe_code)`. |
-| asm | 10 lines: `backends/linux_raw.rs` (7 per-arch syscall stubs, `:29`, `:52`, `:67`, `:79`, `:91`, `:106`, `:125`) and `backends/rndr.rs` (`:31`, `:95`). Neither file is compiled for any ACDP artifact. |
+| asm | 9 `asm!` blocks (the tenth grep hit for `asm` is the module doc comment at `linux_raw.rs:1`): `backends/linux_raw.rs` (7 per-arch syscall stubs, `:29`, `:52`, `:67`, `:79`, `:91`, `:106`, `:125`) and `backends/rndr.rs` (`:31`, `:95`). Neither file is compiled for any ACDP artifact. |
 | build.rs | 11 lines: prints `rerun-if-changed`, reads `CARGO_CFG_SANITIZE`, emits `cfg(getrandom_msan)` if it contains `memory`. No process, file or network access. |
 | proc-macro | no |
 | Powerful imports | `#![no_std]`; `extern crate std` only under feature `std` (`error.rs:1-2`, `error_std_impls.rs:1`), in `efi_rng.rs:12` (nightly) and `rndr.rs:79` (`is_aarch64_feature_detected!`). No `std::{fs,net,process,env}` in `src/`. |

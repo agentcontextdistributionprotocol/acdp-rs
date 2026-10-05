@@ -42,6 +42,38 @@ Advisories: cargo deny check advisories clean on 2026-10-04.
 Not claimed: cryptographic correctness, constant-time behaviour (the crate advertises constant-time encoding/decoding; that is not claimed or verified), side-channel resistance.
 Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/base64ct-1.8.3.md (issue #339 Tier B batch B5 PR)."""
 
+[[audits.block-buffer]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "0.12.1"
+notes = """
+Scope: full audit of 0.12.1 (no prior audit; 756 src lines in src/lib.rs, src/sealed.rs, src/read.rs, all read line by line; tests/mod.rs grep-scanned).
+Source: crates.io tarball sha256 d2f6c7dbe95a6ed67ad9f18e57daf93a2f034c524b99fd2b76d18fdfeb6660aa == Cargo.lock checksum.
+unsafe: 21 code lines, all reasoned about (worksheet table). Invariants: BS in U1..=U255; Eager keeps the cursor in the buffer's last byte with pos < BS, Lazy keeps it in a u8 field with pos <= BS; bytes 0..pos initialized; ReadBuffer keeps 1 <= buffer[0] <= BS. Every unchecked write/read (copy_nonoverlapping, ptr::read/write of the cursor byte, from_raw_parts, assume_init_ref/mut, unreachable_unchecked in get_pos) is guarded by K::invariant checks, split_at/split_blocks lengths or asserts; the two paths that temporarily break the invariant (digest_blocks with pos != 0, digest_pad) restore it through a ResetGuard Drop, including on unwind from the caller's compress closure, which never sees the buffer. Clone via ptr::read is sound because no field owns a resource (observation BB-1: its SAFETY comment wrongly says there is no Drop impl). No forbid(unsafe_code); the grep is the evidence.
+asm/SIMD: none. No cfg(target_*): identical code on x86_64, aarch64, wasm32 and 32-bit targets.
+build.rs / proc-macro: none.
+Powerful imports: none (#![no_std]).
+New deps: hybrid-array 0.4 (locked 0.4.14); optional zeroize (feature off in ACDP root and all bindings, so the zeroize impls are not compiled). Dev-only: hex-literal. Reached via digest 0.11.3 (sha2, hmac).
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/block-buffer-0.12.1.md (issue #339 Tier B batch B6 PR)."""
+
+[[audits.cmov]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "0.5.4"
+notes = """
+Scope: full audit of 0.5.4 (no prior audit; 1702 src lines, all read line by line including the x86, aarch64 and soft backends; tests/ grep-scanned).
+Source: crates.io tarball sha256 0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a == Cargo.lock checksum.
+unsafe: 25 code lines, all reasoned about (worksheet table). NonZero::new_unchecked (src/lib.rs:280) and the Ordering write (src/lib.rs:326) are sound because every integer cmov leaves exactly one of its two operands (ISA semantics of CMOVcc/CSEL; masksel with a 0/MAX mask in soft). The slice reinterpretations (src/slice.rs:170-171, 270-271; cast_slice/_mut) have const-asserted equal size/align, and each element's final value is a whole element taken from one operand. The remainder path's word_to_slice (src/slice.rs:399-403) first writes 0 and then ORs bytes in, so through the integer view a NonZero* remainder element briefly holds 0; that is not UB because nothing reads it at the NonZero/Ordering type before every element is valid again, so NonZero*/Ordering validity holds whenever the original slice is used. Vendored as_chunks helpers (src/slice.rs:420-491) split at len/N*N with N != 0 asserted.
+asm/SIMD: 7 asm! sites. x86 (src/backends/x86.rs:16, :33; x86/x86_64 artifacts): test+cmovcc / xor+cmovcc with pure, nomem, nostack, no preserves_flags (flags clobber declared), register widths matching the type. aarch64 (src/backends/aarch64.rs:8, :27; aarch64 artifacts): tst/eor/cmp + csel with pure, nomem, nostack, flags clobber declared, scratch is out (not lateout), low-byte/halfword masking for narrow inputs. soft.rs:151/:167/:189 are arm/riscv32/riscv64 only, compiled in no ACDP artifact; wasm32 (bindings/acdp-wasm) uses the pure-Rust soft path with no asm. Operand and option declarations are consistent with the instructions; the claim stops there.
+build.rs / proc-macro: none.
+Powerful imports: none (#![no_std]; include_str! for README docs).
+New deps: none (dev-only proptest). No features. Reached via ctutils 0.4.2 only.
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour (this is a constant-time crate; neither its constant-time property nor branch-freedom of the generated code, nor that the asm achieves its constant-time intent, is claimed), side-channel resistance.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/cmov-0.5.4.md (issue #339 Tier B batch B6 PR)."""
+
 [[audits.const-oid]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"
 criteria = "safe-to-deploy"
@@ -75,6 +107,41 @@ New deps: none. ACDP features: none. Reached via crypto-bigint under rfc6979/ecd
 Advisories: cargo deny check advisories clean on 2026-10-04.
 Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
 Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/cpubits-0.1.1.md (issue #339 Tier B batch B3 PR)."""
+
+[[audits.cpufeatures]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "0.3.1"
+notes = """
+Scope: full audit of 0.3.1 (no prior audit; 589 src lines in src/lib.rs, src/x86.rs, src/aarch64.rs, src/loongarch64.rs, src/miri.rs, all read line by line; tests/ read). Most of the crate is #[macro_export] macros that expand in the caller: in ACDP's graph sha2 0.11.0 (src/sha256.rs:55 "sha","sse2","ssse3","sse4.1"; :58 "sha2"; src/sha512.rs:50 "avx2"; :53 "sha3") and curve25519-dalek 5.0.0 (src/backend.rs:67 "avx2"; :58 "avx512ifma","avx512vl" under the opt-in avx512 backend).
+Source: crates.io tarball sha256 5ca28b0ae3115b884660db4118d803791fd6756b6e88f39c0f3f7859060d7566 == Cargo.lock checksum.
+unsafe: 11 code lines, all reasoned about (worksheet table). x86: cpuid/cpuid_count wrappers and [cpuid(1), cpuid_count(7,0), cpuid_count(7,1)] (src/x86.rs:41-51), where CPUID with any leaf is defined behaviour; _xgetbv (src/x86.rs:71) gated on CPUID.1:ECX XSAVE+OSXSAVE bits 26/27 (:68-70). aarch64: getauxval(AT_HWCAP) (src/aarch64.rs:37); Apple sysctlbyname with an asserted NUL-terminated name, a 4-byte out buffer, size 4, and NULL/0 newp/newlen (src/aarch64.rs:114-171). loongarch64 (no ACDP artifact): getauxval (src/loongarch64.rs:49).
+asm/SIMD: one asm! site, cpucfg (src/loongarch64.rs:30-40), options(pure, nomem, preserves_flags, nostack), correct for that instruction; loongarch64-linux only, compiled in no ACDP artifact. Not compiled for wasm32 (compile_error! on other arches, src/lib.rs:25-31; sha2 and curve25519-dalek depend on it only on x86/x86_64/aarch64).
+build.rs / proc-macro: none.
+Powerful imports: none of fs/net/process/env (#![no_std]); read-only libc CPU-capability queries (getauxval, sysctlbyname "hw.optional.*").
+New deps: libc 0.2 on aarch64-linux/android/apple and loongarch64-linux only. No features.
+Discretion: x86 detection reads CPUID leaf 7 without checking the maximum basic leaf CPUID.0:EAX (src/x86.rs:49-51). On Intel an out-of-range basic leaf returns the highest basic leaf's data, so the leaf-7 bits can be spurious on a CPU or VM whose maximum basic leaf is below 7. This is a correctness gap in a safe fn whose input (CPUID) is not attacker-controlled; every unsafe/asm site in the crate is sound. The predicates ACDP's graph uses cannot misfire on any supported platform: sha (leaf 7 EBX29) is ANDed by sha2 with leaf-1 SSE2+SSSE3+SSE4.1, and avx2 (leaf 7 EBX5) is ANDed inside cpufeatures with leaf-1 AVX and XCR0 XMM+YMM state (via OSXSAVE). Every CPU with those leaf-1 bits has a native maximum basic leaf >= 0xA; no QEMU CPU model exposing SSE4.1 or AVX has a level < 0xA; the firmware "Limit CPUID Maxval" setting caps at leaf 2/3, which yields zeros or a false AND, and Linux and Windows clear it at boot; Rosetta 2 reports a maximum basic leaf of 0xD. Only a manual hypervisor level= override on an AVX-class CPU model reaches the gap, and then the result is a deterministic SIGILL in the dependent's #[target_feature] code. These platform facts were verified by the decision reviewer (DECISIONS.md 322-cpufeatures). Certifying is also consistent with the existing sha2 0.11.0 and curve25519-dalek 5.0.0 audits, whose notes rest on this detection. Reported upstream as RustCrypto/utils#1510; fix open in #1528 (gates leaves 1/7.0/7.1 on CPUID.0:EAX). Exit: delta-audit the release carrying #1528.
+Observation CF-2: on Apple, sysctlbyname panics (assert_eq on size and rc, src/aarch64.rs:170-171) if a queried hw.optional.* node is missing or returns an error; safe code.
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: correctness of feature detection on every CPU configuration, cryptographic correctness, constant-time behaviour.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/cpufeatures-0.3.1.md (issue #339 Tier B batch B6 PR); certification decision recorded in DECISIONS.md 322-cpufeatures."""
+
+[[audits.crypto-bigint]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "0.7.5"
+notes = """
+Scope: full audit of 0.7.5 (no prior audit). src/ is 45935 lines in 194 files. The 150 files compiled under ACDP's features (getrandom, hybrid-array, rand_core, subtle, zeroize; taken from rustc dep-info for the root host build and the wasm32 binding build, which list the same files), 37233 lines, were read in full. The 44 files not compiled in any ACDP artifact (alloc-only boxed modules, der, rlp, extra-sizes), 8702 lines, were grep-scanned only, as were tests/ and benches/.
+Source: crates.io tarball sha256 1a52aa3fcda4e6302a9f48734f234d35d4721b96f8fe07d073f07ce9df4f0271 == Cargo.lock checksum.
+unsafe: 14 code lines; 13 in compiled code, all reasoned about (worksheet table): repr(transparent) reference/slice casts Limb<->Word (src/limb.rs:132-168), T->NonZero<T>/Odd<T> (src/non_zero.rs:120, src/odd.rs:130), Uint->Int (src/uint.rs:289-291), [Limb]->UintRef and [[Limb;N]]->[Limb] (src/uint/ref_type.rs:47-73); Word<->u8 byte views (src/uint/encoding.rs:395, :406); transmute i8->Ordering (src/uint/ref_type/cmp.rs:85-87), where the value is provably -1/0/1 because every Choice involved is built in that function from limbs and masked to 0/1. NonZero/Odd are logical invariants only; no unsafe depends on them, so a violation can only give a wrong result or a panic. The 14th site (src/uint/boxed/from.rs:73, alloc, not compiled) is also sound. Cargo.toml's unsafe_code = "deny" lint is only a hint (cargo --cap-lints allow).
+asm/SIMD: none; no core::arch, no cfg(target_arch/target_os) in compiled code. Word size via cpubits (64-bit on 64-bit targets and wasm32, 32-bit on other 32-bit targets).
+build.rs / proc-macro: none.
+Powerful imports: none (#![no_std]; no std::, FFI, static mut or interior-mutable statics; include_str! for README docs). OS randomness only via the explicit Random::try_random()/random() (src/traits.rs:470-487, feature getrandom -> getrandom::SysRng); all other randomness takes a caller-supplied rand_core RNG. Exported macros const_monty_params!/const_prime_monty_params!/const_monty_form!/impl_modulus! expand to const parameter impls with no unsafe.
+New deps: cpubits 0.1, ctutils 0.4, num-traits 0.2, hybrid-array 0.4, rand_core 0.10, getrandom 0.4 (sys_rng), subtle 2.6, zeroize 1; der/rlp/serdect not compiled. Reached via elliptic-curve, primefield, rfc6979 (P-256).
+Observation CB-R1 (worksheet): NonZero<Uint>::floor_root_vartime (src/uint/root.rs:57) panics for large exponents (shift >= BITS); safe code, no caller in ACDP's graph.
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
+Method: Reviewed with Claude (Opus) assistance; the compiled files were read in seven partitions by Claude (Opus) sub-reviews and every unsafe site was read and verdicted by the main review; worksheet in supply-chain/worksheets/crypto-bigint-0.7.5.md (issue #339 Tier B batch B6 PR)."""
 
 [[audits.crypto-common]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"
@@ -330,6 +397,23 @@ New deps: digest 0.11.2 (mac). ACDP features: none (root and py/node/wasm bindin
 Advisories: cargo deny check advisories clean on 2026-10-04.
 Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
 Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/hmac-0.13.0.md (issue #339 Tier B batch B2 PR)."""
+
+[[audits.hybrid-array]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "0.4.14"
+notes = """
+Scope: full audit of 0.4.14 (no prior audit; 3228 src lines: lib.rs, traits.rs, from_fn.rs, flatten.rs, iter.rs and the macros/non-table lines of sizes.rs read line by line; the 552-entry default size table in sizes.rs checked by script; serde.rs (feature off) read for unsafe; the extra-sizes table (feature off) not verified; tests/ grep-scanned).
+Source: crates.io tarball sha256 707114b52a152fa7bdb290cd7cd5912d9467273b6d74e21b8d81aca1f8533f6b == Cargo.lock checksum.
+unsafe: 37 code lines in src/, all reasoned about (worksheet table). Foundation: Array is repr(transparent) over U::ArrayType<T>, and the pub unsafe trait ArraySize requires ArrayType = [T; USIZE]; the crate's only impls are macro-generated `[T; N]` for typenum U<N>, and a script confirmed all 552 default mappings have N equal to the U<N> name (a grep of all 361 registry crates in the root and binding lockfiles found no other ArraySize impl). On that contract plus typenum arithmetic (Sub/Diff/Sum/Prod/Quot type-check only for the true value): as_slice/slice casts, split/split_ref(_mut), slice_as_chunks(_mut) (U != 0 asserted), slice_as_flattened (checked_mul), concat and try_from_fn (every slot written before assume_init; drop guard drops exactly the initialized prefix on error or panic), Flatten/Unflatten (ManuallyDrop source, reads cover each element once), uninit() (array of MaybeUninit), assume_init (transmute_copy between equal sizes), Send/Sync impls, TryFrom length checks. Pod/Zeroable impls are behind bytemuck (off). No forbid(unsafe_code); the grep is the evidence.
+asm/SIMD: none. No cfg(target_*).
+build.rs / proc-macro: none.
+Powerful imports: none (#![no_std]; alloc under the alloc feature; include_str! for README docs).
+New deps: typenum 1.20 (locked 1.20.1); ACDP enables alloc, subtle, zeroize (root and all bindings); bytemuck, zerocopy, ctutils, serde, arbitrary, extra-sizes off.
+Discretion: the tarball ships upstream CI configuration (.github/workflows/*.yml, .github/dependabot.yml, .codecov.yml) that is never compiled or run by a dependent's build (untrusted 0.9.0 precedent).
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/hybrid-array-0.4.14.md (issue #339 Tier B batch B6 PR)."""
 
 [[audits.hyper-rustls]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"

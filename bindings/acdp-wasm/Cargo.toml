@@ -32,13 +32,14 @@ crate-type = ["cdylib", "rlib"]
 # deterministic). The getrandom *backend* below is still required to
 # COMPILE for wasm32-unknown-unknown, because the core crates pull
 # getrandom 0.4 `SysRng` (acdp-crypto key generation) and uuid v4
-# (acdp-primitives) unconditionally — see docs/research/wasm-target.md §4 and the memo
-# correction in this crate's README. It is never called on the verify
+# (acdp-primitives) unconditionally — see docs/research/wasm-target.md
+# §4 and the memo correction in this crate's README. It is never called on the verify
 # path.
 default  = []
 # `producer` would additionally expose fresh key generation
-# (SigningKey::generate), the only caller of getrandom::SysRng. Reserved; not wired
-# yet — the verify-first surface needs no key generation.
+# (SigningKey::generate), the only caller of getrandom::SysRng.
+# Reserved; not wired yet — the verify-first surface needs no key
+# generation.
 producer = []
 
 [dependencies]

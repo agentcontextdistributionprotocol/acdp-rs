@@ -671,11 +671,13 @@ catches either case. When a bump turns `cargo-vet` red:
    earlier push had it on. Your push does not re-run that workflow (it runs
    only for Dependabot's own pushes), so check before merging that
    auto-merge is still off (`gh pr view <n> --json autoMergeRequest`).
-8. **Get sign-off.** The maintainer merges the PR by hand, and a PR comment
-   names the worksheets they read. That merge is the approval; no approving
-   GitHub review is needed, because the author cannot approve their own PR
-   (DECISIONS.md `322-policy4-approval`, 2026-10-05). Audit PRs are never
-   auto-merged.
+8. **Get sign-off.** The maintainer merges the PR by hand themselves and
+   posts a PR comment naming the worksheets they read. That merge plus
+   comment is the approval; no approving GitHub review is needed, because
+   the author cannot approve their own PR (DECISIONS.md
+   `322-policy4-approval`, 2026-10-05). An agent's merge, even on a
+   standing "merge when green" instruction, does not count. Audit PRs are
+   never auto-merged.
 
 The criteria, the method rule, the notes template, the `who` / sign-off rule,
 and the concern rule are all in DECISIONS.md "#322 supply-chain audit policy".

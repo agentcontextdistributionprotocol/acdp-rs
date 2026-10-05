@@ -467,8 +467,8 @@ criterion:** delta-audit the cpufeatures release carrying #1528.
 vouch for.** The audits are full reviews of every backend. Every backend getrandom compiles
 for an ACDP artifact is sound: for 0.4.3, the Linux libc `getrandom`/`/dev/urandom` path,
 `getentropy` on macOS, `ProcessPrng` on Windows and Web Crypto on wasm32; for 0.2.17 (ring),
-the getrandom(2) syscall path, `getentropy`, `BCryptGenRandom`/`RtlGenRandom`, and the
-uncalled `js.rs` in the wasm binding. So is every backend selected by default on a stable
+the getrandom(2) syscall path, `getentropy`, `BCryptGenRandom`/`RtlGenRandom` (the wasm
+binding no longer depends on 0.2 since #363, so its `js.rs` is no longer compiled). So is every backend selected by default on a stable
 tier-1/2 target. The opt-in `linux_raw` backend
 has two soundness bugs, on loongarch64 (undeclared `$t0`-`$t8` clobbers) and on x32/ILP32
 (32-bit pointer and length in 64-bit registers). They are reachable only when the final

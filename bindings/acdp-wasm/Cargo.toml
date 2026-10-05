@@ -31,14 +31,15 @@ crate-type = ["cdylib", "rlib"]
 # randomness (Ed25519 + RFC 6979 P-256 signing and all verification are
 # deterministic). The getrandom *backend* below is still required to
 # COMPILE for wasm32-unknown-unknown, because the core crates pull
-# rand_core/OsRng (acdp-crypto) and uuid v4 (acdp-primitives)
-# unconditionally — see docs/research/wasm-target.md §4 and the memo
-# correction in this crate's README. It is never called on the verify
+# getrandom 0.4 `SysRng` (acdp-crypto key generation) and uuid v4
+# (acdp-primitives) unconditionally — see docs/research/wasm-target.md
+# §4 and the memo correction in this crate's README. It is never called on the verify
 # path.
 default  = []
 # `producer` would additionally expose fresh key generation
-# (SigningKey::generate), the only caller of OsRng. Reserved; not wired
-# yet — the verify-first surface needs no key generation.
+# (SigningKey::generate), the only caller of getrandom::SysRng.
+# Reserved; not wired yet — the verify-first surface needs no key
+# generation.
 producer = []
 
 [dependencies]
@@ -50,15 +51,17 @@ chrono     = { version = "0.4", features = ["serde"] }
 hex        = "0.4"
 
 # getrandom backends are only meaningful on wasm — target-gate them so a
-# native `cargo test` (used for golden parity) is untouched. Two majors
-# are in the graph:
-#   * 0.2  ← rand_core 0.6 / OsRng (acdp-crypto)  → `js` FEATURE
-#   * 0.4  ← uuid v4 (acdp-primitives)            → `wasm_js` feature
-#            + `--cfg getrandom_backend="wasm_js"` (.cargo/config.toml)
-# Both `compile_error!` on wasm32-unknown-unknown without a backend even
-# though verification never draws randomness.
+# native `cargo test` (used for golden parity) is untouched. One major,
+# 0.4, is in this binding's graph: acdp-crypto's `SysRng` key generation
+# and uuid v4 (acdp-primitives) both pull it. It needs the `wasm_js`
+# feature (plus the inert, forward-compat
+# `--cfg getrandom_backend="wasm_js"` in .cargo/config.toml), or it
+# `compile_error!`s on wasm32-unknown-unknown even though verification
+# never draws randomness. The `getrandom_wasm` alias name is historical:
+# it once sat beside a direct getrandom 0.2 (`js`) dependency for the
+# old rand_core 0.6 / OsRng path, which nothing here uses any more (#363).
+# getrandom 0.2 is still locked in the ROOT workspace (via ring), not here.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-getrandom      = { version = "0.2", features = ["js"] }
 getrandom_wasm = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
 # uuid v4 (acdp-primitives) needs its OWN wasm randomness feature on top
 # of the getrandom backend above: without `js` it emits its own

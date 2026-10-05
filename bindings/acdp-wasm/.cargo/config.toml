@@ -1,6 +1,7 @@
-# getrandom 0.3+ (0.4, pulled by uuid v4 in acdp-primitives) picks its
-# WebAssembly backend via the `wasm_js` FEATURE (set in Cargo.toml) alone.
-# The 0.2 major on the crypto path uses the `js` feature the same way.
+# getrandom 0.3+ (0.4, pulled by acdp-crypto's SysRng and by uuid v4 in
+# acdp-primitives) picks its WebAssembly backend via the `wasm_js`
+# FEATURE (set in Cargo.toml) alone. (getrandom 0.2 and its `js` feature
+# are no longer in this binding's graph, #363.)
 #
 # NOTE (corrected 2026-09-06, #196c): at getrandom 0.4.3 this cfg is
 # INERT — `getrandom-0.4.3/src/backends.rs` has no `getrandom_backend =

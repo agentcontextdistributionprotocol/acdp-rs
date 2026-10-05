@@ -70,3 +70,10 @@ rand_core
 ctutils
 webpki-roots
 typenum
+# Batch B5:
+base16ct
+base64ct
+rustls-pki-types
+const-oid
+der
+curve25519-dalek-derive

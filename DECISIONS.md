@@ -1312,3 +1312,88 @@ assistance, maintainer approval required before merge.
 
 **Status:** AUTHORED. Pending the maintainer's approving review naming the worksheets read
 (Policy 4); never auto-merged.
+
+## #339 Tier B batch B5: base16ct, base64ct, rustls-pki-types, const-oid, der, curve25519-dalek-derive certified (2026-10-04)
+
+Batch B5 of issue #339 (plan P6) ran under the unchanged "#322 supply-chain audit policy":
+
+- built-in `safe-to-deploy` only;
+- no claim of cryptographic correctness or constant-time behaviour, including the
+  constant-time encoding that `base16ct` and `base64ct` advertise;
+- `who = "Ajit Koti <ajitkoti@zer07labs.com>"`, reviewed with Claude (Opus) assistance;
+- maintainer approval required before merge.
+
+| Crate | Version | Method | `unsafe` | Worksheet |
+|---|---|---|---|---|
+| `base16ct` | 1.0.0 | full (no prior audit); all files read | 4 (`from_utf8_unchecked` on self-written ASCII) | `supply-chain/worksheets/base16ct-1.0.0.md` |
+| `base64ct` | 1.8.3 | full (no prior audit); all files read | 4 (`decode_in_place` raw-pointer chunking, `from_utf8_unchecked`) | `supply-chain/worksheets/base64ct-1.8.3.md` |
+| `rustls-pki-types` | 1.15.1 | full (no prior audit); all files read; embedded DER blobs decoded | 1 (`[u16; 8] -> [u8; 16]` value transmute) | `supply-chain/worksheets/rustls-pki-types-1.15.1.md` |
+| `const-oid` | 0.10.2 | full (no prior audit); hand-written files read; feature-gated generated OID DB shape-checked by script | 1 (`repr(transparent)` DST cast) | `supply-chain/worksheets/const-oid-0.10.2.md` |
+| `der` | 0.8.1 | full (no prior audit); non-test code of all 56 `src/` files read, doc comments skimmed, some test modules grep-only | 4 (`repr(transparent)` DST casts) | `supply-chain/worksheets/der-0.8.1.md` |
+| `curve25519-dalek-derive` | 0.1.1 | full (no prior audit); all files read, plus curve25519-dalek 5.0.0's dispatch | 0 executed; 5 in generated templates | `supply-chain/worksheets/curve25519-dalek-derive-0.1.1.md` |
+
+Each `unsafe` site is quoted with its invariant in the worksheet and in the `audits.toml`
+note. None needs a precondition that the safe API leaves open.
+
+**Empirical backing (scratch crate, release build with debug assertions on; Miri not run):**
+- `base64ct`: exhaustive dirty-buffer encode and round trip over every 1-, 2- and 3-byte
+  input, for all 8 alphabets.
+- `base16ct`: exhaustive over every 2-byte input.
+- `der`: 300k random and semi-structured decodes, with no panic.
+
+**Filesystem APIs (not concern triggers).** `rustls-pki-types`
+(`PemObject::from_pem_file`) and `der` (`Document`/`SecretDocument::read_der_file` /
+`write_der_file`, under `std`, which is on) expose documented file APIs that act on a
+caller-named path.
+- ACDP never calls them. Neither do the dependents on ACDP's path: reqwest parses PEM from
+  memory, and sec1, spki and pkcs8 only wrap the APIs in their own opt-in `*_file` methods.
+- `scripts/vet-facts.sh` misses `der`'s brace import `use std::{fs, path::Path}`, so this was
+  found by reading.
+
+**`der` discretion (D-1, D-2): safe-code non-termination, unreachable from ACDP.**
+- **D-1:** `ValueOrd` for `ContextSpecific`/`Application`/`Private`
+  (`src/asn1/internal_macros.rs:276-286`) recurses without end.
+- **D-2:** `TryFrom<AnyRef> for bool` (`src/asn1/boolean.rs:49-55`) recurses through the
+  blanket `TryInto`.
+- Both were confirmed: a stack overflow and abort in debug builds, and a hang or overflow in
+  release builds.
+- Neither involves `unsafe`. On native targets the stack overflow aborts at the guard page.
+  In `acdp-wasm` (wasm32, which has no guard page) it would end in a wasm trap; it is still
+  unreachable there. ACDP parses no DER, and no dependent on its path compares
+  context-specific values or calls `bool::try_from(AnyRef)`.
+- Both are recorded as `Discretion:` lines. Recommend an upstream report to
+  RustCrypto/formats; this audit did not file one.
+
+**`curve25519-dalek-derive`.** It is a proc-macro, and its generated safe wrappers call
+`#[target_feature]` functions in `unsafe` with no check. Soundness belongs to the macro's
+user.
+- The user's "safe" function body becomes the body of a generated `unsafe fn` (`src/lib.rs:436`,
+  `:459`), so it is an unsafe context. curve25519-dalek 5.0.0 is edition 2024, where
+  `unsafe_op_in_unsafe_fn` only warns, and `--cap-lints` silences that warning. So unsafe
+  operations compile in those bodies with no `unsafe` token, and a full-source grep of
+  curve25519-dalek undercounts its unsafe operations.
+- In ACDP the only user is curve25519-dalek 5.0.0. Its vector backend is `pub(crate)`, and
+  every entry goes through `get_selected_backend()` cpufeatures detection, as its own audit
+  records.
+- It is compiled on all x86_64 targets, including Linux, macOS and Windows; the py and node
+  releases ship `x86_64-apple-darwin` and `x86_64-unknown-linux-gnu`. It is absent from the aarch64 host build and from the
+  wasm32 binding.
+
+**`base64ct`** is lock-only: it is compiled into no ACDP build, because `spki`'s `base64`
+feature is off. It was certified anyway, so its lock entry and the guard list stay covered.
+
+**Guard list and docs.**
+- The six crates were added to `scripts/crypto-critical.txt` under `# Batch B5:` with no
+  marker, for 39 guarded crates.
+- `docs/supply-chain.md` counts and table were updated.
+- Binding lockfiles:
+  - all six match the root wherever they are locked;
+  - `rustls-pki-types` is absent from the wasm lock;
+  - `scripts/check-bindings-lock-parity.sh` passes.
+
+No concern was found, and nothing in this batch was kept exempt. Remaining Tier B: 7 crates
+(35 minus the 28 certified in B1-B5): `block-buffer`, `cpufeatures`, `hybrid-array`, `cmov`,
+`crypto-bigint`, `getrandom`, `rustls-webpki`.
+
+**Status:** AUTHORED. Pending the maintainer's approving review naming the worksheets read
+(Policy 4); never auto-merged.

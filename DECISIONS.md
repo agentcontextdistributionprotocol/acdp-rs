@@ -827,7 +827,10 @@ under the concern rule below.
    a RUSTSEC hit; or a review that cannot be finished. **Carve-out (amended 2026-10-04,
    Fable decision on `322-sha2`):** this rule does not apply when the unsound code is
    unreachable in any stable-toolchain build of any ACDP artifact; in that case certify
-   and record the discretion in the audit notes (`Discretion:` lines). For such a crate:
+   and record the discretion in the audit notes (`Discretion:` lines). (A second limb,
+   for builder-only `--cfg` opt-ins compiled into no ACDP-built or ACDP-tested artifact,
+   was proposed 2026-10-05 in `322-getrandom` and awaits the maintainer's
+   acknowledgement.) For a crate under the concern rule:
    - Do not certify it.
    - Keep its exemption, with `notes = "KEPT EXEMPT (#322): <reason>; see DECISIONS.md
      '322-<crate>'"`.
@@ -1528,6 +1531,233 @@ policy", unchanged:
 
 **Remaining Tier B:** 2 crates (35 minus the 33 certified in B1-B6): `getrandom` (0.2.17,
 0.3.4, 0.4.3) and `rustls-webpki`, both batch B7.
+
+**Status:** AUTHORED. Pending the maintainer's approving review naming the worksheets read
+(Policy 4); never auto-merged.
+
+## #339 322-getrandom: getrandom 0.4.3 / 0.3.4 linux_raw findings, certified with Discretion lines (2026-10-05)
+
+Concern-rule entry for issue #339, batch B7a (plan decision C2). Anchor: `322-getrandom`. The
+worksheets are `supply-chain/worksheets/getrandom-0.4.3.md` (findings GR4-1, GR4-2) and
+`supply-chain/worksheets/getrandom-0.3.4.md` (GR3-1, GR3-2). Labels: LR-1 = GR4-1 = GR3-1;
+LR-2 = GR4-2 = GR3-2.
+- getrandom 0.4.3 is a direct dependency of `acdp-crypto`, which uses it for key
+  generation (`crates/acdp-crypto/src/sign.rs:56`, `:143`).
+- 0.3.4 is a dev-only dependency (proptest -> rand 0.9 -> rand_core 0.9).
+- 0.2.17 has no `linux_raw` backend, so it has no finding of this kind.
+
+**Findings.** Both findings are in the opt-in `linux_raw` backend and date from its
+introduction (upstream #572, 0.3.0).
+
+How the backend is selected:
+- It is selected only by the final binary's builder, via
+  `--cfg getrandom_backend="linux_raw"` (0.4.3 `src/backends.rs:17-19`; 0.3.4 `:18-21`).
+- No Cargo feature enables it.
+- A library's cfg does not propagate to its dependents (getrandom README, "Opt-in
+  backends").
+- The default ladder selects it only for `target_env = ""` (0.4.3 `:38-40`; 0.3.4
+  `:50-53`), and that is never an ACDP target.
+
+No artifact ACDP builds or tests compiles the file. The rustc dep-info for each target:
+
+| Target | Backend compiled |
+|---|---|
+| linux-gnu | `linux_android_with_fallback` + `use_file` |
+| darwin | `getentropy` |
+| windows | `windows` |
+| wasm32 | `wasm_js` |
+
+The two findings:
+
+- **LR-1 (loongarch64).** The `syscall 0` block declares no clobbers (0.4.3
+  `linux_raw.rs:61-75`; 0.3.4 `:50-60`). The kernel clobbers `$t0`-`$t8`:
+  - `handle_syscall` (`arch/loongarch/kernel/entry.S:22-81`) overwrites t0-t2 before it saves
+    anything, and never runs `SAVE_TEMP`.
+  - `RESTORE_ALL_AND_RET` then reloads t0-t8 from `pt_regs` slots that this path never filled
+    (`asm/stackframe.h:216-226`, `:269-274`).
+  - glibc (`__SYSCALL_CLOBBERS`) and musl (`SYSCALL_CLOBBERLIST`) both list `$t0`-`$t8` as
+    clobbered.
+
+  This is UB whenever a live value sits in a t-register across the block. Sampled release
+  codegen keeps every live value in a-registers, so no miscompile was observed. rustix has no
+  loongarch64 `linux_raw` arch. Affected targets: `loongarch64-unknown-linux-{gnu,musl}`
+  (tier 2, stable).
+- **LR-2 (x32; aarch64 ILP32).** On these ABIs the x86_64 and aarch64 arms pass 32-bit `buf`
+  and `buflen` in 64-bit input registers, and the asm! rules leave the upper bits undefined.
+  - `sys_getrandom` is a common 64-bit entry that reads the full `len` with no length cap.
+  - So garbage upper bits in `rsi` can make the kernel write past the buffer before
+    `fill_inner` checks the length.
+  - Sampled x32 codegen passes the caller's incoming `%rdi`/`%rsi` to the first syscall
+    without zero-extending them.
+  - rustix refuses both x32 and ILP32.
+
+  Affected targets: `x86_64-unknown-linux-gnux32` (tier 2, stable). aarch64 ILP32 is tier 3.
+- Neither finding can be steered by an attacker: the syscall inputs are the program's own
+  `buf`/`len`/`flags`.
+- **Observation, not a finding.** On LP64 the `u32` syscall number and flags sit in 64-bit
+  registers. This is harmless:
+  - x86_64 and aarch64 discard the upper bits, and `flags` is `unsigned int`.
+  - loongarch64, riscv64 and s390x range-check the full register, so garbage would give
+    `-ENOSYS`, which becomes an `Err`.
+
+**Why the existing carve-out does not fit.** The Policy 6 carve-out applies to code
+"unreachable in any stable-toolchain build of any ACDP artifact". The `322-sha2` precedent met
+that because its code needed nightly. Here, a crates.io consumer on loongarch64 with stable rustc
+who sets the cfg does compile LR-1 into a binary that contains `acdp`. Calling the code
+unreachable would therefore overclaim.
+
+**Options.**
+1. Certify, calling the code unreachable. Rejected: it overclaims.
+2. Keep 0.4.3 exempt, with the marker `allow-exempt:DECISIONS#322-getrandom@0.4.3`, and
+   certify 0.3.4 (dev-only, so it is in no artifact) and 0.2.17.
+   - Feasible: only one version stays exempt, so G4's replan stop is not triggered.
+   - But an exemption records a finished audit, and a known bug, as merely "unaudited".
+3. Pin back. Not viable: `acdp-crypto` needs getrandom 0.4 `SysRng`, which 0.2.17 does not
+   have.
+4. *(chosen)* Certify 0.4.3 and 0.3.4 at `safe-to-deploy` (full audit). 0.4.3 needs an explicit
+   second limb of the carve-out. 0.3.4 is dev-only and in no ACDP artifact, so the original
+   carve-out already covers GR3-1/GR3-2; its notes cite this entry only for consistency. For
+   both:
+   - add one `Discretion:` line per finding, stating the real reachability;
+   - report both findings upstream;
+   - document in `docs/supply-chain.md` that a builder's `--cfg getrandom_backend` override
+     is outside ACDP's audits.
+
+**Decision (Fable, after independently verifying the kernel, libc, rustix, Rust-reference and
+codegen facts, 2026-10-05): option 4.** The reasons:
+- `safe-to-deploy` asks that an attacker cannot manipulate the code's runtime behaviour, and
+  says the crate need not be bug-free. That claim holds even for a builder who opts in.
+- The knob is a whole-build setting that only the final builder can choose. Upstream warns
+  against it, and it matters only on targets ACDP neither builds nor tests.
+- A certification that discloses the findings tells importers more than an exemption does.
+  `imports.lock` carries the notes to them.
+- The decision is consistent with two precedents: `322-sha2` (no Cargo feature reaches the
+  code) and `322-cpufeatures` (a hazard no attacker can steer).
+
+**Policy 6 carve-out, second limb (proposed 2026-10-05 by this decision; needs the
+maintainer's explicit acknowledgement at PR review under Policy 4).** The concern rule also does
+not apply when the unsound code meets all four conditions:
+- (a) it is selected only by a whole-build knob that the final binary's builder must set
+  explicitly (`--cfg` or RUSTFLAGS). A Cargo feature never qualifies, because a dependency can
+  turn one on through feature unification;
+- (b) none of the artifacts ACDP builds or tests compiles it;
+- (c) untrusted input cannot steer it;
+- (d) it has been reported upstream, or a report has been drafted and is held for the
+  maintainer.
+
+Such code is certified with one `Discretion:` line per finding. The line names the knob, the
+targets, the hazard, the observed codegen and the upstream status. The exit criterion is a delta
+audit of the fix. Code that is selected by default on any stable tier-1/2 target is still a
+concern.
+
+**Fallback if the maintainer declines the limb:** option 2. That means removing the 0.4.3 audit
+entry, restoring its exemption with `notes = "KEPT EXEMPT (#322): linux_raw LR-1/LR-2; see
+DECISIONS.md '322-getrandom'"`, and marking the guard line `getrandom
+allow-exempt:DECISIONS#322-getrandom@0.4.3`. 0.3.4 stays certified, because it is in no ACDP
+artifact and the original carve-out already covers it. No replan and no guard-script change
+is needed (only the list line gains the marker). The text that would then be wrong must also be
+reverted:
+- the 0.4.3 worksheet Verdict;
+- the B7a entry's table and guard-list text below (44 audited becomes 43, with two exceptions);
+- in `docs/supply-chain.md`, the getrandom table row, the getrandom paragraph, the "Forty-four
+  of the forty-five" sentence in §The crypto-critical set, and the §Contributor workflow
+  "every crate except `zeroize`" counts.
+
+**Other `Discretion:` lines in this batch use the original carve-out.** They cover code that
+needs nightly, a tier-3 target, or a compiler older than ACDP's MSRV:
+- the `extern_impl` backend (0.4.3 GR4-3; nightly `extern_item_impls`), where a safe user
+  function can make `fill_uninit` expose uninitialized bytes;
+- the ESP-IDF FFI declaration (`-> u32` for a C `void` function): 0.4.3 GR4-4, 0.3.4 GR3-3,
+  0.2.17 GR2-1.
+
+**Target state once G1-G4 of batch B7a land (G1 delivers the 0.4.3 parts):**
+- `[[audits.getrandom]]` has full `safe-to-deploy` entries for 0.4.3 and 0.3.4 that carry the
+  `Discretion:` lines. Their notes add "Not claimed: soundness of the opt-in linux_raw backend
+  on loongarch64 or on 32-bit-pointer x86_64/aarch64 ABIs".
+- 0.2.17 is certified on its own clean audit, apart from GR2-1.
+- All three `[[exemptions.getrandom]]` entries are removed.
+- `scripts/crypto-critical.txt` lists `getrandom` with no marker.
+
+**Upstream.** Nothing has been filed. As of 2026-10-05, master's `linux_raw.rs` is identical to
+0.4.3, and no upstream issue or PR covers either finding. The report draft (both findings in one
+issue, plus the LP64 nit) is in the 0.4.3 worksheet. It is held until the maintainer approves
+filing it under the project's name.
+
+**Exit criterion:** delta-audit the getrandom release that fixes LR-1 and LR-2 (or that gates
+the x32/ILP32 arms with `compile_error!`), and drop these `Discretion:` lines then.
+
+**Status:** DECIDED (Fable, 2026-10-05). The Policy 6 second limb and the upstream filing await
+the maintainer's acknowledgement at PR review.
+
+## #339 Tier B batch B7a: getrandom 0.2.17, 0.3.4, 0.4.3 certified (2026-10-05)
+
+Batch B7a of issue #339 (plan `plans/b7-webpki-getrandom.md`, PR-G) ran under the "#322
+supply-chain audit policy". Its terms:
+- built-in `safe-to-deploy` only;
+- no claim of cryptographic correctness, constant-time behaviour or RNG output quality;
+- `who = "Ajit Koti <ajitkoti@zer07labs.com>"`;
+- reviewed with Claude (Opus) assistance;
+- the maintainer must approve before merge.
+
+The `linux_raw` decision (C2) went to a Claude (Fable) decision review; see `322-getrandom`.
+
+| Crate | Version | Method | `unsafe` code lines / `asm!` blocks | Worksheet |
+|---|---|---|---|---|
+| `getrandom` | 0.4.3 | full; all 2,582 src lines (35 files) read in two Claude sub-review partitions, with every `unsafe` site, `unsafe fn` and `asm!` block verdicted by the main review; four Discretion lines (GR4-1/GR4-2 `linux_raw`, `322-getrandom`; GR4-3 nightly `extern_impl`; GR4-4 tier-3 esp-idf) | 109 / 9 | `supply-chain/worksheets/getrandom-0.4.3.md` |
+| `getrandom` | 0.2.17 | full; all 1,739 src lines (24 files) read the same way; one Discretion line (GR2-1 tier-3 esp-idf) | 56 / 0 | `supply-chain/worksheets/getrandom-0.2.17.md` |
+| `getrandom` | 0.3.4 | full; all 2,445 src lines (31 files) read the same way; certified at `safe-to-deploy` although its exemption was `safe-to-run` (dev-only; the `rand_core` 0.9.5 B4 precedent); three Discretion lines (GR3-1/GR3-2 `linux_raw`, GR3-3 tier-3 esp-idf); `build.rs` `rustc -vV` spawn judged to be cfg selection | 92 / 9 | `supply-chain/worksheets/getrandom-0.3.4.md` |
+
+**Method evidence common to all three versions.**
+- Compiled sets come from rustc dep-info, per target and per backend/feature, with the
+  scratch crate depending on the exact version.
+- A tarball copy was built as a path dependency with `unsafe_op_in_unsafe_fn` set to `deny`:
+  - 0.4.3 builds clean on every combination that builds at all.
+  - 0.2.17 and 0.3.4 fail by design, since they use editions 2018 and 2021. Every hit maps to
+    a site-table row.
+- Fill tests (lengths 0..=4096, a 1 MiB + 7 buffer, 16 concurrent first-use threads) ran:
+  - natively;
+  - under Miri on darwin, linux-gnu and windows-msvc;
+  - in Docker on aarch64 Linux (for 0.4.3 and 0.3.4 also with the forced `/dev/urandom`
+    fallback; for 0.2.17 also with the syscall-only `linux_disable_fallback`);
+  - for 0.4.3 and 0.2.17, on wasm32 under Node.
+
+**Per-artifact backends** (from dep-info):
+
+| Build | 0.4.3 (`sys_rng`; `wasm_js` on wasm) | 0.2.17 (via ring) | 0.3.4 (dev-only) |
+|---|---|---|---|
+| linux-gnu | libc `getrandom` via `dlsym`, `/dev/urandom` after polling `/dev/random` | getrandom(2) syscall, same file fallback | same as 0.4.3 |
+| apple-darwin | `getentropy` | `getentropy` | `getentropy` |
+| windows-msvc | `ProcessPrng` (result checked) | `BCryptGenRandom`, `RtlGenRandom` fallback | `ProcessPrng` (result only debug-asserted, GR3-O1) |
+| wasm32 binding | Web Crypto `getRandomValues` | `js.rs`, compiled but never called (#363) | not built |
+
+**Observations (not vet concerns).**
+- GR2-O1: `bindings/acdp-wasm` carries a vestigial getrandom 0.2 dependency, and the comments
+  in `bindings/acdp-wasm/Cargo.toml:52-57` and `.github/dependabot.yml:75-80` are stale.
+  Follow-up: #363. The audit PR changes no code.
+- GR3-O1: in 0.3.4, `ProcessPrng`'s return value is checked only by `debug_assert!`. 0.4.3
+  checks it.
+- GR4-O3 / GR3-O3: `wasi_p2_3` / `wasi_p2` rely on std's runtime `align_to` returning a prefix
+  and suffix shorter than 8. This is the default on `wasm32-wasip2`, which is not an ACDP
+  target.
+- In both newer versions: a dead `__msan_unpoison` declaration, and a debug-only futex
+  `debug_assert` that can trip on `EINTR`.
+
+**Guard list.**
+- `getrandom` was added under `# Batch B7:` with no marker. It covers every locked version
+  (0.2.17, 0.3.4, 0.4.3).
+- The list now guards 45 crates: 11 Tier A and 34 Tier B.
+- 44 of them are covered by our own audits. `zeroize` is again the sole deliberate exception
+  (`322-zeroize`).
+- The py, node and wasm binding lockfiles lock 0.2.17 and 0.4.3 with the root's checksums;
+  0.3.4 appears only in the root lock.
+
+**Remaining Tier B:** 1 crate (35 minus the 34 certified in B1-B7a), `rustls-webpki`, which is
+the rest of batch B7.
+
+**Maintainer items for this PR:**
+- the proposed Policy 6 second limb (`322-getrandom`), with its fallback;
+- whether to file the drafted upstream `linux_raw` report;
+- plan Q4: how a self-authored PR's approval is evidenced.
 
 **Status:** AUTHORED. Pending the maintainer's approving review naming the worksheets read
 (Policy 4); never auto-merged.

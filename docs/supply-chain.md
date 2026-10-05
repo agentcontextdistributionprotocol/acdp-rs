@@ -364,18 +364,19 @@ have. Refresh them with `cargo vet` (updates `imports.lock`).
 
 ### The crypto-critical set
 
-The forty-four crates that implement or underpin ACDP's signature and TLS
+The forty-five crates that implement or underpin ACDP's signature and TLS
 security are listed in
 [`scripts/crypto-critical.txt`](../scripts/crypto-critical.txt): the eleven
 Tier A crates, which issue #322 (completed 2026-10-04) re-certified at the
-versions in `Cargo.lock`, and the thirty-three Tier B support crates certified so far
+versions in `Cargo.lock`, and the thirty-four Tier B support crates certified so far
 by issue #339 (batch B1: `wnaf`, `ff`, `spki`, `crypto-common`, `zeroize_derive`,
 `ed25519`; batch B2: `hmac`, `rfc6979`, `pkcs8`, `sec1`, `primefield`,
 `digest`; batch B3: `untrusted`, `cpubits`, `hyper-rustls`, `group`,
 `tokio-rustls`, `primeorder`; batch B4: `rand_core`, `ctutils`, `webpki-roots`,
 `typenum`; batch B5: `base16ct`, `base64ct`, `rustls-pki-types`, `const-oid`,
 `der`, `curve25519-dalek-derive`; batch B6: `cpufeatures`, `block-buffer`,
-`cmov`, `hybrid-array`, `crypto-bigint`). **Forty-three of the forty-four are
+`cmov`, `hybrid-array`, `crypto-bigint`; batch B7a: `getrandom` at all three locked
+versions). **Forty-four of the forty-five are
 covered by our own audit at every locked version. `zeroize` is the one deliberate
 exception:** it stays exempt under the #322 concern rule. The per-crate review worksheets are in
 [`supply-chain/worksheets/`](../supply-chain/worksheets/), and the notes are in
@@ -437,6 +438,7 @@ latest release, and no open advisory.
 | `cmov` | 0.5.4 | 0.5.4 | audit (full, 2026-10-04, #339 B6; x86/aarch64 `asm!` checked for memory safety; constant-time behaviour not claimed) | RustCrypto | Conditional-move primitives under ctutils |
 | `hybrid-array` | 0.4.14 | 0.4.14 | audit (full, 2026-10-04, #339 B6; size table script-checked; discretion note on packaged CI files) | RustCrypto | Fixed-size arrays under digest, crypto-bigint, elliptic-curve, sec1 |
 | `crypto-bigint` | 0.7.5 | 0.7.5 | audit (full, 2026-10-04, #339 B6; the 37,233 compiled lines were read in full by seven Claude sub-reviews, with every `unsafe` site and the file/line counts independently confirmed by the main review; uncompiled `boxed`/`der`/`rlp` modules grep-only; constant-time behaviour not claimed) | RustCrypto | Big-integer arithmetic under the P-256 stack |
+| `getrandom` | 0.4.3, 0.2.17, 0.3.4 | 0.4.3, 0.2.17, 0.3.4 | audit (full, 2026-10-05, #339 B7a; discretion notes on the opt-in `linux_raw` backend, DECISIONS.md `322-getrandom`, and on nightly/tier-3 backends; 0.3.4 is dev-only and meets `safe-to-deploy`; RNG output quality not claimed) | rust-random | OS RNG: `UnwrapErr(SysRng)` in key generation (0.4.3); ring's `SystemRandom` under rustls (0.2.17; uncalled in the wasm binding, #363); proptest's `rand` (0.3.4) |
 
 **`zeroize` 1.9.0 is exempt, not audited.** Its new safe
 `optimization_barrier` reads a possibly-uninitialized byte on targets without
@@ -459,7 +461,22 @@ model reaches the gap, and the result is a deterministic `SIGILL`. Upstream
 tracks it as RustCrypto/utils#1510, with the fix open in #1528. **Exit
 criterion:** delta-audit the cpufeatures release carrying #1528.
 
-**Two supporting crypto crates are still exempted, not audited.** #322
+**`getrandom` is audited with discretion notes; builder `--cfg` overrides are outside what we
+vouch for.** The audits are full reviews of every backend. Every backend getrandom compiles
+for an ACDP artifact is sound: for 0.4.3, the Linux libc `getrandom`/`/dev/urandom` path,
+`getentropy` on macOS, `ProcessPrng` on Windows and Web Crypto on wasm32; for 0.2.17 (ring),
+the getrandom(2) syscall path, `getentropy`, `BCryptGenRandom`/`RtlGenRandom`, and the
+uncalled `js.rs` in the wasm binding. So is every backend selected by default on a stable
+tier-1/2 target. The opt-in `linux_raw` backend
+has two soundness bugs, on loongarch64 (undeclared `$t0`-`$t8` clobbers) and on x32/ILP32
+(32-bit pointer and length in 64-bit registers). They are reachable only when the final
+binary's builder sets `--cfg getrandom_backend="linux_raw"` on those targets
+(DECISIONS.md `322-getrandom`). **ACDP's getrandom audits cover the backend getrandom
+selects by default; a builder's `--cfg getrandom_backend=...` override is outside them and
+is the builder's responsibility.** **Exit criterion:** delta-audit the getrandom release
+that fixes `linux_raw`.
+
+**One supporting crypto crate is still exempted, not audited.** #322
 covered only the eleven Tier A crates. Of the 35 support crates (Tier B) on the
 same signing, hashing, key generation, and TLS paths, issue #339 batch B1
 certified six (`ed25519`, `crypto-common`, `zeroize_derive`, `spki`, `ff`,
@@ -469,15 +486,15 @@ certified six (`ed25519`, `crypto-common`, `zeroize_derive`, `spki`, `ff`,
 (`rand_core` at both locked versions, `ctutils`, `webpki-roots`, `typenum`),
 batch B5 six more (`base16ct`, `base64ct`, `rustls-pki-types`, `const-oid`,
 `der`, `curve25519-dalek-derive`), and batch B6 five more (`cpufeatures`,
-`block-buffer`, `cmov`, `hybrid-array`, `crypto-bigint`; table above), and
-added them to the guard list. The remaining 2 are covered by
-`[[exemptions.*]]` entries only, and are not on the guard list:
+`block-buffer`, `cmov`, `hybrid-array`, `crypto-bigint`), and batch B7a one more
+(`getrandom` at all three locked versions; table above), and added them to the guard
+list. The remaining 1 is covered by an `[[exemptions.*]]` entry only, and is not on the
+guard list:
 
-- **Key generation:** `getrandom` (0.2.17, 0.3.4, 0.4.3).
 - **TLS stack:** `rustls-webpki`.
 
-Certifying them in batches (#339), and adding each one to the guard list as it
-is certified, is in progress.
+Certifying it (#339, the rest of batch B7), and adding it to the guard list once
+certified, is in progress.
 
 **`aws-lc-rs` is not in the dependency graph (#339).** It used to come in only
 through the TLS test harness (`axum-server`'s `tls-rustls` feature and the dev
@@ -569,8 +586,8 @@ fails when a listed crate is exempted or only partially vetted, so moving an
 exemption to a bumped version no longer turns CI green.
 
 The guard is now **enforcing**: since #322 closed, every listed crate except
-`zeroize` carries no marker (forty-three of the forty-four, including the
-thirty-three Tier B crates added by #339 batches B1-B6). The list file documents
+`zeroize` carries no marker (forty-four of the forty-five, including the
+thirty-four Tier B crates added by #339 batches B1-B7a). The list file documents
 two markers:
 
 - `allow-exempt:DECISIONS#322-<crate>@<version>` is for a crate kept exempt

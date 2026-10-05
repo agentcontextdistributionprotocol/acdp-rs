@@ -1299,3 +1299,30 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
 - **Blast radius if wrong:** reversible. In the worst case a crypto PR would need a manual
   merge.
 - **Status:** UNCONFIRMED
+
+## #339 B7a G1: Method line carries the PR URL and the worksheet path
+- **Plan:** G1 AC3 ("exact `Method: Reviewed with Claude (Opus) assistance; worksheet in <PR URL>`")
+- **Assumed:** Policy 3/4's "exact" Method line means the exact prefix with the PR URL. B1-B6 used a
+  worksheet path in that slot and appended clauses after it.
+- **Chose:** `Method: Reviewed with Claude (Opus) assistance; worksheet in <PR #362 URL> (<worksheet
+  path>, issue #339 Tier B batch B7a)[; certification decision recorded in DECISIONS.md 322-getrandom]`.
+  The partition, Fable and empirical details move to the Scope line.
+- **Blast radius if wrong:** the notes text only. Rewording it is a follow-up audit edit.
+- **Status:** UNCONFIRMED
+
+## #339 B7a C2: Policy 6 second limb proposed, not yet acknowledged
+- **Plan:** C2 (Fable escalation)
+- **Assumed:** Fable may propose a Policy 6 amendment, as it did for `322-sha2`, provided the
+  maintainer acknowledges it at PR review (Policy 4: never auto-merged).
+- **Chose:** certify 0.4.3 with GR4-1/GR4-2 `Discretion:` lines under the proposed builder-only-opt-in
+  limb. Fallback if the maintainer declines: keep 0.4.3 exempt with marker
+  `allow-exempt:DECISIONS#322-getrandom@0.4.3` (one exempt version; no guard replan).
+- **Blast radius if wrong:** one audit entry is reverted to an exemption; documentation only.
+- **Status:** UNCONFIRMED (maintainer)
+
+## #339 B7a: upstream getrandom report held
+- **Plan:** C2; Fable section 5
+- **Assumed:** filing an issue in rust-random/getrandom under the project's name is an outward-facing,
+  cross-repo action that needs the maintainer's go-ahead.
+- **Chose:** keep the drafted report in the 0.4.3 worksheet; file nothing upstream.
+- **Status:** UNCONFIRMED (maintainer)

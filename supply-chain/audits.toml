@@ -35,6 +35,24 @@ Advisories: cargo deny check advisories clean on 2026-10-04.
 Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
 Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/crypto-common-0.2.2.md (https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/355, issue #339 batch B1)."""
 
+[[audits.ctutils]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "0.4.2"
+notes = """
+Scope: full audit of 0.4.2 (no prior audit of ctutils; 3425 src lines; every non-test line of src/lib.rs, choice.rs, ct_option.rs, traits.rs and traits/*.rs read, including the two #[macro_export] macros map! and unwrap_or!; #[cfg(test)] modules and tests/proptests.rs grep-scanned).
+Source: crates.io tarball sha256 7d5515a3834141de9eafb9717ad39eea8247b5674e6066c404e8c4b365d2a29e == Cargo.lock checksum.
+unsafe: 0 sites, including both exported macros (full-source grep, comment lines excluded; the grep is the evidence). #![forbid(unsafe_code)] at src/lib.rs:7 is only a corroborating hint (cargo builds registry deps with --cap-lints allow). The crate's own comment says unsafe "should go in cmov": all predication is delegated to cmov 0.5 (Cmov::cmovnz, CmovEq::cmoveq), whose unsafe/asm is a separate Tier B crate, still exempted.
+asm/SIMD: none in this crate (delegated to cmov).
+build.rs / proc-macro: none (build = false; not a proc-macro).
+Powerful imports: none. #![no_std]; alloc only behind the alloc feature (off in ACDP); include_str! for README docs.
+Exported macros: map! (src/ct_option.rs:12-15) and unwrap_or! (src/ct_option.rs:27-32) expand in caller crates to calls of the safe CtOption::new / to_inner_unchecked / as_inner_unchecked / is_some and a caller-supplied path; no unsafe.
+Behaviour: Choice is a u8 restricted to 0/1 by its constructors; select/mask/compare are wrapping bit arithmetic. Panics only in safe code: ct_assign_slice length assert (traits/ct_assign.rs:42-48), CtOption::expect/unwrap asserts, NonZeroU* ct_neg expect (traits/ct_neg.rs:89, unreachable: the wrapping negation of a non-zero value is non-zero), signed ct_neg of MIN (debug overflow panic), and ct_lookup's index counter (traits/ct_lookup.rs:36), which overflows for slices longer than the index type (upstream TODO). All are safe-code panics, not memory-safety issues. A grep of the ctutils dependents in ACDP's graph (crypto-bigint 0.7.5, sec1 0.8.1, digest 0.11.3) and of p256, elliptic-curve, primefield, primeorder, ecdsa, rfc6979 and hmac found no use of CtLookup or CtFind.
+New deps: cmov ^0.5.3 (locked 0.5.4); optional subtle 2 (feature subtle, enabled in ACDP; locked 2.6.1). Dev-only: proptest.
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour (this is a constant-time utility crate; its constant-time property is explicitly NOT claimed and rests on cmov and the compiler), side-channel resistance.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/ctutils-0.4.2.md (issue #339 Tier B batch B4 PR)."""
+
 [[audits.curve25519-dalek]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"
 criteria = "safe-to-deploy"
@@ -312,6 +330,40 @@ Advisories: cargo deny check advisories clean on 2026-10-04.
 Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
 Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/primeorder-0.14.0.md (issue #339 Tier B batch B3 PR)."""
 
+[[audits.rand_core]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "0.9.5"
+notes = """
+Scope: full audit of 0.9.5 (no prior audit of rand_core; 1701 src lines, every file read: src/lib.rs, block.rs, impls.rs, le.rs, os.rs). In ACDP 0.9.5 is a dev-only dependency (proptest -> rand 0.9), previously exempted as safe-to-run; this review meets safe-to-deploy, which also covers safe-to-run.
+Source: crates.io tarball sha256 76afc826de14238e6e8c374ddcc1fa19e374fd8dd986b0d2af0d02377261d83c == Cargo.lock checksum.
+unsafe: 0 sites (full-source grep, comment lines excluded; the grep is the evidence). The crate has no forbid(unsafe_code) attribute or lint.
+asm/SIMD: none.
+build.rs / proc-macro: none (build = false; not a proc-macro). No macros exported.
+Powerful imports: OS randomness only, under feature os_rng (enabled in ACDP's graph by rand 0.9): OsRng (src/os.rs:83-100) and SeedableRng::try_from_os_rng (src/lib.rs:570-576) call getrandom 0.3 fill/u32/u64. Under std, RngReadAdapter (src/lib.rs:590-604) implements io::Read over an RNG; it opens nothing. No std::{fs,net,process,env}, env!, include_bytes!.
+Behaviour: trait definitions plus safe helpers. BlockRng/BlockRng64 (src/block.rs:126-424) bound every index by results.len() before slicing; generate_and_set asserts index < len. UnwrapErr/UnwrapMut unwrap inner errors (panic by design). le::read_u*_into assert the source length.
+New deps: optional getrandom 0.3 (os_rng; locked 0.3.4) and serde 1 (serde feature, off in ACDP). ACDP features: os_rng, std.
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance, or RNG quality; getrandom 0.3.4 is a separate Tier B crate, still exempted.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/rand_core-0.9.5.md (issue #339 Tier B batch B4 PR)."""
+
+[[audits.rand_core]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "0.10.1"
+notes = """
+Scope: full audit of 0.10.1 (no prior audit of rand_core in audits.toml or the imported sets; 1073 src lines, every file read: src/lib.rs, block.rs, seedable_rng.rs, unwrap_err.rs, utils.rs, word.rs; tests/ inspected).
+Source: crates.io tarball sha256 63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69 == Cargo.lock checksum.
+unsafe: 0 sites (full-source grep, comment lines excluded; the grep is the evidence). The crate has no forbid(unsafe_code) attribute or lint; forbid would in any case be capped by --cap-lints allow for registry deps.
+asm/SIMD: none.
+build.rs / proc-macro: none (build = false; not a proc-macro). No macros exported.
+Powerful imports: none. #![no_std], no alloc, no features, no dependencies; the only include is include_str!("../README.md") for docs. No std::{fs,net,process,env}, env!, include_bytes!.
+Behaviour: trait definitions (TryRng, Rng, TryCryptoRng, CryptoRng, SeedableRng) plus safe helpers. BlockRng (src/block.rs:114-308) stores its read index in results[0], set only to values in 1..=N or N; every slice index is bounded by N. UnwrapErr (src/unwrap_err.rs:30-53) panics on an inner RNG error by design. word.rs from_usize/into_usize unwrap only for N > u32::MAX. ACDP calls rand_core::UnwrapErr(getrandom::SysRng) in crates/acdp-crypto/src/sign.rs:56 and :143 (key generation).
+New deps: none.
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance, or the quality of any RNG; randomness comes from getrandom (Tier B, still exempted).
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/rand_core-0.10.1.md (issue #339 Tier B batch B4 PR)."""
+
 [[audits.rfc6979]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"
 criteria = "safe-to-deploy"
@@ -467,6 +519,24 @@ Advisories: cargo deny check advisories clean on 2026-10-04.
 Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance, TLS protocol or certificate-validation correctness.
 Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/tokio-rustls-0.26.4.md (issue #339 Tier B batch B3 PR)."""
 
+[[audits.typenum]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "1.20.1"
+notes = """
+Scope: full audit of 1.20.1 (no prior audit of typenum; 19354 src lines). Not every line was read individually; what was read and how: (1) read in full: Cargo.toml, src/lib.rs, src/marker_traits.rs, src/gen.rs, src/tuple.rs, and all six #[macro_export] macros (assert_type_eq!, assert_type! in lib.rs; tarr! in array.rs; cmp! in type_operators.rs; op! and __op_internal__! in gen/op.rs, whose expansions are type expressions built only from 26 $crate:: operator type aliases); (2) the three generated files (gen/consts.rs 6567, gen/generic_const_mappings.rs 4758, gen/op.rs 1030 lines) were checked mechanically and exhaustively: consts.rs is 3440 pub type aliases over UInt/UTerm/B0/B1/PInt/NInt only, with all 1148 U-aliases' binary encodings value-checked against their names; generic_const_mappings.rs is 1148 impl ToUInt for Const<N> { type Output = UN; } blocks with N matching, plus 110 target_pointer_width cfgs; (3) the remaining hand-written modules (uint.rs, int.rs, bit.rs, private.rs, type_operators.rs, array.rs, operator_aliases.rs) are type-level trait impls; their runtime content was extracted mechanically (every fn body and const initialiser; approximately 420 bodies and 43 distinct initialisers by a line-based brace counter, 413 and 41 by an independent brace-aware extraction) and every distinct line reviewed; impl headers and where-clauses were sampled, not each read.
+Source: crates.io tarball sha256 b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20 == Cargo.lock checksum.
+unsafe: 0 sites, including all exported macros (full-source grep, comment lines excluded; the grep is the evidence). #![forbid(unsafe_code)] at src/lib.rs:43 is only a corroborating hint (capped by --cap-lints allow for registry deps).
+asm/SIMD: none. No extern, no_mangle, link attributes, static items, or raw pointers.
+build.rs / proc-macro: none (build = false; not a proc-macro). The gen/ files are pre-generated upstream by the workspace member "generate" (not shipped); the CHANGELOG records the removal of the old build script.
+Powerful imports: none. #![no_std]; no alloc; no include_*; no env!, std::{fs,net,process,env}. cfg use is limited to features i128, const-generics, scale_info, strict, docsrs, test and target_pointer_width.
+Behaviour: runtime code is zero-sized-type constructors, compile-time constant folding of bit values (overflow there is a compile error), Debug/Binary write! impls, Index/IndexMut for tuples (pattern-binding only), and Pow for primitive ints/floats (safe arithmetic; integer overflow panics only in debug).
+Discretion: tests/generated.rs (21247 lines) is a generated test file, not compiled into any non-test build.
+New deps: optional scale-info 1.0 (feature scale_info, off in ACDP). ACDP features: const-generics. Reached via hybrid-array.
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance, or the arithmetic correctness of the type-level operators.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/typenum-1.20.1.md (issue #339 Tier B batch B4 PR)."""
+
 [[audits.untrusted]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"
 criteria = "safe-to-deploy"
@@ -484,6 +554,25 @@ New deps: none. ACDP features: none. Reached via ring and rustls-webpki under ru
 Advisories: cargo deny check advisories clean on 2026-10-04.
 Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
 Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/untrusted-0.9.0.md (issue #339 Tier B batch B3 PR)."""
+
+[[audits.webpki-roots]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "1.0.9"
+notes = """
+Scope: full audit of 1.0.9 (no prior audit of webpki-roots; src/lib.rs is the only source file, 4603 lines: a 37-line header, then the declaration at src/lib.rs:38 of one static table). The header was read in full. The table was checked mechanically and exhaustively: every one of the 4565 lines after the declaration (39-4603) matches one of the generator's line shapes (comment block, TrustAnchor {, subject, subject_public_key_info, name_constraints, }, blank, ];), giving 121 TrustAnchor entries. For all 121 entries the PEM certificate in the entry's comment was decoded; its SHA-256 equals the commented fingerprint, and the subject and subject_public_key_info byte strings equal that certificate's subject Name and SubjectPublicKeyInfo contents. Every certificate is a CA (basicConstraints cA=true). One entry (TUBITAK Kamu SM SSL Kok Sertifikasi - Surum 1, src/lib.rs:1258) carries name_constraints = permittedSubtrees dNSName ".tr", a restriction.
+Source: crates.io tarball sha256 7dcd9d09a39985f5344844e66b0c530a33843579125f23e21e9f0f220850f22a == Cargo.lock checksum.
+Data provenance: src/lib.rs is generated by tests/codegen.rs from the CCADB Mozilla IncludedCACertificateReportPEMCSV (via the upstream-only webpki-ccadb crate, not in the tarball); the header equals the generator's HEADER constant byte for byte. Regeneration happens upstream by running that test, which fetches CCADB over the network and rewrites src/lib.rs; it is test-only and not run in ACDP builds.
+unsafe: 0 sites (full-source grep; the grep is the evidence). #![forbid(unsafe_code, unstable_features)] at src/lib.rs:26 is only a corroborating hint (capped by --cap-lints allow for registry deps).
+asm/SIMD: none.
+build.rs / proc-macro: none (build = false; not a proc-macro). No macros exported.
+Powerful imports: none in src/. #![no_std]; the crate is one pub const TLS_SERVER_ROOTS: &[TrustAnchor<'static>] built with the const Der::from_slice from rustls-pki-types. No code runs at runtime beyond reading that static.
+Discretion: tests/codegen.rs (network fetch and fs::write of src/lib.rs) and tests/verify.rs are integration tests only; tests/data/tubitak/*.der are three test-only DER certificates. None is compiled into a non-test build.
+New deps: rustls-pki-types 1.8 (default-features off). Dev-only deps (incl. aws-lc-rs) are not part of ACDP's graph.
+Role: reqwest 0.12's rustls-tls feature (crates/acdp-client/Cargo.toml:41, crates/acdp-did/Cargo.toml:37, crates/acdp-safe-http/Cargo.toml:29, crates/acdp-primitives/Cargo.toml:28) enables rustls-tls-webpki-roots, so this table is the default trust-anchor set for ACDP's HTTPS clients; the optional caller-supplied roots (crates/acdp-did/src/web.rs:108, crates/acdp-client/src/registry.rs:865) are added with add_root_certificate, not substituted. This is a trust boundary. In the py/node bindings it is locked but not compiled (acdp built with default-features = false; absent from their cargo tree); wasm does not lock it.
+Advisories: cargo deny check advisories clean on 2026-10-04.
+Not claimed: that the root set is correct, complete, current, or appropriate for ACDP; certificate-validation correctness (rustls-webpki); cryptographic correctness; constant-time behaviour; side-channel resistance. This audit claims only that the crate's code is safe to deploy and that the table is what its comments say it is.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/webpki-roots-1.0.9.md (issue #339 Tier B batch B4 PR)."""
 
 [[audits.wnaf]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"

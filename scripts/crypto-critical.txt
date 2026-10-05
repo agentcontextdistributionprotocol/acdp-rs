@@ -65,3 +65,8 @@ hyper-rustls
 group
 tokio-rustls
 primeorder
+# Batch B4:
+rand_core
+ctutils
+webpki-roots
+typenum

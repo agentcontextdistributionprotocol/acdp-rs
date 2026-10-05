@@ -827,10 +827,10 @@ under the concern rule below.
    a RUSTSEC hit; or a review that cannot be finished. **Carve-out (amended 2026-10-04,
    Fable decision on `322-sha2`):** this rule does not apply when the unsound code is
    unreachable in any stable-toolchain build of any ACDP artifact; in that case certify
-   and record the discretion in the audit notes (`Discretion:` lines). A second limb
-   (builder-only `--cfg` opt-ins compiled into no ACDP-built or ACDP-tested artifact) was
-   proposed 2026-10-05 in `322-getrandom` and awaits the maintainer's acknowledgement.
-   For such a crate:
+   and record the discretion in the audit notes (`Discretion:` lines). (A second limb,
+   for builder-only `--cfg` opt-ins compiled into no ACDP-built or ACDP-tested artifact,
+   was proposed 2026-10-05 in `322-getrandom` and awaits the maintainer's
+   acknowledgement.) For a crate under the concern rule:
    - Do not certify it.
    - Keep its exemption, with `notes = "KEPT EXEMPT (#322): <reason>; see DECISIONS.md
      '322-<crate>'"`.
@@ -1654,7 +1654,14 @@ concern.
 entry, restoring its exemption with `notes = "KEPT EXEMPT (#322): linux_raw LR-1/LR-2; see
 DECISIONS.md '322-getrandom'"`, and marking the guard line `getrandom
 allow-exempt:DECISIONS#322-getrandom@0.4.3`. 0.3.4 stays certified, because it is in no ACDP
-artifact and the original carve-out already covers it. No replan is needed.
+artifact and the original carve-out already covers it. No replan and no guard-script change
+is needed (only the list line gains the marker). The text that would then be wrong must also be
+reverted:
+- the 0.4.3 worksheet Verdict;
+- the B7a entry's table and guard-list text below (44 audited becomes 43, with two exceptions);
+- in `docs/supply-chain.md`, the getrandom table row, the getrandom paragraph, the "Forty-four
+  of the forty-five" sentence in §The crypto-critical set, and the §Contributor workflow
+  "every crate except `zeroize`" counts.
 
 **Other `Discretion:` lines in this batch use the original carve-out.** They cover code that
 needs nightly, a tier-3 target, or a compiler older than ACDP's MSRV:

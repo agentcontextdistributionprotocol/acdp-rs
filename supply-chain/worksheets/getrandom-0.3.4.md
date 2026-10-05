@@ -24,7 +24,9 @@
 - **Criteria note:** `config.toml` exempted 0.3.4 at `safe-to-run` because ACDP reaches it
   only as a dev-dependency. It is certified here at `safe-to-deploy` (the plan's G3
   choice): the review is the same full review given to 0.2.17 and 0.4.3, and the stronger
-  criterion stays valid if a future dependency update moves 0.3.4 into a shipped graph.
+  criterion stays valid if a future dependency update moves 0.3.4 into a shipped graph,
+  subject, for GR3-1/GR3-2, to the proposed `322-getrandom` builder-only-opt-in limb (the
+  dev-only carve-out would no longer apply).
 
 ## Provenance
 

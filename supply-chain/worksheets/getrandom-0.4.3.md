@@ -51,7 +51,7 @@ all three binding lockfiles lock 0.4.3 with this checksum.
   in `src/` and 4 in `benches/buffer.rs` (`:42`, `:44`, `:66`, `:68`). Of the 114, 4 are
   comments in `backends/rdrand.rs` (`:31`, `:35`, `:37`, `:78`) and 1 is a doc comment in
   `util.rs:30`; `scripts/vet-facts.sh` reports 109 unsafe code lines. The partition reports
-  (G1-a: 41 code hits; G1-b: 71 code lines, 75 with comments, plus 4 in benches) sum to the
+  (G1-a: 42 code lines, 43 with the `util.rs:30` doc line; G1-b: 67 code lines, 71 with the four `rdrand.rs` comments, plus 4 in benches; 42 + 67 = 109) sum to the
   same set.
 - **Mechanical `unsafe fn` check.** A copy of the tarball, with
   `unsafe_op_in_unsafe_fn = "deny"` added to its `[lints.rust]` (the edition-2024 copy

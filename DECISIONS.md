@@ -810,9 +810,12 @@ under the concern rule below.
 4. **`who` and sign-off.** `who = "Ajit Koti <ajitkoti@zer07labs.com>"`. The `Method:`
    line is exact. Open the PR as a draft first, so the URL exists before `certify`
    runs. The per-crate findings worksheet goes in the PR body. **Audit PRs are never
-   auto-merged.** The maintainer posts an approving GitHub review that says they read
-   the worksheet for `<crates>`. `/ship` holds the merge until that review exists, even
-   when CI is green; check with `gh pr view <n> --json reviews`.
+   auto-merged.** **(Amended 2026-10-05, maintainer decision `322-policy4-approval`.)**
+   The maintainer approves an audit PR by merging it by hand, and a PR comment names
+   the worksheets for `<crates>` that they read. No approving GitHub review is
+   required: the author cannot approve their own PR. `/ship` never merges an audit PR on
+   green CI alone; it waits for the maintainer's merge. Check the comment with
+   `gh pr view <n> --json comments`.
 5. **Record command.** Run it non-interactively, with flags verified on cargo-vet 0.10.2:
    `cargo vet certify <crate> <from> [<to>] --criteria safe-to-deploy --who "…"
    --notes "$(cat notes.txt)" --accept-all`. Omit `<to>` for a full audit. Then
@@ -1968,3 +1971,30 @@ applied unchanged.
 - Plan Q4: whether to amend the Policy 4 wording to match how self-authored PRs are approved.
 
 **Status:** AUTHORED with #364. Issue #339 closes when #364 merges.
+
+## #322 322-policy4-approval: audit PR approval is the maintainer's manual merge plus a PR comment (2026-10-05)
+
+Maintainer decision, dated 2026-10-05. Anchor: `322-policy4-approval`. It settles plan Q4 of
+`plans/b7-webpki-getrandom.md`, listed as a follow-up in "#339 completion status".
+
+**The gap.** Policy 4 of "#322 supply-chain audit policy" required an approving GitHub review
+from the maintainer before an audit PR merged. The maintainer is also the PR author, and
+GitHub does not let an author approve their own PR, so that review could never exist.
+
+**Decision.** For an audit PR, the maintainer's approval is:
+- their own manual merge of the PR; and
+- a PR comment that names the worksheets they read.
+
+No approving GitHub review is required. Audit PRs are still never auto-merged, and `/ship`
+still does not merge one on green CI alone. Policy 4 now carries this wording, marked as
+amended 2026-10-05. `docs/supply-chain.md` (step 8, "Get sign-off") says the same.
+
+**Not retroactive.** This changes the policy text from 2026-10-05 on. It does not rewrite
+what happened before it:
+- The audit PRs #355, #356, #357, #358, #359, #360, #362 and #364 were merged with 0 GitHub
+  reviews.
+- Of those, only #362 and #364 have a PR comment naming the worksheets covered.
+- The dated `**Status:**` lines above that say "Pending the maintainer's approving review"
+  are left as written. They record the policy text in force when each entry was authored.
+
+**Status:** DECIDED (maintainer, 2026-10-05).

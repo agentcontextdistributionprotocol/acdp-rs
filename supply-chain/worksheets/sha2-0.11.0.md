@@ -18,7 +18,8 @@ The review was finished. Every `unsafe` site was read and has a verdict below.
 
 - **S-1:** fixed upstream in RustCrypto/hashes#879. The fix ships in 0.11.1, which is
   unreleased.
-- **S-2:** unfixed upstream. A draft issue is below; it has not been filed.
+- **S-2:** unfixed upstream. Reported on 2026-10-05 as RustCrypto/hashes#920, using the
+  issue text below.
 
 ## Provenance
 
@@ -173,7 +174,7 @@ As behavioural evidence only, ACDP's `sig-001` / `can-001` golden vectors pin
 These Tier B crates remain exempted: `digest 0.11.3`, `block-buffer 0.12.1`,
 `cpufeatures 0.3.1`, `hybrid-array 0.4.14`, and `crypto-common 0.2.2`.
 
-## Draft upstream issue: RustCrypto/hashes (S-2). Text only; NOT filed.
+## Upstream issue: RustCrypto/hashes (S-2). Filed 2026-10-05 as RustCrypto/hashes#920.
 
 > **Title:** sha2 0.11.0 aarch64 backends load 16 bytes through a one-element reference
 > (`vld1q_u32(&K32[t])`)

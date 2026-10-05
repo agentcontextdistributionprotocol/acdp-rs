@@ -54,7 +54,7 @@ To reproduce: `scripts/vet-facts.sh curve25519-dalek 5.0.0 4.1.3`.
 
 | Item | Finding |
 |---|---|
-| `unsafe` code lines | 33 (was 35 at 4.1.3): `backend/vector/avx2/field.rs` 8, `backend/vector/ifma/field.rs` 9 (one at `:647` is in the `cfg(test)` module at `:638`), `backend/vector/packed_simd.rs` 15, `constants.rs:85` 1. The two serial `black_box` sites were **removed**. Verdicts below. |
+| `unsafe` code lines | 33 lines with an explicit `unsafe` token (was 35 at 4.1.3). This grep count undercounts the unsafe surface; see "Generated `unsafe` contexts" below. The 33: `backend/vector/avx2/field.rs` 8, `backend/vector/ifma/field.rs` 9 (one at `:647` is in the `cfg(test)` module at `:638`), `backend/vector/packed_simd.rs` 15, `constants.rs:85` 1. The two serial `black_box` sites were **removed**. Verdicts below. |
 | `forbid(unsafe_code)` | no |
 | asm | none. SIMD uses `core::arch::x86_64` intrinsics only. |
 | build.rs | 162 lines. Reads only `CARGO_CFG_TARGET_ARCH`, `CARGO_CFG_TARGET_POINTER_WIDTH`, `CARGO_CFG_TARGET_FEATURE` (new), `CARGO_CFG_CURVE25519_DALEK_BITS`, and `CARGO_CFG_CURVE25519_DALEK_BACKEND`. Calls `rustc_version::version()` / `version_meta()`, which run `$RUSTC -vV`; that was already true in 4.1.3. Emits only `cargo:rustc-cfg=…` and one `cargo:warning`. No filesystem, network, or `OUT_DIR` writes. This is cfg selection only. Dropped: the `nightly` cfg. |
@@ -91,6 +91,36 @@ It tries `avx512ifma`+`avx512vl` (if compiled), then `avx2`, and otherwise falls
 | none | – | `fiat` (needs a forced cfg) | – |
 
 ## `unsafe` sites and verdicts
+
+### Generated `unsafe` contexts (correction, 2026-10-05)
+
+A grep for the `unsafe` token undercounts this crate's unsafe code, so the 33-line count
+above is a count of explicit tokens, not a bound on unsafe operations.
+
+- `curve25519-dalek-derive` 0.1.1 (worksheet `curve25519-dalek-derive-0.1.1.md`) rewrites
+  each safe `fn` or method covered by `#[unsafe_target_feature("…")]` into a safe wrapper.
+  The original body moves into a generated `#[target_feature(enable = "…")] unsafe fn` (a
+  trait method for `impl` items), and the wrapper calls it in `unsafe {}`. A fn that is
+  already `unsafe fn` (`ifma/field.rs` `madd52lo`/`madd52hi`) only gains
+  `#[target_feature]`; it gets no wrapper, and its callers still need `unsafe`.
+- So every such body is an unsafe context. An unsafe operation there compiles with no
+  `unsafe` token: the crate is edition 2024, where `unsafe_op_in_unsafe_fn` only warns, and
+  `--cap-lints` silences that warning for registry dependencies.
+- At 5.0.0 there are 69 `#[unsafe_target_feature]` attributes under `src/backend/vector/`
+  (`packed_simd.rs` 17, `avx2/field.rs` 8, `avx2/edwards.rs` 16, `ifma/field.rs` 13,
+  `ifma/edwards.rs` 15). Most sit on `impl` blocks, and each method in those blocks is
+  rewritten, so the number of affected bodies is larger than 69.
+- There are also 5 `#[unsafe_target_feature_specialize]` modules
+  (`scalar_mul/{pippenger,precomputed_straus,straus,variable_base,vartime_double_base}.rs`).
+  The macro emits one copy of each module per feature set and applies the same rewrite to
+  every fn and impl method in each copy.
+- The verdicts below do not rest on the token count. The grep for
+  `load|store|ptr|as *|get_unchecked|MaybeUninit` under `backend/vector/` does not depend
+  on the `unsafe` token and is empty. A brace-tracking re-scan on 2026-10-05, plus a read of the
+  `$…_intrinsic` macro-parameter calls in `packed_simd.rs`, also found every `core::arch`
+  intrinsic call under `backend/vector/` inside an explicit `unsafe`
+  block or `unsafe fn`. So at 5.0.0 the counted lines cover every intrinsic call. A future
+  delta must still read each `#[unsafe_target_feature]` body as unsafe code.
 
 The soundness model rests on one invariant. `#[unsafe_target_feature("…")]`
 (curve25519-dalek-derive) turns a function into a **safe** wrapper around a

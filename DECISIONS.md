@@ -1951,7 +1951,12 @@ applied unchanged.
   - `getrandom` 0.4.3 and 0.3.4 (`322-getrandom`, the opt-in `linux_raw` backend), plus
     nightly/tier-3 backend discretion in 0.4.3, 0.3.4 and 0.2.17;
   - `der` 0.8.1 (D-1/D-2, unreachable recursion bugs);
-  - and the test-fixture or packaged-file discretion notes listed in `docs/supply-chain.md`.
+  - test-fixture, generated-file, packaged-file or test-only-I/O discretion notes, all
+    harmless and outside any non-test build: `ed25519`, `spki`, `hmac`, `pkcs8`, `sec1`,
+    `digest`, `untrusted`, `tokio-rustls`, `typenum`, `webpki-roots`, `rustls-pki-types`,
+    `hybrid-array`, `ecdsa` and `p256`;
+  - and the Tier A `sha2` (`322-sha2`) and `curve25519-dalek` (nightly `docsrs` path) lines.
+  - The full list is every `Discretion:` line in `supply-chain/audits.toml`.
 - **Certified with a recorded observation instead of a discretion:** `rustls-webpki` 0.103.15
   (`322-rustls-webpki`, W-O8 bounded DoS cost).
 

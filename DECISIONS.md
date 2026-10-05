@@ -1875,3 +1875,90 @@ The next `rustls-webpki` bump gets the normal Policy 2 audit. That review should
 A new RUSTSEC entry against 0.103.15 reopens the audit; the `cargo deny` CI gate catches it.
 
 **Status:** DECIDED (Fable, 2026-10-05).
+
+## #339 Tier B batch B7b: rustls-webpki 0.103.15 certified (2026-10-05)
+
+Batch B7b of issue #339 (plan `plans/b7-webpki-getrandom.md`, PR-W, #364) ran under the
+"#322 supply-chain audit policy". Its terms:
+- built-in `safe-to-deploy` only;
+- no claim of cryptographic correctness, constant-time behaviour or side-channel resistance,
+  and none of certificate path-validation, name-constraint or revocation correctness;
+- `who = "Ajit Koti <ajitkoti@zer07labs.com>"`;
+- reviewed with Claude (Opus) assistance;
+- the maintainer must approve before merge.
+
+The certify-or-keep-exempt call (C1) went to a Claude (Fable) decision review; see
+`322-rustls-webpki`.
+
+| Crate | Version | Method | `unsafe` code lines / `asm!` blocks | Worksheet |
+|---|---|---|---|---|
+| `rustls-webpki` | 0.103.15 | full; all 10,040 src lines (19 files) read in six Claude sub-review partitions, cross-checked by the main review; no `Discretion:` line; W-O8 recorded as an observation (`322-rustls-webpki`) | 0 / 0 | `supply-chain/worksheets/rustls-webpki-0.103.15.md` |
+
+**Method evidence.**
+- The compiled set comes from rustc dep-info: 17 files, with `aws_lc_rs_algs.rs` and
+  `alg_tests.rs` not compiled.
+- The upstream suite at tag `v/0.103.15` passed with ACDP's features: 398 tests, 0 failures,
+  plus both BetterTLS suites.
+- A 10M-iteration random and semi-structured DER loop produced 0 panics. It exercised
+  `EndEntityCert`, `verify_for_usage` (with and without CRLs), name checks, CRL parsing and
+  trust anchors.
+- Worst-case path-building timing was measured with degenerate chains and with chains padded
+  with fillers.
+- The five `rustls-webpki` advisories were each mapped to the code carrying the fix.
+
+**Observations (not vet concerns).**
+- W-O8: bounded but material DoS cost, about 0.5-1 s of CPU per malicious handshake (worst
+  758 ms), from unbudgeted re-parsing of intermediates. Upstream `main` still does this.
+- W-O1: the OID display decoder is wrong (fixed upstream).
+- W-O2: issuer keyUsage is not enforced in this version (upstream `main` adds keyCertSign).
+- CRL parsing and revocation checking are compiled but unreached. No ACDP HTTPS client
+  configures CRLs.
+
+**Guard list.**
+- `rustls-webpki` was added under `# Batch B7:` with no marker.
+- The list now guards 46 crates: 11 Tier A and 35 Tier B.
+- 45 of them are covered by our own audits. `zeroize` is the sole deliberate exception
+  (`322-zeroize`).
+- The py and node binding lockfiles lock 0.103.15 with the root's checksum. The wasm binding
+  does not contain it.
+
+**Remaining Tier B:** none (35 of 35 certified in B1-B7b).
+
+**Status:** AUTHORED. The maintainer approves this PR by merging it by hand after reading the
+worksheet, and a PR comment names the worksheet the verifier covered (plan Q4; the precedent
+is #362). Never auto-merged.
+
+## #339 completion status (2026-10-05)
+
+Closing entry for issue #339, which certifies the 35 supporting crypto crates (Tier B) that
+#322 left exempted. The batches were B1 (#355), B2 (#356), B3 (#357), B4 (#358), B5 (#360),
+B6 (#359), B7a (#362) and B7b (#364). Policy: DECISIONS.md "#322 supply-chain audit policy",
+applied unchanged.
+
+**Result.**
+- All 35 Tier B crates are covered by our own `safe-to-deploy` audits at every locked version.
+  Each has a worksheet in `supply-chain/worksheets/` and is on the guard list.
+- No Tier B crate is exempted.
+- `scripts/crypto-critical.txt` guards 46 crates: 11 Tier A and 35 Tier B.
+- 45 of the 46 pass as fully audited.
+
+**Exceptions and discretion records.**
+- **Kept exempt:** `zeroize` 1.9.0 (Tier A, `322-zeroize`). The pinned marker is
+  `allow-exempt:DECISIONS#322-zeroize@1.9.0`, and the exit criterion is a delta audit of 1.9.1.
+- **Certified with `Discretion:` lines:**
+  - `cpufeatures` 0.3.1 (`322-cpufeatures`);
+  - `getrandom` 0.4.3 and 0.3.4 (`322-getrandom`, the opt-in `linux_raw` backend), plus
+    nightly/tier-3 backend discretion in 0.4.3, 0.3.4 and 0.2.17;
+  - `der` 0.8.1 (D-1/D-2, unreachable recursion bugs);
+  - and the test-fixture or packaged-file discretion notes listed in `docs/supply-chain.md`.
+- **Certified with a recorded observation instead of a discretion:** `rustls-webpki` 0.103.15
+  (`322-rustls-webpki`, W-O8 bounded DoS cost).
+
+**Follow-ups outside the audits.**
+- #363: drop the vestigial getrandom 0.2 dependency in `acdp-wasm`.
+- Optional: an upstream enhancement report for W-O8, to be filed only on the maintainer's
+  go-ahead.
+- The drafted `linux_raw` report (`322-getrandom`), also only on the maintainer's go-ahead.
+- Plan Q4: whether to amend the Policy 4 wording to match how self-authored PRs are approved.
+
+**Status:** AUTHORED with #364. Issue #339 closes when #364 merges.

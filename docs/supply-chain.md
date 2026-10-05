@@ -364,11 +364,11 @@ have. Refresh them with `cargo vet` (updates `imports.lock`).
 
 ### The crypto-critical set
 
-The forty-five crates that implement or underpin ACDP's signature and TLS
+The forty-six crates that implement or underpin ACDP's signature and TLS
 security are listed in
 [`scripts/crypto-critical.txt`](../scripts/crypto-critical.txt): the eleven
 Tier A crates, which issue #322 (completed 2026-10-04) re-certified at the
-versions in `Cargo.lock`, and the thirty-four Tier B support crates certified so far
+versions in `Cargo.lock`, and all thirty-five Tier B support crates, certified
 by issue #339 (batch B1: `wnaf`, `ff`, `spki`, `crypto-common`, `zeroize_derive`,
 `ed25519`; batch B2: `hmac`, `rfc6979`, `pkcs8`, `sec1`, `primefield`,
 `digest`; batch B3: `untrusted`, `cpubits`, `hyper-rustls`, `group`,
@@ -376,7 +376,7 @@ by issue #339 (batch B1: `wnaf`, `ff`, `spki`, `crypto-common`, `zeroize_derive`
 `typenum`; batch B5: `base16ct`, `base64ct`, `rustls-pki-types`, `const-oid`,
 `der`, `curve25519-dalek-derive`; batch B6: `cpufeatures`, `block-buffer`,
 `cmov`, `hybrid-array`, `crypto-bigint`; batch B7a: `getrandom` at all three locked
-versions). **Forty-four of the forty-five are
+versions; batch B7b: `rustls-webpki`). **Forty-five of the forty-six are
 covered by our own audit at every locked version. `zeroize` is the one deliberate
 exception:** it stays exempt under the #322 concern rule. The per-crate review worksheets are in
 [`supply-chain/worksheets/`](../supply-chain/worksheets/), and the notes are in
@@ -387,8 +387,9 @@ that exact version, or the diff from an audited version. The tarball sha256 was
 checked against the `Cargo.lock` checksum. Every `unsafe` block, `asm!`, build
 script, and powerful import (filesystem, network, process, or environment
 access) was reasoned about. **It does not claim** cryptographic correctness,
-constant-time behaviour, side-channel resistance, or (for rustls) TLS protocol
-and certificate-validation correctness. Those remain upstream's responsibility.
+constant-time behaviour, side-channel resistance, or (for rustls and
+rustls-webpki) TLS protocol and certificate-validation correctness, including
+rustls-webpki's path-validation, name-constraint and revocation logic. Those remain upstream's responsibility.
 The 2026-07-05 audits of the older versions recorded less: canonical source,
 latest release, and no open advisory.
 
@@ -439,6 +440,7 @@ latest release, and no open advisory.
 | `hybrid-array` | 0.4.14 | 0.4.14 | audit (full, 2026-10-04, #339 B6; size table script-checked; discretion note on packaged CI files) | RustCrypto | Fixed-size arrays under digest, crypto-bigint, elliptic-curve, sec1 |
 | `crypto-bigint` | 0.7.5 | 0.7.5 | audit (full, 2026-10-04, #339 B6; the 37,233 compiled lines were read in full by seven Claude sub-reviews, with every `unsafe` site and the file/line counts independently confirmed by the main review; uncompiled `boxed`/`der`/`rlp` modules grep-only; constant-time behaviour not claimed) | RustCrypto | Big-integer arithmetic under the P-256 stack |
 | `getrandom` | 0.4.3, 0.2.17, 0.3.4 | 0.4.3, 0.2.17, 0.3.4 | audit (full, 2026-10-05, #339 B7a; discretion notes on the opt-in `linux_raw` backend, DECISIONS.md `322-getrandom`, and on nightly/tier-3 backends; 0.3.4 is dev-only and meets `safe-to-deploy`; RNG output quality not claimed) | rust-random | OS RNG: `UnwrapErr(SysRng)` in key generation (0.4.3); ring's `SystemRandom` under rustls (0.2.17; uncalled in the wasm binding, #363); proptest's `rand` (0.3.4) |
+| `rustls-webpki` | 0.103.15 | 0.103.15 | audit (full, 2026-10-05, #339 B7b; 0 `unsafe`; DECISIONS.md `322-rustls-webpki`; bounded path-building DoS cost recorded as an observation; certificate-validation correctness not claimed) | rustls | Certificate path validation behind rustls's `WebPkiServerVerifier` for every ACDP HTTPS client (trust boundary); its CRL code is compiled but unreached |
 
 **`zeroize` 1.9.0 is exempt, not audited.** Its new safe
 `optimization_barrier` reads a possibly-uninitialized byte on targets without
@@ -476,25 +478,29 @@ selects by default; a builder's `--cfg getrandom_backend=...` override is outsid
 is the builder's responsibility.** **Exit criterion:** delta-audit the getrandom release
 that fixes `linux_raw`.
 
-**One supporting crypto crate is still exempted, not audited.** #322
-covered only the eleven Tier A crates. Of the 35 support crates (Tier B) on the
-same signing, hashing, key generation, and TLS paths, issue #339 batch B1
-certified six (`ed25519`, `crypto-common`, `zeroize_derive`, `spki`, `ff`,
-`wnaf`), batch B2 six more (`hmac`, `rfc6979`, `pkcs8`, `sec1`,
-`primefield`, `digest`), batch B3 six more (`untrusted`, `cpubits`,
-`hyper-rustls`, `group`, `tokio-rustls`, `primeorder`), batch B4 four more
-(`rand_core` at both locked versions, `ctutils`, `webpki-roots`, `typenum`),
-batch B5 six more (`base16ct`, `base64ct`, `rustls-pki-types`, `const-oid`,
-`der`, `curve25519-dalek-derive`), and batch B6 five more (`cpufeatures`,
-`block-buffer`, `cmov`, `hybrid-array`, `crypto-bigint`), and batch B7a one more
-(`getrandom` at all three locked versions; table above), and added them to the guard
-list. The remaining 1 is covered by an `[[exemptions.*]]` entry only, and is not on the
-guard list:
+**`rustls-webpki` 0.103.15 is audited, and its DoS cost is recorded.** It has no `unsafe`, and
+no panic is reachable from a server-presented chain. Path building is bounded by upstream's
+RUSTSEC-2023-0053 budget (200,000 build-chain calls). That budget does not cover re-parsing
+the peer's intermediates on each call, so a malicious HTTPS server can make one handshake
+cost about 0.5-1 s of CPU (measured worst 758 ms, within rustls's 64 KiB Certificate message
+cap). This is bounded and deliberate upstream design, so it is recorded as an observation, not
+a concern (DECISIONS.md `322-rustls-webpki`, finding W-O8). CRL parsing and revocation
+checking are compiled but never reached: no ACDP HTTPS client configures CRLs.
 
-- **TLS stack:** `rustls-webpki`.
+**All 35 supporting crypto crates (Tier B) are certified.** #322 covered only the eleven
+Tier A crates. Issue #339 certified the 35 support crates on the same signing, hashing, key
+generation, and TLS paths, and added each to the guard list:
+- batch B1: `ed25519`, `crypto-common`, `zeroize_derive`, `spki`, `ff`, `wnaf`;
+- B2: `hmac`, `rfc6979`, `pkcs8`, `sec1`, `primefield`, `digest`;
+- B3: `untrusted`, `cpubits`, `hyper-rustls`, `group`, `tokio-rustls`, `primeorder`;
+- B4: `rand_core` at both locked versions, `ctutils`, `webpki-roots`, `typenum`;
+- B5: `base16ct`, `base64ct`, `rustls-pki-types`, `const-oid`, `der`,
+  `curve25519-dalek-derive`;
+- B6: `cpufeatures`, `block-buffer`, `cmov`, `hybrid-array`, `crypto-bigint`;
+- B7a: `getrandom` at all three locked versions;
+- B7b: `rustls-webpki`.
 
-Certifying it (#339, the rest of batch B7), and adding it to the guard list once
-certified, is in progress.
+No Tier B crate is covered by an exemption.
 
 **`aws-lc-rs` is not in the dependency graph (#339).** It used to come in only
 through the TLS test harness (`axum-server`'s `tls-rustls` feature and the dev
@@ -586,8 +592,8 @@ fails when a listed crate is exempted or only partially vetted, so moving an
 exemption to a bumped version no longer turns CI green.
 
 The guard is now **enforcing**: since #322 closed, every listed crate except
-`zeroize` carries no marker (forty-four of the forty-five, including the
-thirty-four Tier B crates added by #339 batches B1-B7a). The list file documents
+`zeroize` carries no marker (forty-five of the forty-six, including all
+thirty-five Tier B crates added by #339 batches B1-B7b). The list file documents
 two markers:
 
 - `allow-exempt:DECISIONS#322-<crate>@<version>` is for a crate kept exempt

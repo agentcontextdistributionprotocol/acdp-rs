@@ -1,9 +1,10 @@
 # Review worksheet: `rustls-webpki` 0.103.15 (issue #339, Tier B batch B7b)
 
-- **Verdict:** RECOMMENDED for certification `safe-to-deploy`, full audit (`version =
-  "0.103.15"`). No concern-rule trigger. The certify / keep-exempt decision is the plan's
-  critical decision C1 and is taken by Fable in W2 (DECISIONS.md `322-rustls-webpki`). This
-  line is updated to the decision in W3.
+- **Verdict:** CERTIFIED `safe-to-deploy`, full audit (`version = "0.103.15"`). No
+  concern-rule trigger and no `Discretion:` line. This was the plan's critical decision C1.
+  The worksheet recommended option 1, and Claude (Fable) decided it on 2026-10-05
+  (DECISIONS.md `322-rustls-webpki`). The bounded DoS cost W-O8 is recorded as an
+  `Observations:` line in the audit notes.
   - There is no `unsafe`, no `asm!`, no build script and no FFI in the crate.
   - No panic, unbounded loop or unbounded recursion is reachable from a server-presented
     certificate chain, from CRL bytes or from a caller-supplied name (inventory below).

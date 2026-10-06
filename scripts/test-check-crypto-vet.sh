@@ -7,8 +7,9 @@
 # of supply-chain/, the guard list, and DECISIONS.md that each inject one
 # violation (must fail with exit 1, naming the crate). The real supply-chain/
 # directory is never modified. --with-network also checks that
-# scripts/vet-facts.sh rejects a corrupted crates.io tarball (downloads one
-# crate). Requires cargo, cargo-vet, and jq (as the guard does).
+# scripts/vet-facts.sh rejects a corrupted crates.io tarball and reports a
+# brace import of std::fs (downloads two crates). Requires cargo, cargo-vet,
+# and jq (as the guard does).
 set -euo pipefail
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -246,6 +247,18 @@ if [ "$with_network" -eq 1 ]; then
     else
         bad "vet-facts: corrupted tarball not rejected (rc=$rc)"
         sed 's/^/    /' "$tmp/facts.out" >&2
+    fi
+    # The brace import `use std::{fs, path::Path}` (der 0.8.1 src/document.rs:11)
+    # must be reported as a powerful import.
+    set +e
+    "$script_dir/vet-facts.sh" der 0.8.1 >"$tmp/facts-der.out" 2>&1
+    rc=$?
+    set -e
+    if [ "$rc" -eq 0 ] && grep -qE '^  src/document\.rs:11:use std::\{fs, path::Path\};' "$tmp/facts-der.out"; then
+        ok "vet-facts: brace import std::{fs, ...} reported (der 0.8.1)"
+    else
+        bad "vet-facts: brace import std::{fs, ...} not reported for der 0.8.1 (rc=$rc)"
+        sed 's/^/    /' "$tmp/facts-der.out" >&2
     fi
 fi
 

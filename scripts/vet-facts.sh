@@ -213,9 +213,13 @@ else
     echo "proc-macro = true: no"
 fi
 
-powerful=$( (rs_grep src 'std::(fs|net|process|env)|Command::new|(^|[^[:alnum:]_])(option_)?env!|include_bytes!'
+# `std::fs` etc., plus single-line brace imports such as `use std::{fs, path::Path}`
+# (missed before, for der 0.8.1). A brace import split over several lines is
+# still not matched; read the `use` blocks.
+powerful_re='std::(fs|net|process|env)|std::\{(.*[^[:alnum:]_])?(fs|net|process|env)([^[:alnum:]_]|$)|Command::new|(^|[^[:alnum:]_])(option_)?env!|include_bytes!'
+powerful=$( (rs_grep src "$powerful_re"
     if [ -n "$build_script" ] && [ -f "$new/$build_script" ]; then
-        (cd "$new" && grep -nE -- 'std::(fs|net|process|env)|Command::new|(^|[^[:alnum:]_])(option_)?env!|include_bytes!' "$build_script" |
+        (cd "$new" && grep -nE -- "$powerful_re" "$build_script" |
             sed "s|^|$build_script:|" || true)
     fi) | drop_comments)
 if [ -n "$powerful" ]; then

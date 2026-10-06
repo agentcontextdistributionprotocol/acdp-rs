@@ -114,8 +114,8 @@ checked=0
 # fd 3, so nothing in the loop body can consume the list from stdin.
 while read -r name marker <&3 || [ -n "${name:-}" ]; do
     # Comments: a line starting with `#`; or whitespace then `#` (the `#` in
-    # a marker such as `allow-exempt:#322-pending` follows a `:`, so it is
-    # not mistaken for a comment).
+    # a marker such as `allow-exempt:DECISIONS#322-zeroize@1.9.0` follows a
+    # `:` or other text, so it is not mistaken for a comment).
     case "${name:-}" in '' | '#'*) continue ;; esac
     marker=$(printf '%s' "${marker:-}" | sed -E 's/(^|[[:space:]])#.*$//; s/[[:space:]]+$//')
     checked=$((checked + 1))
@@ -153,7 +153,7 @@ while read -r name marker <&3 || [ -n "${name:-}" ]; do
                 echo "check-crypto-vet: ok: $name ($versions) fully audited"
             fi
             ;;
-        'allow-exempt:#322-pending' | allow-exempt:DECISIONS#?*)
+        allow-exempt:DECISIONS#?*)
             # (A DECISIONS marker is allow-exempt:DECISIONS#322-<crate>@<version>.)
             if [ "$vetted" -eq "$total" ]; then
                 fail "$name: stale marker '$marker' -- remove it: every locked version ($versions) is now fully audited."
@@ -206,7 +206,7 @@ while read -r name marker <&3 || [ -n "${name:-}" ]; do
             echo "check-crypto-vet: ok: $name ($unvetted) allowed exempt by '$marker'"
             ;;
         *)
-            fail "$name: unknown marker '$marker' (allowed: none, 'allow-exempt:#322-pending', 'allow-exempt:DECISIONS#322-<crate>@<version>')."
+            fail "$name: unknown marker '$marker' (allowed: none, 'allow-exempt:DECISIONS#322-<crate>@<version>')."
             ;;
     esac
 done 3<"$list_file"

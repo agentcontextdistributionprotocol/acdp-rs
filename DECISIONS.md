@@ -2199,3 +2199,33 @@ reopen any of them from this record.
 
 **Summary:** 11 confirmed (one of them as superseded), 1 changed (documentation only), 0
 deferred. All 12 were settled by Opus, and no code follow-up is needed.
+
+## Reconcile: remaining supply-chain-recertify-322 entries — 2026-10-06
+
+Eight `UNCONFIRMED` entries (seven tagged `#322`, one `#339 B7a G1`) were left after the earlier
+reconcile. All are reversible (audit note text, guard behaviour). Decided by Opus after an
+independent read of the code; none is a one-way door.
+
+- **#322 Phase 3: curve25519-dalek docsrs Discretion line** — CONFIRMED. `#[cfg(docsrs)]` with
+  `feature(doc_cfg)` is nightly-only (E0554 on stable); Policy 6 carve-out applies.
+- **#322 Phase 3: Method line names the worksheet path** — CONFIRMED, superseded by Policy items
+  3/4 as amended (worksheet path standard, PR URL optional).
+- **#322 Phase 4: Wycheproof `.blb` fixtures** — CONFIRMED. No `build.rs`; blobs reach only
+  `include_bytes!` under `cfg(test)`, so no shipped binary content.
+- **#322 Phase 5: rustls base 0.23.40 provenance** — CONFIRMED. `8c7a21b~1:Cargo.lock` pins
+  0.23.40 at the checksum recorded in `audits.toml:640`.
+- **#322 Phase 5: `#322-pending` marker stays parseable but unused** — CHANGED. The marker
+  passed an exemption with no DECISIONS anchor and no `@<version>` pin, the exact hole the pin
+  closed. Retired: `check-crypto-vet.sh` rejects it as an unknown marker; self-test (b) now
+  asserts that; the list header and `docs/supply-chain.md` updated. Amends Policy item 7.
+- **#322 Phase 5: "not merely exempted" overclaims reworded** — CONFIRMED (`ci.yml:187`,
+  `CONTRIBUTING.md:41-43`).
+- **#322 Phase 5: crypto-group Dependabot PRs never auto-merge** — CONFIRMED-superseded; the
+  transitive gap was closed by #344 (`scripts/dependabot-crypto-gate.sh`).
+- **#339 B7a G1: Method line carries PR URL and worksheet path** — CONFIRMED; only the
+  `Method: … worksheet in` prefix is exact under amended Policy 4.
+
+**Plan `plans/supply-chain-recertify-322.md`: COMPLETE and archived.** All five phases are
+merged (#332, #334, #335, #336, #345); #322 is closed. zeroize stays exempt under the concern
+rule (`322-zeroize`); its exit criterion, a delta audit of 1.9.1, is tracked in #341 and is
+outside the plan.

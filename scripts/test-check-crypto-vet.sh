@@ -127,18 +127,11 @@ d=$(new_case a2-unmarked-exempted)
 set_marker "$d/list.txt" zeroize ""
 expect_fail "$d" zeroize "not fully audited"
 
-# (b) zeroize carries a pending marker although it is now (fake-)fully audited.
-d=$(new_case b-stale-pending)
-cat >>"$d/store/audits.toml" <<'EOF'
-
-[[audits.zeroize]]
-who = "Guard Self-Test <test@example.invalid>"
-criteria = "safe-to-deploy"
-version = "1.9.0"
-notes = "FAKE audit injected by scripts/test-check-crypto-vet.sh (scratch copy only)."
-EOF
+# (b) the retired `#322-pending` marker is rejected: it carried no DECISIONS
+#     anchor and no @version pin, so it could pass an exemption at any version.
+d=$(new_case b-retired-pending)
 set_marker "$d/list.txt" zeroize "allow-exempt:#322-pending"
-expect_fail "$d" zeroize "stale marker"
+expect_fail "$d" zeroize "unknown marker"
 
 # (b2) the same stale check applies to a DECISIONS marker.
 d=$(new_case b2-stale-decisions)

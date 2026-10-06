@@ -1310,7 +1310,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
 - **Blast radius if wrong:** the notes text only. Rewording it is a follow-up audit edit.
 - **Status:** UNCONFIRMED
 
-## #339 B7a C2: Policy 6 second limb proposed, not yet acknowledged
+## #339 B7a C2: Policy 6 second limb proposed (acknowledged 2026-10-05)
 - **Plan:** C2 (Fable escalation)
 - **Assumed:** Fable may propose a Policy 6 amendment, as it did for `322-sha2`, provided the
   maintainer acknowledges it at PR review (Policy 4: never auto-merged).

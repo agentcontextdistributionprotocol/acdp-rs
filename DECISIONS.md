@@ -2047,11 +2047,14 @@ retroactive" in `322-policy4-approval`).
 recommendation". An agent posted that acknowledgement on #362 on the maintainer's behalf:
 https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/362#issuecomment-6019167559.
 So the getrandom 0.4.3 and 0.3.4 certifications stand, and the fallback (re-exempting 0.4.3) is
-not taken. Policy 6 now records the limb as acknowledged.
+not taken. Policy 6 now records the limb as acknowledged. For this acknowledgement, the session record plus the agent's
+#362 comment replaces the "PR comment from the maintainer, on the PR the maintainer merges"
+form that "Other acknowledgements" in `322-policy4-approval` asks for.
 
 **getrandom upstream report: not filed per maintainer.** The drafted `linux_raw` report stays in
-the 0.4.3 worksheet. Condition (d) of the second limb ("a report has been drafted and is held
-for the maintainer") is still met.
+the 0.4.3 worksheet. The maintainer's acknowledgement of the limb, given knowing that no report
+would be filed, treats condition (d) as met by that draft. It also replaces option 4's "report
+both findings upstream" for getrandom.
 
 **W-O8 upstream issue: filed.** The `rustls-webpki` W-O8 enhancement suggestion (parse the
 intermediates once per `build_chain`; `322-rustls-webpki`) was filed on 2026-10-06 as
@@ -2059,7 +2062,9 @@ https://github.com/rustls/webpki/issues/540. It is not a condition of the certif
 re-audit trigger in `322-rustls-webpki` is unchanged.
 
 **Items this settles.** The B7a "Maintainer items" (the second limb and the `linux_raw`
-report), and the "#339 completion status" follow-ups for the W-O8 report, the `linux_raw`
-report. (Plan Q4 itself was settled by `322-policy4-approval`.)
+report), and the "#339 completion status" follow-ups for the W-O8 report and the `linux_raw`
+report. Plan Q4 itself was settled by `322-policy4-approval`. #362 and #364 were merged by an
+agent on the standing instruction and each has a PR comment naming the worksheets the
+verifiers covered, so they meet the rule as amended here.
 
 **Status:** DECIDED (maintainer, 2026-10-06).

@@ -805,11 +805,13 @@ under the concern rule below.
    `Powerful imports`; `New deps`; `Advisories` (`cargo deny check advisories` clean on
    <date>); `Not claimed: cryptographic correctness, constant-time behaviour,
    side-channel resistance.`; and `Method: Reviewed with Claude (Opus) assistance;
-   worksheet in <PR URL>`. Every factual field must be reproducible with
+   worksheet in supply-chain/worksheets/<crate>-<version>.md (<PR URL or issue/phase
+   ref>)` (amended 2026-10-06, `/reconcile`). Every factual field must be reproducible with
    `scripts/vet-facts.sh <crate> <locked> [<base>]`.
 4. **`who` and sign-off.** `who = "Ajit Koti <ajitkoti@zer07labs.com>"`. The `Method:`
-   line is exact. Open the PR as a draft first, so the URL exists before `certify`
-   runs. The per-crate findings worksheet goes in the PR body. **Audit PRs are never
+   line is exact. The per-crate worksheet is committed under `supply-chain/worksheets/`;
+   citing the PR URL is optional (amended 2026-10-06, `/reconcile`; replaces "open a
+   draft PR first so the URL exists; the worksheet goes in the PR body"). **Audit PRs are never
    auto-merged.** **Approval (amended 2026-10-05, maintainer decision
    `322-policy4-approval`):** the maintainer approves an audit PR by merging it by hand
    themselves, and by posting a PR comment that names the worksheets for `<crates>`
@@ -1054,6 +1056,8 @@ powerful imports were reasoned about at the exact bytes in `Cargo.lock`.
   - key generation: `rand_core`, `getrandom`;
   - TLS stack: `rustls-webpki`, `rustls-pki-types`, `tokio-rustls`, `hyper-rustls`,
     `webpki-roots`, `untrusted`.
+  - Superseded by #339: 46 crates guarded (11 Tier A, 35 Tier B); zeroize is the only
+    marker.
 - `aws-lc-rs` / `aws-lc-sys` are dev-only. Their exemptions over-claim `safe-to-deploy`
   where `safe-to-run` would do.
 
@@ -1062,6 +1066,8 @@ powerful imports were reasoned about at the exact bytes in `Cargo.lock`.
 - `scripts/crypto-critical.txt` has no `#322-pending` line. The only marker left is
   `zeroize allow-exempt:DECISIONS#322-zeroize@1.9.0`. The guard requires DECISIONS
   markers to carry a version and fails on a version mismatch (self-tests g–g4).
+  (Superseded by #339: 46 crates guarded (11 Tier A, 35 Tier B); zeroize is the only
+  marker.)
 - The `#322-pending` marker type is still parsed, because the self-tests exercise it, but
   it is unused.
 - `dependabot-auto-merge.yml` never enables auto-merge for the `crypto` group
@@ -1076,10 +1082,14 @@ powerful imports were reasoned about at the exact bytes in `Cargo.lock`.
   `is_weak()` rejection at DID-key load. That needs spec input (RFC-ACDP-0002) and a
   golden-vector review.
 - **P-1 (p256).** `NORMALIZE_S = false`: high-S verifies, so `ecdsa-p256` signature bytes
-  are malleable. ACDP's signer does not normalize either. One effect: a lifecycle-event
+  are malleable. ACDP's signer does not normalize either (superseded: since #347, ACDP
+  signers emit low-S; see the resolution below). One effect: a lifecycle-event
   retry with a flipped signature gets `SchemaViolation` instead of `IdempotentReplay`
   (`crates/acdp-server/src/registry/store.rs:585-596`). Recommendation: document
   non-uniqueness in the spec registry, and emit low-S from ACDP signers.
+  Resolved 2026-10 by #347 (14df82c): ACDP signers emit low-S (SHOULD); verifiers accept
+  high-S (MUST); lifecycle retries stay byte-identical-only (pinned by tests/lifecycle.rs
+  p256_flipped_s_lifecycle_retry_is_not_idempotent).
 - **P-2 (p256).** `from_sec1_bytes` accepts the SEC1 compact tag `0x05`. ACDP's wire paths
   cannot reach it, and fingerprints use the re-compressed point. Informational.
 - **P-3 (p256).** ACDP signs with P-256 as well as verifying. The review covered both
@@ -2068,3 +2078,118 @@ agent on the standing instruction and each has a PR comment naming the worksheet
 verifiers covered, so they meet the rule as amended here.
 
 **Status:** DECIDED (maintainer, 2026-10-06).
+
+## Reconcile: supply-chain-recertify-322 — 2026-10-06
+
+Twelve `UNCONFIRMED` entries in ASSUMPTIONS.md tagged `Plan: plans/supply-chain-recertify-322.md`.
+All are reversible: they cover guard script behaviour, audit note text, or the audit method.
+None is a one-way door. Three independent Opus analyses reached the verdicts below, and each
+claim was re-checked against `main` before it was recorded. Decided by Opus; the maintainer can
+reopen any of them from this record.
+
+### 2026-10-06 — #322 guard: DECISIONS anchor matched verbatim
+- **Assumption:** the marker anchor must be exactly `322-<crate>`, and DECISIONS.md must
+  contain it as a whole token.
+- **Analysis:** `scripts/check-crypto-vet.sh:176-187` compares the anchor to `322-$name` and
+  greps DECISIONS.md with token boundaries. Self-tests c, c1-c5 cover a nonexistent anchor,
+  an absent anchor, a prefix anchor, another crate's anchor, a longer token only, and a
+  present anchor. All pass.
+- **Decided by:** Opus. **Verdict:** confirm as-is. **Status:** CONFIRMED.
+
+### 2026-10-06 — #322 guard: when a marker is stale with several locked versions
+- **Assumption:** a marker is stale only when every locked version is fully vetted.
+- **Analysis:** this is no longer hypothetical. `rand_core` has 2 locked versions (0.9.5,
+  0.10.1) and `getrandom` has 3 (0.2.17, 0.3.4, 0.4.3), and all of them are audited. A mixed
+  state is safe because of the `@<version>` pin: every unaudited version and every exempted
+  version must equal the pin (`check-crypto-vet.sh:188-203`).
+- **Decided by:** Opus. **Verdict:** confirm as-is. **Status:** CONFIRMED.
+
+### 2026-10-06 — #322 guard self-tests: a script, not wired into CI
+- **Assumption:** the self-tests run locally only, not in CI.
+- **Analysis:** superseded. #344 added the "Supply-chain script self-tests" step to the
+  required `cargo-vet` job (`.github/workflows/ci.yml:199-206`). It runs
+  `scripts/test-check-crypto-vet.sh` and `scripts/test-dependabot-crypto-gate.sh`. Only the
+  `--with-network` corrupted-tarball check of `vet-facts.sh` is still local-only.
+- **Decided by:** Opus. **Verdict:** confirm, superseded by #344; the entry text was updated.
+  **Status:** CONFIRMED-superseded.
+
+### 2026-10-06 — #322 vet-facts: ratio rule vs. the plan's zeroize method
+- **Assumption:** the script reports the numeric ratio verdict and does not encode per-crate
+  method choices. It reports `conditional` for a `cfg_attr` forbid.
+- **Analysis:** `scripts/vet-facts.sh:154-157` prints the ratio and method, and labels the
+  rewrite clause as a reviewer judgement. Lines `:172-182` detect unconditional and
+  `cfg_attr` forms separately. Keeping per-crate choices out of the script keeps the facts
+  re-derivable.
+- **Decided by:** Opus. **Verdict:** confirm as-is. **Status:** CONFIRMED.
+
+### 2026-10-06 — #322 Phase 2: worksheet location and the `Method:` line
+- **Assumption:** the plan wanted the worksheet in the PR body and a PR URL in `Method:`. The
+  phase committed the worksheets under `supply-chain/worksheets/` and cited that path instead.
+- **Analysis:** every later #322 and #339 audit followed the committed-worksheet convention,
+  and `docs/supply-chain.md` step 4 already says to add
+  `supply-chain/worksheets/<crate>-<version>.md`. A worksheet kept only in a PR body is lost
+  from the tree. The policy text was the outlier.
+- **Decided by:** Opus. **Verdict:** change (documentation only). Policy item 3's template now
+  reads `worksheet in supply-chain/worksheets/<crate>-<version>.md (<PR URL or issue/phase
+  ref>)`. Item 4 now says the worksheet is committed under `supply-chain/worksheets/` and that
+  citing the PR URL is optional. `docs/supply-chain.md` already agreed. Existing
+  `audits.toml` notes are unchanged. **Status:** CHANGED.
+
+### 2026-10-06 — #322 Phase 2: zeroize method is full, not delta
+- **Assumption:** zeroize gets a full audit under the rewrite clause, even though its ratio of
+  0.72 is below 0.75.
+- **Analysis:** the delta replaces the barrier at every volatile-write site and adds the
+  crate's only `asm!`, which is what the rewrite clause covers. This is recorded in DECISIONS
+  `322-zeroize` "Method". zeroize stays exempt, so there is no audit entry to change.
+- **Decided by:** Opus. **Verdict:** confirm as-is. **Status:** CONFIRMED.
+
+### 2026-10-06 — #322 Phase 2: guard self-test fixtures updated
+- **Assumption:** c1 and c5 strip the `322-zeroize` anchor from their scratch DECISIONS.md
+  copy, and (b) sets an explicit pending marker.
+- **Analysis:** the approach holds and keeps the fixtures independent of which crates are
+  pending. The "16 cases" count is stale: `scripts/test-check-crypto-vet.sh` (offline) reports
+  "20 passed, 0 failed" on 2026-10-06, after the g-g4 version-pin cases were added.
+- **Decided by:** Opus. **Verdict:** confirm; the count noted as stale. **Status:** CONFIRMED.
+
+### 2026-10-06 — #322 Phase 3: curve25519-dalek stays a delta despite an imprecise base note
+- **Assumption:** the 4.1.3 base's loose "unsafe confined to SIMD" wording does not invalidate
+  the delta, because every 5.0.0 `unsafe` site was verdicted independently.
+- **Analysis:** still sound. #361 (41ea7ed) corrected the 5.0.0 note and worksheet to say that
+  the 33-token grep undercounts the `#[unsafe_target_feature]`-generated unsafe contexts. It
+  recorded the token-independent rescans that support the same conclusion.
+- **Decided by:** Opus. **Verdict:** confirm, as corrected by #361. **Status:** CONFIRMED.
+
+### 2026-10-06 — #322 Phase 3: diff stats from vet-facts.sh, not the plan's table
+- **Assumption:** use the `vet-facts.sh` figures over the plan's `cargo vet suggest` figures.
+- **Analysis:** the plan itself says to use the script's numbers when they differ. The ratios
+  (0.21 and 0.29) give delta either way.
+- **Decided by:** Opus. **Verdict:** confirm as-is. **Status:** CONFIRMED.
+
+### 2026-10-06 — #322 Phase 4: elliptic-curve, ecdsa, p256 full audits; script diff stats used
+- **Assumption:** full audits for all three, using the script's diff figures.
+- **Analysis:** the ratios are 1.47, 0.83 and 0.91. Each is >= 0.75 under either set of
+  figures, so the method rule gives full, and a delta would inherit one-line 2026-07-05 base
+  notes.
+- **Decided by:** Opus. **Verdict:** confirm as-is. **Status:** CONFIRMED.
+
+### 2026-10-06 — #322 Phase 4: ECDSA malleability and the plan's "verification only" wording are findings, not vet concerns
+- **Assumption:** P-1 (high-S verifies) and P-3 (ACDP also signs with P-256) are ACDP findings,
+  not `safe-to-deploy` concerns.
+- **Analysis:** correct: malleability is protocol behaviour, not unsound code or I/O. P-1 has
+  since been resolved by #347 (14df82c). `crates/acdp-crypto/src/sign.rs` normalizes to low-S
+  and the verifier still accepts high-S. `tests/lifecycle.rs`
+  `p256_flipped_s_lifecycle_retry_is_not_idempotent` pins the byte-identical retry rule.
+- **Decided by:** Opus. **Verdict:** confirm as-is. **Status:** CONFIRMED.
+
+### 2026-10-06 — #322 Phase 5: rustls certified as a forward delta from 0.23.40
+- **Assumption:** a delta from 0.23.40 to 0.23.45 (every hunk read, 0 `unsafe`, `KeyLogFile`
+  inert in ACDP) is sufficient.
+- **Analysis:** the base is our own `safe-to-deploy` full audit of 0.23.40
+  (`supply-chain/audits.toml`). The delta is 867 changed lines against 48,215 `src/` lines
+  (0.02), and nothing in it changes runtime trust. It is reversible. Note that
+  acdp-registry-rs imports this repo's `audits.toml` from `main`
+  (`[imports.acdp-rs]`), so a retraction here would also show up there.
+- **Decided by:** Opus. **Verdict:** confirm, reversible. **Status:** CONFIRMED.
+
+**Summary:** 11 confirmed (one of them as superseded), 1 changed (documentation only), 0
+deferred. All 12 were settled by Opus, and no code follow-up is needed.

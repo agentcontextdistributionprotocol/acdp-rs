@@ -1005,7 +1005,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   passed); normalize hyphens to spaces (rejected: matches looser text).
 - **Blast radius if wrong:** trivial. The text only changes when a concern-rule crate
   appears.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-06) — see DECISIONS.md. The guard enforces exactly `322-<crate>` as a whole token (`scripts/check-crypto-vet.sh:176-187`), covered by self-tests c, c1-c5.
 
 ## #322 guard: when a marker is stale with several locked versions
 - **Plan:** plans/supply-chain-recertify-322.md (Phase 1 item 3, edge case "two versions")
@@ -1020,7 +1020,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   dropping a marker that one version still needs).
 - **Blast radius if wrong:** trivial. Today every Tier A crate has a single locked
   version.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-06) — see DECISIONS.md. No longer hypothetical: `rand_core` (0.9.5, 0.10.1) and `getrandom` (0.2.17, 0.3.4, 0.4.3) are multi-version and all audited; a mixed state is safe because the `@<version>` pin checks every unaudited version (`check-crypto-vet.sh:188-203`).
 
 ## #322 guard self-tests: a script, not wired into CI
 - **Plan:** plans/supply-chain-recertify-322.md (Phase 1 Tests / Acceptance)
@@ -1039,7 +1039,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   addition if wanted.
 - **Blast radius if wrong:** small. A guard regression would be caught only when someone
   runs the self-test.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED-superseded (2026-10-06) — see DECISIONS.md. The self-tests now run in CI: the "Supply-chain script self-tests" step of the `cargo-vet` job (`.github/workflows/ci.yml:199-206`, added by #344). Only the `--with-network` check of `vet-facts.sh` is still local-only.
 
 ## #322 vet-facts: ratio rule vs. the plan's zeroize method
 - **Plan:** plans/supply-chain-recertify-322.md (Policy 2; Context table)
@@ -1058,7 +1058,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
 - **Alternatives:** hard-code the plan's method per crate (rejected: the script exists so
   that facts can be re-derived).
 - **Blast radius if wrong:** small. It affects the Phase 2 and Phase 3 notes only.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-06) — see DECISIONS.md. The script prints the numeric verdict and labels the rewrite clause as a reviewer judgement (`scripts/vet-facts.sh:154-157`); the `conditional` forbid detection is at `:172-182`.
 
 ## #322 Phase 2: worksheet location and the `Method:` line
 - **Plan:** plans/supply-chain-recertify-322.md (Policy 4; Phase 2 Acceptance)
@@ -1074,7 +1074,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   - Keep the worksheets only in the PR body. They would then be lost from the tree.
 - **Blast radius if wrong:** small. `/ship` can rewrite the one `Method:` line to the PR
   URL, and paste the worksheets into the PR body, before the maintainer's review.
-- **Status:** UNCONFIRMED
+- **Status:** CHANGED (2026-10-06) — see DECISIONS.md. Committed worksheets are kept as the standard. Policy items 3 and 4 in DECISIONS.md "#322 supply-chain audit policy" now say so, and citing a PR URL is optional. Existing `audits.toml` notes are unchanged.
 
 ## #322 Phase 2: concern rule applied to sha2 for an opt-in nightly-only backend
 - **Plan:** plans/supply-chain-recertify-322.md (Policy 6; Phase 2)
@@ -1103,7 +1103,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   `asm!`. The full read is 1,061 lines. This matches the plan's table.
 - **Alternatives:** a delta on the 1.8.2 base, whose notes are one line.
 - **Blast radius if wrong:** none for this phase, since zeroize was not certified.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-06) — see DECISIONS.md. The rewrite clause applies (new barrier at every volatile-write site, first `asm!`), and it is recorded in DECISIONS `322-zeroize`.
 
 ## #322 Phase 2: guard self-test fixtures updated
 - **Plan:** plans/supply-chain-recertify-322.md (Phase 1 Tests)
@@ -1117,7 +1117,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
 - **Alternatives:** switch the fixture crate to one still pending, for example p256. That
   would need editing again in Phase 4.
 - **Blast radius if wrong:** test-only.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-06) — see DECISIONS.md. The fixture approach holds. The "16 cases" count is stale: the offline run on 2026-10-06 reports 20 passed, 0 failed.
 
 ## #322 Phase 3: curve25519-dalek stays a delta despite an imprecise base note
 - **Plan:** plans/supply-chain-recertify-322.md (Phase 3 Edge cases)
@@ -1137,7 +1137,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   - The concern rule. Rejected: no unsound code was found.
 - **Blast radius if wrong:** reversible. It is one `audits.toml` entry, which can be
   re-scoped or replaced by a full audit.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-06) — see DECISIONS.md. The delta stays. The unsafe-count wording was corrected by #361 (41ea7ed).
 
 ## #322 Phase 3: curve25519-dalek docsrs visibility recorded as a Discretion line, no DECISIONS entry
 - **Plan:** DECISIONS.md "#322 supply-chain audit policy" item 6 carve-out
@@ -1162,7 +1162,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   0.21 or 0.29 either way, so the method is still delta.
 - **Alternatives:** none material.
 - **Blast radius if wrong:** none. These are note text only.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-06) — see DECISIONS.md. The plan says the script's numbers win, and the method is delta under either set of figures.
 
 ## #322 Phase 3: Method line names the worksheet path, not a PR URL
 - **Plan:** DECISIONS.md "#322 supply-chain audit policy" item 4
@@ -1183,7 +1183,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
 - **Alternatives:** delta audits. Rejected: each delta is as large as or larger than the
   crate and would inherit the one-line 2026-07-05 base notes.
 - **Blast radius if wrong:** none. Note text only.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-06) — see DECISIONS.md. All three ratios are >= 0.75 under either set of figures, so the method is full.
 
 ## #322 Phase 4: Wycheproof `.blb` test fixtures are a Discretion line, not a concern
 - **Plan:** DECISIONS.md "#322 supply-chain audit policy" item 6 ("obfuscated or vendored
@@ -1215,7 +1215,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
 - **Alternatives:** open a DECISIONS entry now for low-S normalization in ACDP signers.
   Left to the maintainer: it is a spec / producer question.
 - **Blast radius if wrong:** none for the audits.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-06) — see DECISIONS.md. These are not `safe-to-deploy` questions. P-1 was since resolved by #347 (14df82c): ACDP signers emit low-S.
 
 ## #322 Phase 5: rustls certified as a forward delta from 0.23.40
 - **Plan:** plans/supply-chain-recertify-322.md Phase 5 Delivers 1 / Approach
@@ -1233,7 +1233,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
 - **Alternatives:** the BA-import path (rejected by the plan: `imports.lock` churn), or
   keeping the exemption (no concern found).
 - **Blast radius if wrong:** reversible. Re-adding the exemption and marker is mechanical.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-06) — see DECISIONS.md. The base is our own `safe-to-deploy` full audit. The delta is 867 changed lines out of 48,215 and makes no runtime trust change. It is reversible, but acdp-registry-rs imports our `audits.toml` from `main`, so a retraction would show up there too.
 
 ## #322 Phase 5: base 0.23.40 provenance bound to this repo's historical lockfile
 - **Plan:** Phase 5 / Policy 3 (`Source:` line)

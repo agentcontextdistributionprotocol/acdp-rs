@@ -1151,7 +1151,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
 - **Alternatives:** a concern-rule entry `322-curve25519-dalek` that keeps the exemption.
 - **Blast radius if wrong:** reversible. Re-adding the exemption and a DECISIONS entry is
   mechanical.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-06) — see DECISIONS.md. The docsrs path is nightly-only (E0554 on stable), so the Policy 6 carve-out applies; recorded as a Discretion line at supply-chain/audits.toml:196 and in "#322 completion status".
 
 ## #322 Phase 3: diff stats from vet-facts.sh, not the plan's table
 - **Plan:** plans/supply-chain-recertify-322.md (Phase 3 Delivers; Phase 2 Edge cases)
@@ -1171,7 +1171,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   (issue #322 Phase 3 PR)`.
 - **Alternatives:** open a draft PR first, then re-run `certify`.
 - **Blast radius if wrong:** text only. It can be amended before merge.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-06) — see DECISIONS.md. Superseded by the Phase 2 CHANGED entry: Policy items 3/4 make the worksheet path standard and the PR URL optional.
 
 ## #322 Phase 4: elliptic-curve, ecdsa, p256 full audits; script diff stats used
 - **Plan:** plans/supply-chain-recertify-322.md (Phase 4; Phase 2 Edge cases)
@@ -1200,7 +1200,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   the exemptions.
 - **Blast radius if wrong:** reversible. Re-adding two exemptions and DECISIONS entries is
   mechanical.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-06) — see DECISIONS.md. No build.rs; the blobs are reachable only through include_bytes! in cfg(test) (p256 src/ecdsa.rs:75, ecdsa src/dev.rs:256,309), so they are not shipped binary content; Discretion lines at audits.toml:277,511.
 
 ## #322 Phase 4: ECDSA malleability and the plan's "verification only" wording are findings, not vet concerns
 - **Plan:** plans/supply-chain-recertify-322.md Phase 4 Approach ("ACDP uses P-256 for
@@ -1242,7 +1242,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   (2026-07-06). That is when the 0.23.40 base audit was written (`git show 8c7a21b~1:Cargo.lock`).
 - **Chose:** state both bindings in the note and worksheet.
 - **Blast radius if wrong:** none. The index binding alone satisfies the policy.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-06) — see DECISIONS.md. Re-verified: 8c7a21b~1:Cargo.lock pins rustls 0.23.40 at ef86cd58…168b, matching audits.toml:640; the base audit is 4dcd51a (2026-07-05).
 
 ## #322 Phase 5: the `#322-pending` marker type stays parseable but unused
 - **Plan:** Phase 5 acceptance (`grep -c '322-pending' scripts/crypto-critical.txt` -> `0`)
@@ -1256,7 +1256,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
 - **Alternatives:** delete the marker type from `check-crypto-vet.sh` and its self-tests
   (a follow-up if wanted).
 - **Blast radius if wrong:** reversible. It is a one-line comment, or a small script change.
-- **Status:** UNCONFIRMED
+- **Status:** CHANGED (2026-10-06) — see DECISIONS.md. The #322-pending marker type is retired: it passed an exemption with no anchor and no version pin. The guard now rejects it as an unknown marker; the stale check stays covered by self-test b2.
 
 ## #322 Phase 5: "not merely exempted" overclaims reworded outside docs/
 - **Plan:** Phase 5 Files (docs, DECISIONS, CONTRIBUTING); the task asked to remove any
@@ -1271,7 +1271,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   CONTRIBUTING.md pointer to "Upgrading a crypto-critical crate".
 - **Alternatives:** leave `.github/` untouched.
 - **Blast radius if wrong:** none functionally.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-06) — see DECISIONS.md. ci.yml:187 and CONTRIBUTING.md:41-43 carry the accurate wording; the required check is keyed on the job name cargo-vet, so there is no behaviour change.
 
 ## #322 Phase 5: the guard does not stop moving zeroize's exemption
 - **Plan:** Policy 7 (guard semantics)
@@ -1298,7 +1298,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   documented as a manual check and a DECISIONS follow-up.
 - **Blast radius if wrong:** reversible. In the worst case a crypto PR would need a manual
   merge.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED-superseded (2026-10-06) — see DECISIONS.md. The group check stays as defence in depth; the transitive-crate gap was closed by #344 (scripts/dependabot-crypto-gate.sh).
 
 ## #339 B7a G1: Method line carries the PR URL and the worksheet path
 - **Plan:** G1 AC3 ("exact `Method: Reviewed with Claude (Opus) assistance; worksheet in <PR URL>`")
@@ -1308,7 +1308,7 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   path>, issue #339 Tier B batch B7a)[; certification decision recorded in DECISIONS.md 322-getrandom]`.
   The partition, Fable and empirical details move to the Scope line.
 - **Blast radius if wrong:** the notes text only. Rewording it is a follow-up audit edit.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-06) — see DECISIONS.md. Policy 4 as amended makes only the "Method: … worksheet in" prefix exact; the B7a notes (audits.toml:382,402) keep it and stand as written.
 
 ## #339 B7a C2: Policy 6 second limb proposed (acknowledged 2026-10-05)
 - **Plan:** C2 (Fable escalation)

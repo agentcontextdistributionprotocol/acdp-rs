@@ -608,8 +608,9 @@ two markers:
 
   This means moving zeroize's exemption to a newer release no longer passes.
   The `322-zeroize` exit criterion is a delta audit of 1.9.1.
-- `allow-exempt:#322-pending` was the in-progress marker. No line uses it any
-  more. Adding it back needs a DECISIONS.md entry.
+- `allow-exempt:#322-pending` was the in-progress marker. It is retired: the
+  guard rejects it as an unknown marker, because it carried no DECISIONS anchor
+  and no `@<version>` pin.
 
 A marker left on a crate that is now fully audited also fails ("stale marker —
 remove it"). Run

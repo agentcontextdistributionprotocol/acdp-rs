@@ -1318,11 +1318,12 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   limb. Fallback if the maintainer declines: keep 0.4.3 exempt with marker
   `allow-exempt:DECISIONS#322-getrandom@0.4.3` (one exempt version; no guard replan).
 - **Blast radius if wrong:** one audit entry is reverted to an exemption; documentation only.
-- **Status:** UNCONFIRMED (maintainer)
+- **Status:** CONFIRMED (maintainer, 2026-10-05: "lets go with fable recommendation"; DECISIONS.md
+  `322-policy4-agent-merge`)
 
 ## #339 B7a: upstream getrandom report held
 - **Plan:** C2; Fable section 5
 - **Assumed:** filing an issue in rust-random/getrandom under the project's name is an outward-facing,
   cross-repo action that needs the maintainer's go-ahead.
 - **Chose:** keep the drafted report in the 0.4.3 worksheet; file nothing upstream.
-- **Status:** UNCONFIRMED (maintainer)
+- **Status:** CONFIRMED (maintainer: not filed; DECISIONS.md `322-policy4-agent-merge`)

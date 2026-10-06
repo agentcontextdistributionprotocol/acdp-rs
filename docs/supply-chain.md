@@ -675,9 +675,11 @@ catches either case. When a bump turns `cargo-vet` red:
    posts a PR comment naming the worksheets they read. That merge plus
    comment is the approval; no approving GitHub review is needed, because
    the author cannot approve their own PR (DECISIONS.md
-   `322-policy4-approval`, 2026-10-05). An agent's merge, even on a
-   standing "merge when green" instruction, does not count. Audit PRs are
-   never auto-merged.
+   `322-policy4-approval`, 2026-10-05). An agent may also merge the PR on
+   green CI under the maintainer's explicit standing instruction ("merge
+   all prs when green"); the PR still needs a PR comment naming the
+   worksheets the review covered (DECISIONS.md `322-policy4-agent-merge`,
+   2026-10-06). Audit PRs are never auto-merged.
 
 The criteria, the method rule, the notes template, the `who` / sign-off rule,
 and the concern rule are all in DECISIONS.md "#322 supply-chain audit policy".

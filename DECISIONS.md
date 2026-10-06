@@ -814,10 +814,11 @@ under the concern rule below.
    `322-policy4-approval`):** the maintainer approves an audit PR by merging it by hand
    themselves, and by posting a PR comment that names the worksheets for `<crates>`
    that they read. No approving GitHub review is required: the author cannot approve
-   their own PR. An agent's merge, including one made on a standing "merge when green"
-   instruction, is not this approval. `/ship` never merges an audit PR; it stops on
-   green CI and waits for the maintainer. Check the comment with
-   `gh pr view <n> --json comments`.
+   their own PR. **Agent merge (amended 2026-10-06, maintainer decision
+   `322-policy4-agent-merge`):** an agent may also merge an audit PR on green CI when
+   the maintainer has given an explicit standing instruction to do so ("merge all prs
+   when green"). The PR still needs a PR comment that names the worksheets the review
+   covered. Check the comment with `gh pr view <n> --json comments`.
 5. **Record command.** Run it non-interactively, with flags verified on cargo-vet 0.10.2:
    `cargo vet certify <crate> <from> [<to>] --criteria safe-to-deploy --who "…"
    --notes "$(cat notes.txt)" --accept-all`. Omit `<to>` for a full audit. Then
@@ -834,8 +835,9 @@ under the concern rule below.
    unreachable in any stable-toolchain build of any ACDP artifact; in that case certify
    and record the discretion in the audit notes (`Discretion:` lines). (A second limb,
    for builder-only `--cfg` opt-ins compiled into no ACDP-built or ACDP-tested artifact,
-   was proposed 2026-10-05 in `322-getrandom` and awaits the maintainer's
-   acknowledgement.) For a crate under the concern rule:
+   was proposed 2026-10-05 in `322-getrandom`, with its four conditions there. The
+   maintainer acknowledged it on 2026-10-05; see `322-policy4-agent-merge`.) For a crate
+   under the concern rule:
    - Do not certify it.
    - Keep its exemption, with `notes = "KEPT EXEMPT (#322): <reason>; see DECISIONS.md
      '322-<crate>'"`.
@@ -2013,4 +2015,51 @@ what happened before it:
   review before merge", and the "acknowledgement at PR review" lines. They record the
   policy text in force when each was authored.
 
-**Status:** DECIDED (maintainer, 2026-10-05).
+**Resolved (2026-10-06).** The agent-merge exclusion in the decision above (an agent's merge,
+even on a standing "merge all PRs when green" instruction, does not count; `/ship` never merges
+an audit PR) was where the ambiguity lay. `322-policy4-agent-merge` removes it.
+
+**Status:** DECIDED (maintainer, 2026-10-05). Amended in part by `322-policy4-agent-merge`
+(2026-10-06).
+
+## #322 322-policy4-agent-merge: an agent may merge an audit PR on the maintainer's standing instruction (2026-10-06)
+
+Maintainer decision, dated 2026-10-06. Anchor: `322-policy4-agent-merge`. It amends
+`322-policy4-approval`.
+
+**The ambiguity.** `322-policy4-approval` said that an agent's merge, even on a standing
+"merge all PRs when green" instruction, was not approval, and that `/ship` never merges an
+audit PR. In practice the audit PRs of #339 (#362, #364) were merged by an agent on that
+standing instruction. The rule and the practice did not match.
+
+**Decision.** The maintainer's explicit standing instruction "merge all prs when green" covers
+audit PRs. Under it an agent may merge an audit PR once CI is green. The other rules stay:
+- an audit PR is never auto-merged (no GitHub auto-merge, no Dependabot auto-merge);
+- the PR needs a PR comment that names the worksheets the review covered;
+- no approving GitHub review is required.
+
+Policy 4 and `docs/supply-chain.md` step 8 now say this, and the sentence that excluded agent
+merges is removed from both. Records written before this date are left as written (see "Not
+retroactive" in `322-policy4-approval`).
+
+**Policy 6 second limb: acknowledged.** The maintainer acknowledged the second limb proposed in
+`322-getrandom` on 2026-10-05, in the working session, with the words "lets go with fable
+recommendation". An agent posted that acknowledgement on #362 on the maintainer's behalf:
+https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/362#issuecomment-6019167559.
+So the getrandom 0.4.3 and 0.3.4 certifications stand, and the fallback (re-exempting 0.4.3) is
+not taken. Policy 6 now records the limb as acknowledged.
+
+**getrandom upstream report: not filed per maintainer.** The drafted `linux_raw` report stays in
+the 0.4.3 worksheet. Condition (d) of the second limb ("a report has been drafted and is held
+for the maintainer") is still met.
+
+**W-O8 upstream issue: filed.** The `rustls-webpki` W-O8 enhancement suggestion (parse the
+intermediates once per `build_chain`; `322-rustls-webpki`) was filed on 2026-10-06 as
+https://github.com/rustls/webpki/issues/540. It is not a condition of the certification. The
+re-audit trigger in `322-rustls-webpki` is unchanged.
+
+**Items this settles.** The B7a "Maintainer items" (the second limb and the `linux_raw`
+report), and the "#339 completion status" follow-ups for the W-O8 report, the `linux_raw`
+report. (Plan Q4 itself was settled by `322-policy4-approval`.)
+
+**Status:** DECIDED (maintainer, 2026-10-06).

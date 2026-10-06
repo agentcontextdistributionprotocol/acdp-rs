@@ -811,7 +811,10 @@ under the concern rule below.
 4. **`who` and sign-off.** `who = "Ajit Koti <ajitkoti@zer07labs.com>"`. The `Method:`
    line is exact. The per-crate worksheet is committed under `supply-chain/worksheets/`;
    citing the PR URL is optional (amended 2026-10-06, `/reconcile`; replaces "open a
-   draft PR first so the URL exists; the worksheet goes in the PR body"). **Audit PRs are never
+   draft PR first so the URL exists; the worksheet goes in the PR body"). Only the
+   `Method: Reviewed with Claude (Opus) assistance; worksheet in` prefix is exact; notes
+   written before 2026-10-06 in other forms (for example PR URL first) stand as
+   written. **Audit PRs are never
    auto-merged.** **Approval (amended 2026-10-05, maintainer decision
    `322-policy4-approval`):** the maintainer approves an audit PR by merging it by hand
    themselves, and by posting a PR comment that names the worksheets for `<crates>`
@@ -2110,7 +2113,8 @@ reopen any of them from this record.
   required `cargo-vet` job (`.github/workflows/ci.yml:199-206`). It runs
   `scripts/test-check-crypto-vet.sh` and `scripts/test-dependabot-crypto-gate.sh`. Only the
   `--with-network` corrupted-tarball check of `vet-facts.sh` is still local-only.
-- **Decided by:** Opus. **Verdict:** confirm, superseded by #344; the entry text was updated.
+- **Decided by:** Opus. **Verdict:** confirm, superseded by #344; the entry's Status line was
+  updated.
   **Status:** CONFIRMED-superseded.
 
 ### 2026-10-06 — #322 vet-facts: ratio rule vs. the plan's zeroize method
@@ -2128,7 +2132,9 @@ reopen any of them from this record.
 - **Analysis:** every later #322 and #339 audit followed the committed-worksheet convention,
   and `docs/supply-chain.md` step 4 already says to add
   `supply-chain/worksheets/<crate>-<version>.md`. A worksheet kept only in a PR body is lost
-  from the tree. The policy text was the outlier.
+  from the tree. The policy text was the outlier. The `Method:` lines themselves vary
+  (B7a/B7b put the PR URL first), so only the line's prefix is now exact, and earlier notes
+  stand as written.
 - **Decided by:** Opus. **Verdict:** change (documentation only). Policy item 3's template now
   reads `worksheet in supply-chain/worksheets/<crate>-<version>.md (<PR URL or issue/phase
   ref>)`. Item 4 now says the worksheet is committed under `supply-chain/worksheets/` and that

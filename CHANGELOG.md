@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.5](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.14.4...acdp-v0.14.5) - 2026-10-06
+
+### Fixed
+
+- *(acdp-wasm)* drop the unused getrandom 0.2 dependency ([#365](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/365))
+
+### Other
+
+- *(supply-chain)* reconcile supply-chain-recertify-322 assumptions ([#374](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/374))
+- *(supply-chain)* allow agent merges of audit PRs; fix vet-facts brace imports ([#372](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/372))
+- *(supply-chain)* record audit PR approval as manual merge plus PR comment ([#366](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/366))
+- *(supply-chain)* certify Tier B batch B7b (rustls-webpki 0.103.15) ([#364](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/364))
+- *(supply-chain)* certify Tier B batch B7a (getrandom 0.2.17, 0.3.4, 0.4.3) ([#362](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/362))
+- *(supply-chain)* record #322 merges, filed upstream issues, dalek unsafe count ([#361](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/361))
+- *(supply-chain)* certify Tier B batch B6 (cpufeatures, block-buffer, cmov, hybrid-array, crypto-bigint) ([#359](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/359))
+- *(supply-chain)* certify Tier B batch B5 (base16ct, base64ct, rustls-pki-types, const-oid, der, curve25519-dalek-derive) ([#360](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/360))
+- *(supply-chain)* certify Tier B batch B4 (rand_core, ctutils, webpki-roots, typenum) ([#358](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/358))
+- *(supply-chain)* certify Tier B batch B3 (untrusted, cpubits, hyper-rustls, group, tokio-rustls, primeorder) ([#357](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/357))
+- *(supply-chain)* certify Tier B batch B2 (hmac, rfc6979, pkcs8, sec1, primefield, digest) ([#356](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/356))
+- *(supply-chain)* certify Tier B batch B1 ([#339](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/339)) ([#355](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/355))
+- *(supply-chain)* drop aws-lc-rs from the graph via ring TLS test harness ([#354](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/354))
+
 ## [0.14.4](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.14.3...acdp-v0.14.4) - 2026-10-04
 
 ### Added

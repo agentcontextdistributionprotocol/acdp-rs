@@ -6,6 +6,11 @@ updates:
     schedule:
       interval: monthly
     open-pull-requests-limit: 5
+    ignore:
+      # uuid 1.27.0 requires rustc 1.89; the workspace MSRV is 1.86 (the
+      # MSRV CI job fails on it). Drop this once the MSRV is raised.
+      - dependency-name: "uuid"
+        versions: [">=1.27.0"]
     groups:
       # Crypto-critical direct deps (#322). Listed FIRST so it matches before
       # the generic groups: a bump here needs a real cargo-vet audit (the

@@ -880,11 +880,6 @@ criteria = "safe-to-deploy"
 version = "0.1.7"
 criteria = "safe-to-deploy"
 
-[[exemptions.zeroize]]
-version = "1.9.0"
-criteria = "safe-to-deploy"
-notes = "KEPT EXEMPT (#322): safe optimization_barrier reads possibly-uninit byte as u8 on non-asm targets (src/barrier.rs:92-100); see DECISIONS.md '322-zeroize'"
-
 [[exemptions.zerotrie]]
 version = "0.2.5"
 criteria = "safe-to-deploy"

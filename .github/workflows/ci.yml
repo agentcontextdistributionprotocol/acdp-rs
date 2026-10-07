@@ -179,9 +179,9 @@ jobs:
       # scripts/crypto-critical.txt to be fully audited at each locked
       # version (no "move the exemption" path), allowing only the markers
       # documented in that file (`allow-exempt:DECISIONS#322-<crate>@<version>`
-      # for a concern-rule crate, pinned to the exempted version -- today only
-      # zeroize@1.9.0; `allow-exempt:#322-pending`
-      # is unused since #322 closed). A stale marker on a now-audited crate
+      # for a concern-rule crate, pinned to the exempted version -- unused
+      # since zeroize 1.9.1 was certified (#341); `allow-exempt:#322-pending`
+      # is retired). A stale marker on a now-audited crate
       # also fails. Part of the required `cargo-vet` check. Self-tests:
       # scripts/test-check-crypto-vet.sh.
       - name: Crypto-critical crates are audited, or exempt by DECISIONS.md

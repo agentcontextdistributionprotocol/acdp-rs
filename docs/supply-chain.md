@@ -450,7 +450,7 @@ stable `asm!`, which include the `bindings/acdp-wasm` wasm32 build
 1.9.1 (2026-10-06) fixes it: the fallback now reads a `MaybeUninit<u8>`
 (RustCrypto/utils#1551), and the crate's internal barrier calls are gone
 (RustCrypto/utils#1535). Because 1.9.0 was never certified, it could not be a
-delta base, and the delta from the audited 1.8.2 is 0.77 of `src/`, so 1.9.1
+delta base, and the delta from the audited 1.8.2 is 822 changed lines against 1,061 `src/` lines (ratio 0.77 by the `vet-facts.sh` convention, which counts non-`src/` files too; `src/` alone changed 402 lines), so 1.9.1
 was audited in full. One discretion note remains: the fallback's non-atomic
 read can race with a concurrent write through interior mutability, but no
 ACDP artifact calls `optimization_barrier` and the wasm binding is

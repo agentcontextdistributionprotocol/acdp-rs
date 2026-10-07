@@ -84,8 +84,9 @@ double zeroization in `Vec`), #1538 (test-only), and #1551 (the Z-1 fix; merged
   upstream's claim and is not claimed here (see *Not claimed*).
 - The only remaining in-crate caller of `optimization_barrier` is `zeroize_stack`
   (`src/stack.rs:51`), which passes `&[0u8; N]`, a fully initialized local array with no
-  interior mutability. `zeroize_stack` is safe; a large `N` can only overflow the stack,
-  which is a guarded abort, not UB.
+  interior mutability. `zeroize_stack` is safe; a large `N` can only overflow the stack
+  (a guarded abort on native targets; on wasm32-unknown-unknown there is no guard page, but
+  nothing calls `zeroize_stack`).
 - **`Vec<Z>::zeroize` (#1525).** It now zeroizes the spare capacity first, then the
   initialized elements, then `clear()`s. Before, it zeroized elements, cleared, and then
   zeroized the whole capacity. Sound (`spare_capacity_mut` is `&mut [MaybeUninit<Z>]`).
@@ -140,8 +141,10 @@ writes. `core::hint::black_box(val)` alone avoids the read."
 - ACDP's secret path is acdp-crypto's `#[derive(ZeroizeOnDrop)] SigningKey` wrapping
   `ed25519_dalek::SigningKey`, whose `Drop` zeroizes `[u8; 32]` / `Scalar` with
   `volatile_write`. Under 1.9.1 that is a volatile write with no barrier read on any target.
+  The node and py bindings also hold `Zeroizing<[u8; 32]>` directly (for example
+  `bindings/acdp-node/src/producer.rs:277`), with the same volatile-write behaviour.
 - The Tier A/B crates whose audit notes cite Z-1 (curve25519-dalek, ecdsa, elliptic-curve,
-  p256, primefield, rustls, zeroize_derive) zeroize fully initialized values;
+  p256, primefield, rustls; zeroize_derive's note only says "zeroize 1.9.0, still exempt") zeroize fully initialized values;
   those notes now refer to a fixed finding.
 
 ## Not claimed

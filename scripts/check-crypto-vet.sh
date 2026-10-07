@@ -114,7 +114,7 @@ checked=0
 # fd 3, so nothing in the loop body can consume the list from stdin.
 while read -r name marker <&3 || [ -n "${name:-}" ]; do
     # Comments: a line starting with `#`; or whitespace then `#` (the `#` in
-    # a marker such as `allow-exempt:DECISIONS#322-zeroize@1.9.0` follows a
+    # a marker such as `allow-exempt:DECISIONS#322-<crate>@<version>` follows a
     # `:` or other text, so it is not mistaken for a comment).
     case "${name:-}" in '' | '#'*) continue ;; esac
     marker=$(printf '%s' "${marker:-}" | sed -E 's/(^|[[:space:]])#.*$//; s/[[:space:]]+$//')

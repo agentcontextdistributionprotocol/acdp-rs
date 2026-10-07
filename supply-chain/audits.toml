@@ -872,6 +872,25 @@ criteria = "safe-to-deploy"
 version = "1.8.2"
 notes = "RustCrypto 'zeroize'. Secure zeroing; acdp-crypto SigningKey seed uses ZeroizeOnDrop. Reviewed 1.8.2: volatile writes + compiler fences, minimal audited unsafe. Canonical, latest 1.x. cargo audit clean 2026-07-05."
 
+[[audits.zeroize]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+version = "1.9.1"
+notes = """
+Scope: full audit of 1.9.1. 1.9.0 was never certified (exempt, DECISIONS 322-zeroize), so it is not a valid delta base; against the audited 1.8.2 the delta is 12 files +619/-203, 822 changed / 1061 src lines = 0.77 >= 0.75, so full per the #322 method rule. All 1061 src/ lines read in full (lib.rs 850, barrier.rs 104, stack.rs 52, x86.rs 25, aarch64.rs 30) plus Cargo.toml; the 1.9.0 -> 1.9.1 diff (8 files +78/-42) read hunk by hunk against the full-read 1.9.0 worksheet.
+Source: crates.io tarball sha256 e13084392c5e4bc371903e2935a5eaeed24905a7511356b883835e18a78f6879 == Cargo.lock checksum (root and py/node/wasm binding lockfiles identical).
+unsafe: 17 lines, same sites as 1.9.0, all sound: write_volatile on &mut T (volatile_write; x86/aarch64 SIMD zeroed values); volatile_set callers (Option<Z>, [MaybeUninit<Z>] with checked_mul/isize check, [Z: DefaultIsZeroes], zeroize_flat_type under its documented contract) stay within the place; Option<Z> write_volatile(None) after take(); str/String via all-zero UTF-8. Changed site: src/barrier.rs:96 non-asm fallback now read_volatile(p.cast::<MaybeUninit<u8>>()) guarded by size_of_val > 0, so a possibly-uninitialized byte is no longer produced as u8 (Z-1 of the 1.9.0 review fixed, RustCrypto/utils#1551 closing #1549).
+asm/SIMD: src/barrier.rs:69 empty asm!("# {}") compiler barrier (readonly, preserves_flags, nostack) on aarch64/arm/arm64ec/loongarch64/riscv/s390x/x86/x86_64 when not(miri); unchanged; reads no memory.
+build.rs / proc-macro: none (build = false); not a proc-macro.
+Powerful imports: none (#![no_std]; alloc/std behind features; std only for CString; include_str! README for docs).
+Behaviour: #1535 removes every internal optimization_barrier call after volatile writes (erasure rests on volatile writes; 1.8.2 also had compiler_fence); only remaining caller is zeroize_stack on a local [0u8; N]. Vec<Z>::zeroize now zeroizes spare capacity, then elements, then clear() (sound; storage left by dropped elements is no longer re-wiped, hygiene only). Zeroizing Debug is now opaque (no longer prints the secret). tests/alloc.rs test-only.
+ACDP use: features alloc, default, derive (root and py/node/wasm bindings identical); acdp-crypto SigningKey ZeroizeOnDrop -> ed25519-dalek [u8; 32] volatile_write zeroization; bindings/acdp-wasm (wasm32-unknown-unknown) is the only artifact on the non-asm fallback.
+Discretion: the safe pub fn optimization_barrier's non-asm fallback does a non-atomic read_volatile of byte 0 of *val through a shared reference; for T with interior mutability this is a data race with a concurrent write (src/barrier.rs:93-101, unchanged from 1.9.0). Unreachable in every ACDP artifact: no crate in the four lockfiles (362 crate-versions grepped) nor ACDP itself calls optimization_barrier or zeroize_stack; zeroize_stack passes a non-shared local array; acdp-wasm builds without the atomics target feature (single-threaded); native builds take the asm path. Policy 6 carve-out (worksheet observation Z-3).
+New deps: none (optional serde 1, optional zeroize_derive 1.5 unchanged); rust-version 1.85 unchanged (ACDP MSRV 1.86).
+Advisories: cargo deny check advisories clean on 2026-10-07.
+Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance, or that erasure is complete or effective against the optimizer.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/zeroize-1.9.1.md (issue #341; closes DECISIONS 322-zeroize)."""
+
 [[audits.zeroize_derive]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"
 criteria = "safe-to-deploy"

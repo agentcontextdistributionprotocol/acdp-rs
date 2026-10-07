@@ -121,85 +121,116 @@ else
 fi
 expect_fail "$d" subtle "not fully audited"
 
-# (a2) an exempted crate's marker is dropped while it is still exempted.
-#      zeroize is the fixture: it stays exempt (DECISIONS.md 322-zeroize).
+# Remove every [[audits.<crate>]] block from a scratch store.
+strip_audits() {
+    local d=$1 crate=$2
+    awk -v hdr="[[audits.$crate]]" '
+        $0 == hdr { skip = 1; next }
+        skip && /^\[/ { skip = 0 }
+        !skip { print }
+    ' "$d/store/audits.toml" >"$d/store/audits.toml.new" && mv "$d/store/audits.toml.new" "$d/store/audits.toml"
+}
+
+# Turn zeroize back into an exempted crate in a scratch store: drop its audits
+# and exempt the locked version. zeroize is the fixture for the DECISIONS
+# marker cases because the real DECISIONS.md keeps the `322-zeroize` anchor
+# (the crate itself is audited since 1.9.1, issue #341). The version is read
+# from Cargo.lock so a zeroize bump does not break the fixtures.
+zeroize_locked=$(awk '
+    /^\[\[package\]\]/ { name = ""; next }
+    /^name = / { name = $3; gsub(/"/, "", name); next }
+    /^version = / && name == "zeroize" { v = $3; gsub(/"/, "", v); print v; exit }
+' "$repo_root/Cargo.lock")
+[ -n "$zeroize_locked" ] || { echo "test-check-crypto-vet: zeroize not in Cargo.lock" >&2; exit 1; }
+exempt_zeroize() {
+    local d=$1
+    strip_audits "$d" zeroize
+    printf '\n[[exemptions.zeroize]]\nversion = "%s"\ncriteria = "safe-to-deploy"\n' "$zeroize_locked" >>"$d/store/config.toml"
+}
+
+# (a2) an exempted crate without a marker fails.
 d=$(new_case a2-unmarked-exempted)
-set_marker "$d/list.txt" zeroize ""
+exempt_zeroize "$d"
 expect_fail "$d" zeroize "not fully audited"
 
 # (b) the retired `#322-pending` marker is rejected: it carried no DECISIONS
 #     anchor and no @version pin, so it could pass an exemption at any version.
 d=$(new_case b-retired-pending)
+exempt_zeroize "$d"
 set_marker "$d/list.txt" zeroize "allow-exempt:#322-pending"
 expect_fail "$d" zeroize "unknown marker"
 
-# (b2) the same stale check applies to a DECISIONS marker.
+# (b2) a DECISIONS marker left on a fully audited crate is stale (the real
+#      store audits zeroize 1.9.1).
 d=$(new_case b2-stale-decisions)
-cat >>"$d/store/audits.toml" <<'EOF'
-
-[[audits.zeroize]]
-who = "Guard Self-Test <test@example.invalid>"
-criteria = "safe-to-deploy"
-version = "1.9.0"
-notes = "FAKE audit injected by scripts/test-check-crypto-vet.sh (scratch copy only)."
-EOF
-set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize@1.9.0"
+set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize@$zeroize_locked"
 expect_fail "$d" zeroize "stale marker"
 
 # (c) the plan's case: a DECISIONS marker naming a nonexistent anchor.
 d=$(new_case c-nonexistent-anchor)
-set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#nonexistent@1.9.0"
+exempt_zeroize "$d"
+set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#nonexistent@$zeroize_locked"
 expect_fail "$d" zeroize "must name anchor '322-zeroize' exactly"
 
 # (c1) the anchor is the right shape but DECISIONS.md lacks it.
 d=$(new_case c1-anchor-absent)
+exempt_zeroize "$d"
 drop_anchor "$d/DECISIONS.md" "322-zeroize"
-set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize@1.9.0"
+set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize@$zeroize_locked"
 expect_fail "$d" zeroize "does not appear in"
 
 # (c3) a prefix anchor (it would match as a substring) is rejected.
 d=$(new_case c3-prefix-anchor)
-set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322@1.9.0"
+exempt_zeroize "$d"
+set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322@$zeroize_locked"
 expect_fail "$d" zeroize "must name anchor '322-zeroize' exactly"
 
 # (c4) another crate's anchor is rejected even though DECISIONS.md has it.
 d=$(new_case c4-other-crate-anchor)
-set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-sha2@1.9.0"
+exempt_zeroize "$d"
+set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-sha2@$zeroize_locked"
 printf '\nAnchor: 322-sha2\n' >>"$d/DECISIONS.md"
 expect_fail "$d" zeroize "must name anchor '322-zeroize' exactly"
 
 # (c5) DECISIONS.md has only a longer token (322-zeroize-extra): no match.
 d=$(new_case c5-longer-token-only)
+exempt_zeroize "$d"
 drop_anchor "$d/DECISIONS.md" "322-zeroize"
-set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize@1.9.0"
+set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize@$zeroize_locked"
 printf '\nAnchor: 322-zeroize-extra\n' >>"$d/DECISIONS.md"
 expect_fail "$d" zeroize "does not appear in"
 
 # (c2) a DECISIONS marker whose anchor exists passes.
 d=$(new_case c2-present-anchor)
-set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize@1.9.0"
+exempt_zeroize "$d"
+set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize@$zeroize_locked"
 printf '\nAnchor: 322-zeroize\n' >>"$d/DECISIONS.md"
 expect_pass "$d"
 
 # (g) a DECISIONS marker without @<version> is rejected.
 d=$(new_case g-missing-version)
+exempt_zeroize "$d"
 set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize"
 expect_fail "$d" zeroize "must pin the exempted version"
 
 # (g2) the pinned version differs from the locked (exempted) version, as after
 #      a bump whose exemption was moved instead of audited.
 d=$(new_case g2-locked-version-mismatch)
-set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize@1.8.2"
-expect_fail "$d" zeroize "re-audit zeroize 1.9.0, or update the DECISIONS.md '322-zeroize' entry"
+exempt_zeroize "$d"
+set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize@0.0.1"
+expect_fail "$d" zeroize "re-audit zeroize $zeroize_locked, or update the DECISIONS.md '322-zeroize' entry"
 
 # (g3) config.toml exempts a version other than the pinned one.
 d=$(new_case g3-exempted-version-mismatch)
-printf '\n[[exemptions.zeroize]]\nversion = "1.9.1"\ncriteria = "safe-to-deploy"\n' >>"$d/store/config.toml"
-expect_fail "$d" zeroize "config.toml exempts version 1.9.1"
+exempt_zeroize "$d"
+set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize@$zeroize_locked"
+printf '\n[[exemptions.zeroize]]\nversion = "0.0.1"\ncriteria = "safe-to-deploy"\n' >>"$d/store/config.toml"
+expect_fail "$d" zeroize "config.toml exempts version 0.0.1"
 
-# (g4) a matching pinned version passes (the real list's form).
+# (g4) a matching pinned version passes.
 d=$(new_case g4-version-match)
-set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize@1.9.0"
+exempt_zeroize "$d"
+set_marker "$d/list.txt" zeroize "allow-exempt:DECISIONS#322-zeroize@$zeroize_locked"
 expect_pass "$d"
 
 # (d) an unknown marker.
@@ -212,13 +243,10 @@ d=$(new_case e-not-locked)
 printf 'no-such-crate-322\n' >>"$d/list.txt"
 expect_fail "$d" no-such-crate-322 "not a registry crate in Cargo.lock"
 
-# (f) a failing cargo vet is a guard failure.
+# (f) a failing cargo vet is a guard failure (zeroize loses its audits and
+#     has no exemption).
 d=$(new_case f-vet-fails)
-awk '
-    /^\[\[exemptions\.zeroize\]\]$/ { skip = 1; next }
-    skip && /^\[/ { skip = 0 }
-    !skip { print }
-' "$d/store/config.toml" >"$d/store/config.toml.new" && mv "$d/store/config.toml.new" "$d/store/config.toml"
+strip_audits "$d" zeroize
 run_guard "$d"
 if [ "$rc" -eq 1 ] && grep -qF "did not succeed" "$d/out"; then
     ok "f-vet-fails: guard exits 1 when cargo vet fails"
@@ -229,10 +257,10 @@ fi
 
 if [ "$with_network" -eq 1 ]; then
     mkdir -p "$tmp/crates"
-    curl -fsSL https://static.crates.io/crates/zeroize/zeroize-1.9.0.crate -o "$tmp/crates/zeroize-1.9.0.crate"
-    printf 'x' >>"$tmp/crates/zeroize-1.9.0.crate"
+    curl -fsSL https://static.crates.io/crates/zeroize/zeroize-$zeroize_locked.crate -o "$tmp/crates/zeroize-$zeroize_locked.crate"
+    printf 'x' >>"$tmp/crates/zeroize-$zeroize_locked.crate"
     set +e
-    VET_FACTS_CRATE_DIR="$tmp/crates" "$script_dir/vet-facts.sh" zeroize 1.9.0 >"$tmp/facts.out" 2>&1
+    VET_FACTS_CRATE_DIR="$tmp/crates" "$script_dir/vet-facts.sh" zeroize "$zeroize_locked" >"$tmp/facts.out" 2>&1
     rc=$?
     set -e
     if [ "$rc" -ne 0 ] && grep -qF "checksum MISMATCH" "$tmp/facts.out"; then

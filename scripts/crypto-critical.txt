@@ -30,7 +30,7 @@ ed25519-dalek
 curve25519-dalek
 signature
 sha2
-zeroize           allow-exempt:DECISIONS#322-zeroize@1.9.0
+zeroize
 subtle
 p256
 ecdsa

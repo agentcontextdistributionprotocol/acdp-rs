@@ -338,7 +338,7 @@ build.
 
 ```bash
 cargo vet --locked              # what CI runs; must be green
-scripts/check-crypto-vet.sh     # also in CI: crypto-critical crates audited (zeroize: documented exemption)
+scripts/check-crypto-vet.sh     # also in CI: every crypto-critical crate audited
 ```
 
 Config lives under [`supply-chain/`](../supply-chain/):
@@ -376,9 +376,10 @@ by issue #339 (batch B1: `wnaf`, `ff`, `spki`, `crypto-common`, `zeroize_derive`
 `typenum`; batch B5: `base16ct`, `base64ct`, `rustls-pki-types`, `const-oid`,
 `der`, `curve25519-dalek-derive`; batch B6: `cpufeatures`, `block-buffer`,
 `cmov`, `hybrid-array`, `crypto-bigint`; batch B7a: `getrandom` at all three locked
-versions; batch B7b: `rustls-webpki`). **Forty-five of the forty-six are
-covered by our own audit at every locked version. `zeroize` is the one deliberate
-exception:** it stays exempt under the #322 concern rule. The per-crate review worksheets are in
+versions; batch B7b: `rustls-webpki`). **All forty-six are covered by our own
+audit at every locked version.** `zeroize`, the last exception, was kept exempt
+at 1.9.0 under the #322 concern rule and certified at 1.9.1 (issue #341,
+2026-10-07). The per-crate review worksheets are in
 [`supply-chain/worksheets/`](../supply-chain/worksheets/), and the notes are in
 `supply-chain/audits.toml`.
 
@@ -399,7 +400,7 @@ latest release, and no open advisory.
 | `curve25519-dalek` | 5.0.0 | 4.1.3, 4.1.3 → 5.0.0 | audit (delta, 2026-10-04; discretion note on the nightly-only `docsrs` path) | dalek-cryptography | Curve arithmetic under ed25519 |
 | `signature` | 3.0.0 | 2.2.0, 3.0.0 | audit (full, 2026-10-04) | RustCrypto | Signature traits |
 | `sha2` | 0.11.0 | 0.10.9, 0.11.0 | audit (full, 2026-10-04; discretion notes, DECISIONS.md `322-sha2`) | RustCrypto | `content_hash` / `lineage_id` (RFC-ACDP-0001 §5.7) |
-| `zeroize` | 1.9.0 | 1.8.2 | **exemption**, kept under the #322 concern rule (DECISIONS.md `322-zeroize`) | RustCrypto | Secret-key zeroing (`SigningKey` `ZeroizeOnDrop`) |
+| `zeroize` | 1.9.1 | 1.8.2, 1.9.1 | audit (full, 2026-10-07, #341; closes DECISIONS.md `322-zeroize`; discretion note on the unused `optimization_barrier` fallback) | RustCrypto | Secret-key zeroing (`SigningKey` `ZeroizeOnDrop`) |
 | `subtle` | 2.6.1 | 2.6.1 | audit (2026-07-05) | dalek-cryptography | Constant-time primitives |
 | `p256` | 0.14.0 | 0.13.2, 0.14.0 | audit (full, 2026-10-04; discretion note on a test-only fixture) | RustCrypto | `ecdsa-p256` signing and verification-method support |
 | `ecdsa` | 0.17.0 | 0.16.9, 0.17.0 | audit (full, 2026-10-04; discretion note on a test-only fixture) | RustCrypto | Generic ECDSA under p256 |
@@ -442,15 +443,19 @@ latest release, and no open advisory.
 | `getrandom` | 0.4.3, 0.2.17, 0.3.4 | 0.4.3, 0.2.17, 0.3.4 | audit (full, 2026-10-05, #339 B7a; discretion notes on the opt-in `linux_raw` backend, DECISIONS.md `322-getrandom`, and on nightly/tier-3 backends; 0.3.4 is dev-only and meets `safe-to-deploy`; RNG output quality not claimed) | rust-random | OS RNG: `UnwrapErr(SysRng)` in key generation (0.4.3); ring's `SystemRandom` under rustls (0.2.17; uncalled in the wasm binding, #363); proptest's `rand` (0.3.4) |
 | `rustls-webpki` | 0.103.15 | 0.103.15 | audit (full, 2026-10-05, #339 B7b; 0 `unsafe`; DECISIONS.md `322-rustls-webpki`; bounded path-building DoS cost recorded as an observation; certificate-validation correctness not claimed) | rustls | Certificate path validation behind rustls's `WebPkiServerVerifier` for every ACDP HTTPS client (trust boundary); its CRL code is compiled but unreached |
 
-**`zeroize` 1.9.0 is exempt, not audited.** Its new safe
-`optimization_barrier` reads a possibly-uninitialized byte on targets without
-stable `asm!`. The `bindings/acdp-wasm` wasm32 build is one of those targets
-(DECISIONS.md `322-zeroize`, finding Z-1). Native builds use the sound `asm!`
-path, and no known ACDP call site triggers the fault. Z-1 is reported
-upstream as RustCrypto/utils#1549. **Exit criterion:**
-delta-audit zeroize 1.9.1 when it is released (RustCrypto/utils#1535 removes the
-crate's internal callers of `optimization_barrier`). Its guard line carries
-`allow-exempt:DECISIONS#322-zeroize@1.9.0`, which pins the exemption to 1.9.0.
+**`zeroize` 1.9.1 is audited (full); 1.9.0 was exempt.** 1.9.0's new safe
+`optimization_barrier` read a possibly-uninitialized byte on targets without
+stable `asm!`, which include the `bindings/acdp-wasm` wasm32 build
+(DECISIONS.md `322-zeroize`, finding Z-1, reported as RustCrypto/utils#1549).
+1.9.1 (2026-10-06) fixes it: the fallback now reads a `MaybeUninit<u8>`
+(RustCrypto/utils#1551), and the crate's internal barrier calls are gone
+(RustCrypto/utils#1535). Because 1.9.0 was never certified, it could not be a
+delta base, and the delta from the audited 1.8.2 is 822 changed lines against 1,061 `src/` lines (ratio 0.77 by the `vet-facts.sh` convention, which counts non-`src/` files too; `src/` alone changed 402 lines), so 1.9.1
+was audited in full. One discretion note remains: the fallback's non-atomic
+read can race with a concurrent write through interior mutability, but no
+ACDP artifact calls `optimization_barrier` and the wasm binding is
+single-threaded (worksheet `zeroize-1.9.1.md`, observation Z-3). The guard
+marker and the exemption are removed.
 
 **`cpufeatures` 0.3.1 is audited with a discretion note.** On x86 it reads
 CPUID leaf 7 without checking the maximum basic leaf (`src/x86.rs:49-51`), so
@@ -591,14 +596,15 @@ this, because it passes an exempted crate exactly like an audited one, so the
 fails when a listed crate is exempted or only partially vetted, so moving an
 exemption to a bumped version no longer turns CI green.
 
-The guard is now **enforcing**: since #322 closed, every listed crate except
-`zeroize` carries no marker (forty-five of the forty-six, including all
-thirty-five Tier B crates added by #339 batches B1-B7b). The list file documents
-two markers:
+The guard is now **enforcing**: no listed crate carries a marker (all
+forty-six, including all thirty-five Tier B crates added by #339 batches
+B1-B7b; `zeroize`'s marker was removed when 1.9.1 was certified, #341). The
+list file documents two markers:
 
 - `allow-exempt:DECISIONS#322-<crate>@<version>` is for a crate kept exempt
-  under the #322 concern rule. **Only `zeroize` uses it**
-  (`allow-exempt:DECISIONS#322-zeroize@1.9.0`). It must meet three conditions:
+  under the #322 concern rule. **No crate uses it today**; `zeroize` carried
+  `allow-exempt:DECISIONS#322-zeroize@1.9.0` until 1.9.1 was certified
+  (#341). It must meet three conditions:
   - DECISIONS.md must contain the anchor `322-<crate>` as a whole token.
   - The `@<version>` is required.
   - Every unaudited locked version, and every
@@ -606,8 +612,7 @@ two markers:
     the pinned version. Otherwise the guard fails with "re-audit, or update the
     DECISIONS.md entry and the marker".
 
-  This means moving zeroize's exemption to a newer release no longer passes.
-  The `322-zeroize` exit criterion is a delta audit of 1.9.1.
+  This means moving a pinned exemption to a newer release does not pass.
 - `allow-exempt:#322-pending` was the in-progress marker. It is retired: the
   guard rejects it as an unknown marker, because it carried no DECISIONS anchor
   and no `@<version>` pin.

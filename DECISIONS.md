@@ -2229,3 +2229,44 @@ independent read of the code; none is a one-way door.
 merged (#332, #334, #335, #336, #345); #322 is closed. zeroize stays exempt under the concern
 rule (`322-zeroize`); its exit criterion, a delta audit of 1.9.1, is tracked in #341 and is
 outside the plan.
+
+## #341 322-zeroize closed: zeroize 1.9.1 certified, exemption removed (2026-10-07)
+
+Closes the `322-zeroize` entry above: its exit criterion is met. Worksheet:
+`supply-chain/worksheets/zeroize-1.9.1.md`.
+
+- **Release.** zeroize 1.9.1 (2026-10-06) ships RustCrypto/utils#1551, which fixes Z-1
+  (our report RustCrypto/utils#1549, now closed): the non-asm fallback of
+  `optimization_barrier` reads `MaybeUninit<u8>` instead of `u8`
+  (`src/barrier.rs:93-97`). It also ships #1535: no internal caller of the barrier
+  remains except `zeroize_stack` (`src/stack.rs:51`), which passes an initialized local
+  array. Tarball sha256 `e13084392c5e…f6879` equals the `Cargo.lock` checksum; the root and
+  the py/node/wasm binding locks all move 1.9.0 -> 1.9.1 together (lock parity kept).
+- **Method: full, not delta.** The exit criterion said "delta-audit 1.9.1", but 1.9.0 was
+  never certified, so `1.9.0 -> 1.9.1` is not a valid vet base and moving the exemption is
+  barred (Policy 7). Against the audited 1.8.2 the delta is 822 changed / 1,061 `src/`
+  lines = 0.77 >= 0.75, so Policy 2 gives full. All 1,061 lines were read, and the
+  1.9.0 -> 1.9.1 diff (+78/-42) was checked hunk by hunk against the full-read 1.9.0
+  worksheet. 17 `unsafe` lines, all sound; no new `unsafe`, `asm!`, build.rs, deps, or
+  powerful imports. Behaviour changes (barrier calls removed, `Vec` zeroize order,
+  opaque `Zeroizing` Debug) carry no memory-safety impact.
+- **Residual (Z-3), certified with a `Discretion:` line under the Policy 6 carve-out.** The
+  fallback's `read_volatile` is non-atomic, so for a `T` with interior mutability it can race
+  with a concurrent write (UB). This is the "unused safe pub fn" case the `322-zeroize`
+  decision anticipated: no crate in the four lockfiles (362 crate-versions grepped) and no
+  ACDP code calls `optimization_barrier` or `zeroize_stack`; `acdp-wasm` builds for
+  `wasm32-unknown-unknown` without the `atomics` target feature (single-threaded); native
+  builds use the `asm!` path, which reads no memory. Not filed upstream; the worksheet has
+  draft text.
+- **Changes.** `[[audits.zeroize]] version = "1.9.1"` added; `[[exemptions.zeroize]]`
+  removed from `supply-chain/config.toml`; the marker
+  `allow-exempt:DECISIONS#322-zeroize@1.9.0` removed from `scripts/crypto-critical.txt` (no
+  crate carries a marker now); `scripts/test-check-crypto-vet.sh` builds its zeroize
+  exemption fixtures in the scratch store instead of relying on the real one. The anchor
+  `322-zeroize` stays in this file, so those fixtures keep a real anchor.
+- **Evidence.** `cargo vet --locked` green; `scripts/check-crypto-vet.sh`: all 46
+  crypto-critical crates pass; self-tests pass.
+
+**Decided by:** Opus. Reversible (re-add the exemption and marker). The audit PR follows
+Policy 4 sign-off (maintainer merge plus a comment naming the worksheet, or an agent merge
+under the standing instruction). **Status:** DECIDED.

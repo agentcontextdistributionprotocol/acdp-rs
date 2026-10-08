@@ -33,8 +33,8 @@
 //! [`RegistryServer::publish_pinned_verified_in_tenant_with_outcome`] (and
 //! [`RegistryServer::prove_publish_identity_pinned`]) are a third,
 //! distinct, RFC-conformant category — not a laxer variant of the
-//! `_unverified_for_tests` pair above. Steps 1–6 run here as usual; steps
-//! 7–8 (signature verification against a resolved key) are the *caller's*
+//! `_unverified_for_tests` pair above. Steps 1–5 and the key_id binding of step 6 run here as usual; key resolution and
+//! signature verification (steps 6–7) against a resolved key are the *caller's*
 //! responsibility, already done before this method is reached, against an
 //! operator-pinned key rather than a live-resolved DID document. See that
 //! method's own doc comment for the full trust argument.

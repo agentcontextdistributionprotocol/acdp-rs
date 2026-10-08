@@ -148,5 +148,5 @@ are also exported.
 ## Public surface
 
 The canonical list of exported classes and methods (and their arity) is
-[`bindings/interop/expected_surface.json`](../interop/expected_surface.json),
+[`bindings/interop/expected_surface.json`](https://github.com/agentcontextdistributionprotocol/acdp-rs/blob/main/bindings/interop/expected_surface.json),
 enforced against this package by the interop parity tests.

@@ -26,7 +26,7 @@ pytest tests/                  # in-process unit tests, no HTTP
 ```
 
 The pinned tool versions are listed in
-[Pinned binding toolchain](../../docs/bindings.md#pinned-binding-toolchain);
+[Pinned binding toolchain](https://github.com/agentcontextdistributionprotocol/acdp-rs/blob/main/docs/bindings.md#pinned-binding-toolchain);
 that table is the source of truth if the line above drifts.
 
 ## Build a wheel
@@ -161,5 +161,5 @@ from) and recomputing (never trusting) the body hash you pass in.
 ## Public surface
 
 The canonical list of exported classes and methods (and their arity) is
-[`bindings/interop/expected_surface.json`](../interop/expected_surface.json),
+[`bindings/interop/expected_surface.json`](https://github.com/agentcontextdistributionprotocol/acdp-rs/blob/main/bindings/interop/expected_surface.json),
 enforced against this package by the interop parity tests.

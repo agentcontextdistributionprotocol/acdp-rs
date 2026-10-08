@@ -20,24 +20,31 @@ cargo add acdp --features server
 ## The publish pipeline — the one rule
 
 The single most important invariant: **never persist a context before its
-signature is verified** (RFC-ACDP-0003 §2.1). `RegistryServer::publish_verified`
-encodes the full, ordered pipeline:
+signature is verified** ([RFC-ACDP-0003 §2.1](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0003-publish.md#21-registry-processing)).
+`RegistryServer::publish_verified` encodes the full, ordered pipeline (the
+"§2.1 step" numbers are the spec's):
 
 ```text
 publish_verified(req, idempotency_key, resolver):
   1. rate-limit gate           ← before any expensive work (RFC-ACDP-0008 §4.3)
-  2. schema + size validation  ← PublishValidator::validate_post_schema
-  3. content_hash recompute     ┐
-  4. algorithm check            │ verify_publish_request_signature
-  5. did:web key resolution     │   (steps 7–8 of §2.1)
-  6. signature verification     ┘
-  7. self-revocation check     ← RFC-ACDP-0014 §5 step 2: a key-revocation body
+  2. validate_post_schema      ← §2.1 steps 1–5 + the key_id binding of step 6:
+                                  schema, size, embedded, content_hash recompute,
+                                  algorithm check
+  3. verify_publish_request_signature
+                               ← §2.1 steps 6–7: did:web key resolution
+                                  (assertionMethod) + signature verification
+  4. self-revocation check     ← RFC-ACDP-0014 §5 step 2: a key-revocation body
                                   must not be signed by the key it revokes
                                   (acdp_version >= 0.3.0)
-  8. atomic commit via store   ← idempotency lookup, predecessor check
+  5. atomic commit via store   ← §2.1 steps 8–12: identifiers, lineage,
+                                  idempotency lookup, predecessor check
                                   (incl. the RFC-0014 §4 admission hook),
                                   insert, supersession marking — one critical section
 ```
+
+The §2.1 pre-step (request `Content-Type`, `unsupported_media_type`, fixture
+`err-002`) happens before the body is parsed, so it is the HTTP host's job,
+not this crate's.
 
 ```rust,no_run
 # #[cfg(feature = "server")]
@@ -53,7 +60,7 @@ println!("assigned {} v{}", resp.ctx_id, resp.version);
 
 > `RegistryServer::publish_unverified_for_tests` exists for integration tests
 > that can't run a live DID resolver. It is `#[doc(hidden)]`, skips §2.1 steps
-> 7–8, and is **a protocol violation in production**. Never call it from a real
+> 6–7, and is **a protocol violation in production**. Never call it from a real
 > service. `publish_unverified_in_tenant_for_tests` is the same test-only
 > bypass with an added idempotency key and tenant argument, for tests that
 > need to exercise idempotent replay or tenant stamping without a live
@@ -83,17 +90,28 @@ let server = RegistryServer::new(
 | `with_lifecycle()` | Enable RFC-ACDP-0013 lifecycle events (`acdp-registry-lifecycle`, `acdp_version` ≥ 0.3.0). Needs a store that implements `commit_lifecycle_event`. A server without it never records lifecycle events, but its read paths do not filter them: do not run a lifecycle-disabled server over a store that already contains them. |
 | `publish_verified(req, idem, resolver)` | The conformant publish path (above). |
 | `publish_verified_in_tenant(req, idem, resolver, tenant)` | Same, binding the row to a tenant id for multi-tenant stores. |
-| `publish_verified_did_key(req, idem)` / `publish_verified_did_key_in_tenant(...)` | The same pipeline for `did:key` producers. Synchronous: key resolution is offline. |
+| `publish_verified_did_key(req, idem)` / `publish_verified_did_key_in_tenant(...)` | The same pipeline for `did:key` producers. Synchronous: key resolution is offline. Refused with `KeyResolution` unless the capabilities list `did:key` in `supported_did_methods` (fixture `dk-003`). |
 | `publish_pinned_verified_in_tenant(...)` | The same pipeline against a caller-supplied, already-verified public key and algorithm. |
 | `publish_verified_in_tenant_with_outcome(...)` / `publish_verified_did_key_in_tenant_with_outcome(...)` / `publish_pinned_verified_in_tenant_with_outcome(...)` | The three tenant publish forms, returning `PublishCommitOutcome` instead of a bare `PublishResponse` (see [below](#insert-vs-idempotent-replay)). Use these when answering `POST /contexts`. |
-| `prove_publish_identity(req, resolver)` / `_did_key(req)` / `_pinned(req, key, alg)` | Split half of the publish pipeline — §2.1 steps 1–8 (identity; diagram steps 1–7) without persisting. Pairs with `commit_proven`. |
+| `prove_publish_identity(req, resolver)` / `_did_key(req)` / `_pinned(req, key, alg)` | Split half of the publish pipeline — §2.1 steps 1–7 (identity; diagram steps 1–4) without persisting. Pairs with `commit_proven`. |
 | `commit_proven(proven, idem, tenant)` | The other half — the atomic store commit, given a `Proven`. |
 | `retract_verified(event, requester, resolver)` / `republish_verified(...)` (and `_did_key` twins) | RFC-ACDP-0013 lifecycle transitions on a signed `LifecycleEvent`. Require `with_lifecycle()`. |
 | `prove_lifecycle_identity(event, endpoint, requester, resolver)` / `_did_key(event, endpoint, requester)` | Split half of the lifecycle pipeline — §6 steps 1–3 plus the §5 signature check, without persisting. Pairs with `commit_lifecycle_proven`. |
 | `commit_lifecycle_proven(proven)` | The other half — the atomic transition + append, returning `LifecycleCommitOutcome`. |
-| `retrieve` / `retrieve_body` / `lineage` / `current` | Read paths (RFC-ACDP-0004). |
-| `search` | Discovery (RFC-ACDP-0005). |
+| `retrieve` / `retrieve_body` / `lineage` / `current` | Read paths (RFC-ACDP-0004). Each takes `requester: Option<&AgentDid>` for visibility filtering. |
+| `search` | Discovery (RFC-ACDP-0005). Same `requester` argument. |
 | `store()` / `capabilities()` | Accessors. |
+
+**Read authentication is the host's job.** `requester` is the DID the host
+has already authenticated, or `None` for an anonymous read; the server only
+applies visibility rules to it. This crate does not implement any read
+authentication method — including the registered `bearer_jwt`
+([RFC-ACDP-0008 §6.2](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0008-security.md#62-read-authentication),
+[`registries/auth-methods.md`](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/registries/auth-methods.md)),
+which is **not implemented client-side** (nor server-side) in this crate. `acdp-registry-rs`
+implements it; see its
+[`bearer_jwt` conformance notes](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/AUTHENTICATION.md#spec-conformance-bearer_jwt).
+The client side is covered in [Security](security.md#read-authentication).
 
 The `did:web` publish pipeline is `async` (it resolves DIDs over the network,
 requiring the `client` feature transitively); the `did:key` and pinned forms
@@ -261,7 +279,7 @@ perform the **entire post-verification commit as one atomic critical section**:
 |---|---|
 | < 0.3.0 | No RFC-ACDP-0014 checks. |
 | [0.3.0, 0.5.0) | Full §4 validation of standard `key-revocation` bodies, plus the §4 rule that a revocation is superseded only by a revocation (rejected as `SchemaViolation`). The interim `acdp:key-revocation` form is not §4-validated, but it still gets the §5 not-self-signed and controller checks. |
-| ≥ 0.5.0 (Draft) | As above, except a non-revocation superseding a revocation is rejected as `SupersededTarget` with reason `RevocationTypeMismatch` (`details.reason: revocation_type_mismatch`), and a **new** publish of the interim `acdp:key-revocation` form is rejected as `SchemaViolation`. Already-stored interim bodies are still served. |
+| ≥ 0.5.0 (Draft) | As above, except a non-revocation superseding a revocation is rejected as `SupersededTarget` with reason `RevocationTypeMismatch` (`details.reason: revocation_type_mismatch`; see the spec's [reason table](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/registries/error-codes.md#superseded_target-reason-codes)), and a **new** publish of the interim `acdp:key-revocation` form is rejected as `SchemaViolation`. Already-stored interim bodies are still served. |
 
 A malformed advertised version turns the gates on, not off.
 `acdp::registry::validator::key_revocation_gate_applies` and
@@ -278,6 +296,15 @@ For a production registry built on these pieces, including adoption of the
 [`docs/ENGINEERING-LOG.md`](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/ENGINEERING-LOG.md)
 and
 [`docs/ARCHITECTURE.md`](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/ARCHITECTURE.md).
+
+## Transparency log
+
+`acdp::registry::MerkleLog` is an in-memory RFC 6962-style Merkle tree for
+the RFC-ACDP-0012 transparency log: `append`, signed `checkpoint`s,
+`inclusion_proof`, and `consistency_proof`. It is a building block only — it
+is **not** wired into `RegistryServer` or `RegistryStore`, so a registry
+claiming `acdp-registry-transparency-log` owns committing the leaf atomically
+with the body and receipt, and serving the log endpoints.
 
 ## Rate limiting
 
@@ -306,7 +333,11 @@ conforming way to meet the requirement.
 
 Your registry advertises what it supports via a `CapabilitiesDocument` served at
 `GET /.well-known/acdp.json` (RFC-ACDP-0007). It MUST include `ed25519` in
-`supported_signature_algorithms` and `did:web` in `supported_did_methods`.
+`supported_signature_algorithms` (identifiers per the spec's
+[signature-algorithms registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/registries/signature-algorithms.md)) and
+`did:web` in `supported_did_methods`.
+`did:key` is optional: add it to `supported_did_methods` to accept `did:key`
+producers; without it, `did:key` publishes are refused (fixture `dk-003`).
 
 The conformance profile(s) your registry claims determine which fixture set you
 must pass. The registered profiles and their required endpoints and fixtures

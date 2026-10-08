@@ -104,7 +104,8 @@ keys likewise. Concrete ACDP impacts:
 
 ## 4. Rust crate landscape — be honest, it is less mature than ed25519-dalek
 
-ACDP's current crypto is **RustCrypto** (`ed25519-dalek` 2, `p256`, `sha2`) —
+ACDP's current crypto is pure-Rust (`ed25519-dalek` 3 from dalek-cryptography;
+`p256`, `sha2` from RustCrypto) —
 pure-Rust, widely audited, and `wasm`-clean (see the WASM memo; no `ring`). The
 PQ story is not at that level yet:
 

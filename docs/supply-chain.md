@@ -44,12 +44,12 @@ npm audit signatures                                  # verify install-time
 On npm's website the package page displays a green **"Built and signed on GitHub
 Actions"** badge with the source repo, commit, and workflow file.
 
-> First-release note: npm provenance requires **npm ≥ 9.5** (the release runner
-> uses Node 20 → npm ≥ 10, so this is satisfied) and a public package. On the
-> *first* provenance-enabled publish, confirm the badge appears on
-> `https://www.npmjs.com/package/@agentcontextdistributionprotocol/acdp` and that `npm audit signatures` passes
-> for a fresh install — this is the one step that can only be checked against
-> the live registry.
+Authentication for the publish itself is still the `NPM_TOKEN` automation
+token (`NODE_AUTH_TOKEN`), not npm Trusted Publishing, in both npm release
+workflows (`bindings-release.yml`, `acdp-wasm-release.yml`): they run on
+Node 20, whose bundled npm 10 is older than the npm 11.5.1 that Trusted
+Publishing requires. The OIDC `id-token` is used only for the provenance
+statement.
 
 ### npm (`@agentcontextdistributionprotocol/acdp-wasm` — browser WebAssembly verifier)
 
@@ -72,9 +72,9 @@ gh attestation verify ./node_modules/@agentcontextdistributionprotocol/acdp-wasm
 
 **This attestation is the trust root, not byte reproduction** — for every release
 through `acdp-wasm-v0.8.5` the published module embeds runner-absolute paths and
-cannot be independently rebuilt to a matching hash on your own machine. Releases built
-after `--remap-path-prefix` + the in-job determinism gate landed (#196c) are proven
-reproducible same-runner, by the gate itself; cross-runner reproduction (e.g. your
+cannot be independently rebuilt to a matching hash on your own machine. Releases from
+`acdp-wasm-v0.14.0` on are built with `--remap-path-prefix` and an in-job determinism
+gate, so they are proven reproducible same-runner, by the gate itself; cross-runner reproduction (e.g. your
 laptop vs. `ubuntu-latest`) is plausible given a matching toolchain but has not been
 tested by anyone. See `docs/release-runbook.md`'s "Reproducibility of the `acdp-wasm`
 artifact" section for exactly which releases that covers and why an unexplained byte
@@ -92,10 +92,9 @@ digital attestation uploaded alongside it.
 - Programmatically, the attestations are served from PyPI's integrity API
   (`https://pypi.org/integrity/acdp/<version>/<filename>/provenance`).
 
-> First-release note: PyPI attestations are default-on when `id-token: write`
-> is present; we set `attestations: true` explicitly so the guarantee is visible
-> and cannot silently regress. On the first attested release, confirm the
-> provenance section renders on the PyPI file listing.
+PyPI attestations are default-on when `id-token: write` is present; the
+workflow sets `attestations: true` explicitly so the guarantee is visible and
+cannot silently regress.
 
 ### GitHub build-provenance (raw wheels, sdist, `.node` prebuilts)
 
@@ -122,20 +121,19 @@ artifact never built here) fails closed.
 
 `acdp` is published to crates.io by
 [`release-plz.yml`](../.github/workflows/release-plz.yml), which drives
-`cargo publish`. **Status: documented follow-up, deliberately conservative.**
+`cargo publish`, authenticated with the long-lived `CARGO_REGISTRY_TOKEN`
+secret.
 
-- `cargo publish` today has no build-provenance / attestation mechanism
-  comparable to npm `--provenance` or PyPI PEP 740.
-- crates.io **Trusted Publishing** (OIDC, no long-lived `CARGO_REGISTRY_TOKEN`)
-  is being rolled out upstream. We have **not** altered release-plz's
-  version/publish flow to adopt it yet — doing so touches the release
-  machinery and is out of scope for a conservative supply-chain pass.
-- Migration plan (tracked in the workflow header comment): when
-  `release-plz-action` documents an `id-token: write` OIDC path, add
-  `permissions: id-token: write` to the release-plz **job only** and drop
-  `CARGO_REGISTRY_TOKEN`.
+- `cargo publish` has no build-provenance / attestation mechanism comparable
+  to npm `--provenance` or PyPI PEP 740.
+- crates.io **Trusted Publishing** (OIDC, no long-lived token, via
+  `rust-lang/crates-io-auth-action`) is available upstream, but this workflow
+  has **not** adopted it: release-plz's version/publish flow is deliberately
+  unchanged. Adopting it means adding `permissions: id-token: write` to the
+  release-plz **job only** and dropping `CARGO_REGISTRY_TOKEN` (see the header
+  comment in `release-plz.yml`).
 
-Until then, crate integrity rests on crates.io's own immutable-version guarantee
+Without it, crate integrity rests on crates.io's own immutable-version guarantee
 plus the `Cargo.lock` checksums, and provenance for the *contents* is available
 via the GitHub build-provenance attestations above (same commits, same CI).
 
@@ -166,8 +164,12 @@ whose `action.yml` bakes in the default:
 - **`dtolnay/rust-toolchain@stable|nightly|1.86.0`** — the `stable` branch's
   `action.yml` defaults `toolchain: stable`, `nightly` → `nightly`, and the
   `1.86.0` branch hard-codes `toolchain: 1.86.0`. We pin each ref to *its own*
-  branch SHA, so no explicit `toolchain:` input is needed and the toolchain
-  selection is unchanged.
+  branch SHA. Every step also passes an explicit `toolchain:` input, and that
+  input overrides the branch default: for example `bindings.yml`'s
+  `bindings-fmt` job passes `toolchain: stable`, and `acdp-wasm-release.yml`
+  uses the **stable**-branch SHA with `toolchain: 1.98.0` to pin the release
+  compiler (see its comment for why). Read the `toolchain:` input, not the
+  trailing ref comment, to know which compiler a step gets.
 - **`taiki-e/install-action@cargo-deny|cargo-fuzz|…`** — each tool shorthand is a
   tag whose `action.yml` defaults `tool:` to that tool, so the ref name alone
   would resolve the right *tool*. It does **not**, however, pin the right
@@ -769,7 +771,7 @@ does not:
 - **`cargo deny check`** ([`deny.toml`](../deny.toml)) — advisories, license
   allow-list, banned/duplicate crates, and source registries. Blocking; the
   **sole** RustSec advisory gate in CI (see the comment at
-  `.github/workflows/ci.yml:138-141`). `cargo audit` is not run in CI at all
+  `.github/workflows/ci.yml:139-141`). `cargo audit` is not run in CI at all
   and remains an optional local check documented in `CONTRIBUTING.md`.
 
 **Advisory allowlist:** `deny.toml` currently carries **no** `[advisories] ignore`

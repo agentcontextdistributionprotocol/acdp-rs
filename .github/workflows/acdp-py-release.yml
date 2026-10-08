@@ -233,11 +233,9 @@ jobs:
       # never true on the release-plz cascade. These steps now inherit the job-level gate
       # plus the default implicit success() requirement over every step before them
       # (including "Tag the release", now that they're ordered after it) — exactly how
-      # "Publish to PyPI" above already behaves with no extra gate of its own. See
-      # plans/archive/issues-302-304-release-dispatch-fix.md Phase 2 for the full reasoning,
-      # including why this file does not need bindings-release.yml's
-      # `steps.<id>.outcome`-anchored predicate (no equivalent always()-gated recovery
-      # step exists in this job).
+      # "Publish to PyPI" above already behaves with no extra gate of its own. This
+      # file does not need bindings-release.yml's `steps.<id>.outcome`-anchored
+      # predicate: no equivalent always()-gated recovery step exists in this job.
       - name: Mint token for acdp-playground
         id: dispatch-token
         uses: actions/create-github-app-token@v3

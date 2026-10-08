@@ -1,6 +1,8 @@
 //! Server-side publish validation pipeline — RFC-ACDP-0003 §2.1 (feature = "server").
 //!
-//! Runs steps 1–8 (validation) before any persistence occurs.
+//! Runs steps 1–5 and the key_id binding of step 6 (validation) before any
+//! persistence occurs; DID resolution + signature verification (steps 6–7)
+//! are `acdp_verify::verify_publish_request_signature`.
 
 use acdp_crypto::hash::{compute_content_hash, derive_lineage_id};
 use acdp_primitives::error::AcdpError;
@@ -22,8 +24,9 @@ pub struct ValidatedPublish {
 
 /// Stateless publish request validator.
 ///
-/// Runs §2.1 steps 1–8 (structural and cryptographic checks).
-/// Steps 9+ (identifier assignment, lineage, supersession, persistence)
+/// Runs §2.1 steps 1–5 and the key_id binding of step 6 (structural and
+/// hash checks); steps 6–7 (DID resolution + signature) run separately.
+/// Steps 8+ (identifier assignment, lineage, supersession, persistence)
 /// are registry-implementation concerns.
 pub struct PublishValidator<'a> {
     caps: &'a CapabilitiesDocument,
@@ -58,16 +61,17 @@ impl<'a> PublishValidator<'a> {
     /// guard if the validator was built with [`Self::for_authority`].
     ///
     /// Mapped steps from RFC-ACDP-0003 §2.1:
-    /// - **Step 1** (schema validation) — assumed performed upstream
-    ///   (e.g. by `validate_publish_request`).
+    /// - **Step 1** (schema validation) — runs
+    ///   `acdp_validation::validate_publish_request` first, which also
+    ///   enforces step 11's visibility/audience rule.
     /// - **Step 2** (payload size vs `limits.max_payload_bytes`).
     /// - **Step 3** (embedded size vs `limits.max_embedded_bytes`).
     /// - **Step 4** (hash recomputation over ProducerContent).
     /// - **Step 5** (signature algorithm vs
     ///   `supported_signature_algorithms`).
-    /// - **Step 6** (key_id DID portion equals `agent_id`).
-    /// - **Step 7–8** (DID resolution + signature verification) — async,
-    ///   handled separately by `acdp_verify::Verifier::verify_body`.
+    /// - **Step 6, binding half** (key_id DID portion equals `agent_id`).
+    /// - **Steps 6–7** (DID resolution + signature verification) — async,
+    ///   handled separately by `acdp_verify::verify_publish_request_signature`.
     /// - Cross-registry supersession check (RFC-ACDP-0006): when an
     ///   own-authority is configured, rejects supersedes targets on a
     ///   different authority.
@@ -276,8 +280,8 @@ impl<'a> PublishValidator<'a> {
             self.check_revocation_controller(req, &revocation)?;
         }
 
-        // Steps 7–8 (key resolution + signature verification) require async
-        // DID resolution; the caller should invoke Verifier::verify_body for those.
+        // Steps 6–7 (key resolution + signature verification) require async
+        // DID resolution; the caller should invoke verify_publish_request_signature for those.
         Ok(ValidatedPublish {
             recomputed_hash: recomputed,
         })

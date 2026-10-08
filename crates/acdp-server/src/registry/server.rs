@@ -25,15 +25,16 @@
 //! [`RegistryServer::publish_unverified_for_tests`] (and its
 //! idempotency/tenant-capable sibling
 //! [`RegistryServer::publish_unverified_in_tenant_for_tests`]) perform
-//! only steps 1–6 (skipping DID resolution + signature verification)
+//! only steps 1–5 and the key_id-binding half of step 6 (skipping DID
+//! resolution + signature verification, steps 6–7)
 //! and are intentionally **not** RFC-conformant; use only in tests
 //! where DID resolution would require a live network or mock server.
 //!
 //! [`RegistryServer::publish_pinned_verified_in_tenant_with_outcome`] (and
 //! [`RegistryServer::prove_publish_identity_pinned`]) are a third,
 //! distinct, RFC-conformant category — not a laxer variant of the
-//! `_unverified_for_tests` pair above. Steps 1–6 run here as usual; steps
-//! 7–8 (signature verification against a resolved key) are the *caller's*
+//! `_unverified_for_tests` pair above. Steps 1–5 and the key_id binding of step 6 run here as usual; key resolution and
+//! signature verification (steps 6–7) against a resolved key are the *caller's*
 //! responsibility, already done before this method is reached, against an
 //! operator-pinned key rather than a live-resolved DID document. See that
 //! method's own doc comment for the full trust argument.
@@ -90,7 +91,7 @@ pub struct RegistryServer<S: RegistryStore, L: RateLimiter = NoopRateLimiter> {
 }
 
 /// Proof that a [`PublishRequest`]'s identity has been established —
-/// RFC-ACDP-0003 §2.1 steps 1–8 (schema/hash validation, DID resolution,
+/// RFC-ACDP-0003 §2.1 steps 1–7 (schema/hash validation, DID resolution,
 /// signature verification) plus the RFC-ACDP-0014 §5 step 2 self-revocation
 /// check, whichever of those the request's `context_type` and the
 /// registry's `acdp_version` require — but nothing has been persisted yet.
@@ -475,18 +476,22 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
 
     /// **RFC-conformant publish.**
     ///
-    /// Runs RFC-ACDP-0003 §2.1 steps 1–11:
+    /// Runs RFC-ACDP-0003 §2.1 steps 1–13:
     ///
-    /// - **1–6.** [`PublishValidator::validate_post_schema`] — schema,
-    ///   payload + embedded size, hash recomputation, algorithm /
-    ///   key_id binding.
-    /// - **7–8.** [`acdp_verify::verify_publish_request_signature`] —
-    ///   DID resolution + signature verification.
-    /// - **9.** Identifier assignment (`ctx_id`, `lineage_id`).
-    /// - **10.** Lineage coherence on supersession.
-    /// - **11.** Persistence and predecessor supersession.
+    /// - **1–5, and the key_id binding of 6.**
+    ///   [`PublishValidator::validate_post_schema`] — schema (including
+    ///   step 11's visibility/audience rule), payload + embedded size,
+    ///   hash recomputation, algorithm, key_id DID portion == `agent_id`.
+    /// - **6–7.** [`acdp_verify::verify_publish_request_signature`] —
+    ///   DID resolution (`assertionMethod` check) + signature verification.
+    /// - **8–9.** Identifier assignment (`ctx_id`, `origin_registry`,
+    ///   `created_at`) and lineage computation.
+    /// - **10.** Supersession validation.
+    /// - **12.** Persistence and predecessor supersession (plus the
+    ///   receipt, when configured), atomically.
+    /// - **13.** The publish response.
     ///
-    /// Steps 7–8 require a [`acdp_did::WebResolver`], so this method
+    /// Steps 6–7 require a [`acdp_did::WebResolver`], so this method
     /// is gated on the `client` feature.
     #[cfg(feature = "client")]
     #[cfg_attr(
@@ -551,7 +556,7 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
     }
 
     /// **Prove** a did:web producer's identity for `req` — RFC-ACDP-0003
-    /// §2.1 steps 1–8 (schema/hash validation, DID resolution, signature
+    /// §2.1 steps 1–7 (schema/hash validation, DID resolution, signature
     /// verification) plus the RFC-ACDP-0014 §5 step 2 self-revocation
     /// check — without persisting anything. Pair with
     /// [`Self::commit_proven`] to complete the publish; the two together
@@ -570,7 +575,7 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
         let validator = PublishValidator::for_authority(&self.caps, &self.authority);
         let validated = validator.validate_post_schema(req, raw_bytes)?;
 
-        // Steps 7–8: DID resolution + signature verification.
+        // Steps 6–7: DID resolution + signature verification.
         acdp_verify::verify_publish_request_signature(req, resolver).await?;
 
         // RFC-ACDP-0014 §5 step 2 on the did:web publish path: a
@@ -581,7 +586,7 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
         // — but a did:web signer's fingerprint is not derivable without
         // resolving its DID document. That resolution already happened
         // unconditionally just above, to verify the signature
-        // (RFC-ACDP-0003 steps 7–8) — so this is NOT a new resolution.
+        // (RFC-ACDP-0003 §2.1 steps 6–7) — so this is NOT a new resolution.
         // `producer_key_fingerprint` dispatches by method
         // internally, so a did:key signer reaching this line would be a
         // harmless, resolver-free recheck of what was already enforced
@@ -662,7 +667,7 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
     /// **RFC-conformant publish for `did:key` producers — no resolver.**
     ///
     /// Runs the same RFC-ACDP-0003 §2.1 pipeline as
-    /// [`Self::publish_verified`], but performs steps 7–8 via the pure
+    /// [`Self::publish_verified`], but performs steps 6–7 via the pure
     /// did:key verifier
     /// ([`acdp_verify::verify_publish_request_signature_offline`]),
     /// so it is available without the `client` feature. Rejects
@@ -714,7 +719,7 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
     }
 
     /// **Prove** a did:key producer's identity for `req` — RFC-ACDP-0003
-    /// §2.1 steps 1–8, pure (no resolver, no network) — without
+    /// §2.1 steps 1–7, pure (no resolver, no network) — without
     /// persisting anything. Pair with [`Self::commit_proven`] to complete
     /// the publish; the two together are exactly what
     /// [`Self::publish_verified_did_key_in_tenant_with_outcome`] composes.
@@ -728,7 +733,7 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
         let validator = PublishValidator::for_authority(&self.caps, &self.authority);
         let validated = validator.validate_post_schema(req, raw_bytes)?;
 
-        // Steps 7–8, pure: did:key resolution + signature verification.
+        // Steps 6–7, pure: did:key resolution + signature verification.
         acdp_verify::verify_publish_request_signature_offline(req)?;
 
         // did:key fingerprints are derivable from the DID itself — no
@@ -770,7 +775,7 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
     }
 
     /// **NOT RFC-conformant.** Skips DID resolution and signature
-    /// verification (RFC-ACDP-0003 §2.1 steps 7–8).
+    /// verification (RFC-ACDP-0003 §2.1 steps 6–7).
     ///
     /// Intended for integration tests where DID resolution would require
     /// a live network or mock server. Production callers MUST use
@@ -796,7 +801,7 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
     ///
     /// **NOT RFC-conformant** — same caveats as
     /// [`Self::publish_unverified_for_tests`]: skips RFC-ACDP-0003 §2.1
-    /// steps 7–8 (DID resolution + signature verification). Production
+    /// steps 6–7 (DID resolution + signature verification). Production
     /// callers MUST use [`Self::publish_verified_in_tenant`].
     ///
     /// Passing an idempotency key to a registry whose capabilities don't
@@ -853,7 +858,7 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
     /// Unlike [`Self::publish_unverified_for_tests`], this is safe to call
     /// on a receipts-advertising registry: the caller has ALREADY
     /// cryptographically verified `req`'s signature against
-    /// `verified_public_key_b64` before calling this method (steps 7–8 are
+    /// `verified_public_key_b64` before calling this method (steps 6–7 are
     /// the caller's responsibility, not this method's — there is no DID
     /// document or did:key to resolve for a pinned key, so this crate has
     /// nothing further to verify), so the fingerprint of that key can be
@@ -880,8 +885,9 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
     }
 
     /// **Prove** an operator-pinned-key producer's identity for `req` —
-    /// RFC-ACDP-0003 §2.1 steps 1–6 plus the RFC-ACDP-0014 §5 step 2
-    /// self-revocation check (steps 7–8 are the CALLER's responsibility —
+    /// RFC-ACDP-0003 §2.1 steps 1–5 and the key_id binding of step 6, plus
+    /// the RFC-ACDP-0014 §5 step 2 self-revocation check (DID resolution
+    /// and signature verification, steps 6–7, are the CALLER's responsibility —
     /// see the doc comment on
     /// [`Self::publish_pinned_verified_in_tenant_with_outcome`]) — without
     /// persisting anything. Pair with [`Self::commit_proven`] to complete
@@ -1141,7 +1147,7 @@ impl<S: RegistryStore, L: RateLimiter> RegistryServer<S, L> {
     /// **Commit** a [`Proven`] publish — the second half of the
     /// `prove → commit` split (`prove_publish_identity*` /
     /// `commit_proven`, #273). Everything through RFC-ACDP-0003 §2.1
-    /// steps 1–8 (and the RFC-ACDP-0014 §5 step 2 self-revocation check,
+    /// steps 1–7 (and the RFC-ACDP-0014 §5 step 2 self-revocation check,
     /// where applicable) already passed to produce `proven` — this call
     /// runs the same atomic store commit
     /// (idempotency lookup, predecessor verification, insertion,
@@ -2443,7 +2449,7 @@ mod tests {
     // don't need a network: malformed key_id, non-did:web key_id,
     // agent_id ≠ key_id DID portion. Together with the existing
     // `verify_signature_envelope` algorithm-downgrade unit test, they
-    // pin the entry checks of RFC-ACDP-0003 §2.1 steps 7–8 without
+    // pin the entry checks of RFC-ACDP-0003 §2.1 steps 6–7 without
     // requiring a TLS mock harness.
 
     #[cfg(feature = "client")]
@@ -2522,7 +2528,7 @@ mod tests {
             .await
             .unwrap_err();
         // Schema validation (step 1) catches missing-fragment before
-        // step 7 fires, so the surface error is SchemaViolation.
+        // step 6's key resolution fires, so the surface error is SchemaViolation.
         assert!(
             matches!(
                 err,

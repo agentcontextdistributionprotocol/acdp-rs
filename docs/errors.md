@@ -54,6 +54,28 @@ newer registry never breaks an older client.
 > test in `crates/acdp-primitives/src/error.rs`. Adding a new code is a coordinated three-edit change —
 > see [below](#adding-a-new-wire-error-code).
 
+## Local-only and transport variants
+
+These variants are raised by this library itself. Most have no wire code
+(a registry never sends them); `RemoteHashMismatch` and `DataRefHashMismatch`
+are listed because their relationship to the local checks is easy to confuse.
+
+| Variant | Raised when |
+|---|---|
+| `Canonicalization` | JCS canonicalization failed (input not serializable). |
+| `HashMismatch { stored, recomputed }` | your locally recomputed `content_hash` differs from the declared one (see below). |
+| `RemoteHashMismatch` | the wire `hash_mismatch`: the *registry* rejected your publish (see below). |
+| `DataRefHashMismatch` | a `DataRef`'s embedded or fetched bytes don't match its declared hash — raised locally by validation and `fetch_and_verify_data_ref`, and also the wire `data_ref_hash_mismatch`. |
+| `ContextIdMismatch { requested, served }` | the registry served a body whose `ctx_id` isn't the one requested (context substitution). |
+| `IncompleteLineage` | `GET /lineages/{id}` came back empty, or without the member a search match named, during revocation discovery. |
+| `SearchTruncated` | a revocation-discovery search hit its page or lineage-walk safety cap with results remaining. |
+| `RevocationDiscoveryBudgetExceeded` | revocation discovery ran out of its caller-set `max_requests` / `max_bytes` budget. |
+| `RevocationDiscoveryFailed { source }` | revocation discovery failed under `DiscoveryFailurePolicy::FailClosed`; wraps the cause. |
+| `InvalidBody` | a producer body could not be parsed (e.g. not a JSON object). |
+| `MissingField` | a required builder field (`title`, `context_type`, …) was not set. |
+| `Serialization` | JSON (de)serialization failed. |
+| `Http` | a transport error (connect, timeout, redirect policy, I/O). |
+
 ## Local vs. remote hash mismatches
 
 Two distinct variants exist deliberately:
@@ -70,18 +92,21 @@ registry's `invalid_signature` rejection — both map to `InvalidSignature`).
 ## Supersession failures
 
 A `superseded_target` wire error carries a `details.reason` sub-vocabulary,
-decoded into `SupersessionReason`:
+decoded into `SupersessionReason`. Each variant is the `snake_case` reason
+string; what each reason means is defined in the spec's
+[`superseded_target` reason codes](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/registries/error-codes.md#superseded_target-reason-codes)
+table.
 
-| `SupersessionReason` | Meaning |
+| `SupersessionReason` | `details.reason` |
 |---|---|
-| `NotFound` | the `supersedes` target doesn't exist on this registry |
-| `LineageMismatch` | the target's `lineage_id` differs from the new publication's |
-| `VersionMismatch` | the new version isn't exactly `previous.version + 1` |
-| `AlreadySuperseded` | the target was already superseded by another version |
-| `CrossRegistrySupersessionUnsupported` | v0.1.0 only allows same-registry supersession |
-| `LineageWalkFailed` | an intermediate context in the `supersedes` chain couldn't be retrieved |
-| `RevocationTypeMismatch` | a non-revocation context superseded a `key-revocation` target (RFC-ACDP-0014 §4/§10) — only emitted by registries advertising `acdp_version >= 0.5.0`; below that version this rejection is `SchemaViolation` instead |
-| `Other` | a reason this library version doesn't recognize (forward-compat) |
+| `NotFound` | `not_found` |
+| `LineageMismatch` | `lineage_mismatch` |
+| `VersionMismatch` | `version_mismatch` |
+| `AlreadySuperseded` | `already_superseded` |
+| `CrossRegistrySupersessionUnsupported` | `cross_registry_supersession_unsupported` |
+| `LineageWalkFailed` | `lineage_walk_failed` |
+| `RevocationTypeMismatch` | `revocation_type_mismatch` — this crate's server only emits it when advertising `acdp_version >= 0.5.0`; below that the same rejection is `SchemaViolation` |
+| `Other` | any reason this library doesn't recognize (forward-compat) |
 
 `SupersessionReason` is `#[non_exhaustive]` — match it with a wildcard arm, not
 exhaustively, so a future variant addition isn't a breaking change for callers.

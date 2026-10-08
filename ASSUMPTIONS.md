@@ -1,5 +1,10 @@
 # ASSUMPTIONS
 
+> **Note (2026-10-08):** `plans/` is gitignored, so every `plans/...` path cited
+> below is local to the maintainer's checkout; finished plans now live under
+> `plans/archive/`. Entries are a historical log and are not rewritten — a later
+> entry supersedes an earlier one instead.
+
 ## Pin SHA for RS-1/RS-2 local verification
 - **Plan:** plans/archive/rs-wave1-conformance-hardening.md
 - **Assumed:** the user's literal instruction to pin the verification worktree to "the
@@ -1327,3 +1332,24 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
   cross-repo action that needs the maintainer's go-ahead.
 - **Chose:** keep the drafted report in the 0.4.3 worksheet; file nothing upstream.
 - **Status:** CONFIRMED (maintainer: not filed; DECISIONS.md `322-policy4-agent-merge`)
+
+## Superseding note: `npm ci` is what CI runs for `bindings/acdp-node`
+- **Plan:** plans/docs-refresh-2026-10.md (Phase 3)
+- **Supersedes:** the 2026-09-10 update in the binding-lockfile entry above ("`npm ci` was
+  evaluated and rejected as not viable here … so `npm install` is kept"), and the
+  `.gitignore` comment that repeated it.
+- **Current state (verified 2026-10-08):** `bindings.yml` runs `npm ci` in the acdp-node,
+  interop and npm-audit jobs, and `bindings-release.yml` runs it in the build job; only
+  the publish job (`bindings-release.yml`, "Deliberately still `npm install`") stays on
+  `npm install`, because it stamps the version before installing. The switch landed with
+  the #249 fix recorded in DECISIONS.md and in the binding-toolchain entry above.
+  `.gitignore`, the Makefile's Node targets and the binding READMEs now say `npm ci`.
+- **Status:** CONFIRMED (documentation reconciliation; no behavior decision).
+
+## Docs refresh 2026-10 (docs/refresh-2026-10)
+- **Plan:** plans/docs-refresh-2026-10.md (local-only)
+- **Assumed:** (1) `acdp search` paging: docs corrected, CLI behavior unchanged. (2) `scripts/check-doc-links.sh` is optional/local, not a CI gate. (3) SECURITY.md reporting follows the org policy (email only; repo private reporting is disabled). (4) Makefile Node targets use `npm ci` to match CI. (5) Binding READMEs say "released at the same version as the acdp crate" (manifests are stamped at release). (6) "Four places" outbound HTTPS = RegistryClient, WebResolver, CrossRegistryResolver, HttpsDataRefFetcher. (7) fed-010/err-002 described as not executed (no binding in tests/). (8) Link script heading-slug simplifications (non-ASCII punctuation ranges, underscores kept, case-insensitive, 4-backtick nested fences not handled).
+- **Chose:** best defensible default for each; docs-only/comment-only code diffs.
+- **Alternatives:** change CLI search output; wire link check into CI; enable repo private vulnerability reporting (repo setting, out of scope).
+- **Blast radius if wrong:** docs wording only; trivially reversible.
+- **Status:** UNCONFIRMED

@@ -13,18 +13,22 @@ default, on every public client API.
 
 ACDP is a zero-trust substrate. **A registry is not a trusted party.** The only
 thing you trust is the producer's signature, verified against a key resolved
-from the producer's own `did:web` document. Everything the
+from the producer's own DID (a `did:web` document, or a self-describing
+`did:key`). Everything the
 [verification pipeline](consuming.md#verifiedcontext--the-verification-pipeline)
 does follows from that: recompute the hash yourself, resolve the key yourself,
 verify the signature yourself.
 
 The second trust concern is **outbound requests**. The library makes outbound
-HTTPS calls in three places, and each is SSRF-guarded identically:
+HTTPS calls in four places, and each is SSRF-guarded identically:
 
-1. **Producer DID resolution** — `WebResolver` fetching `did.json`.
-2. **Cross-registry resolution** — `CrossRegistryResolver` fetching foreign
+1. **Registry calls** — `RegistryClient` publishing, retrieving, searching,
+   and fetching capabilities from the registry you point it at.
+2. **Producer DID resolution** — `WebResolver` fetching `did.json`
+   (`did:key` resolves offline and makes no request).
+3. **Cross-registry resolution** — `CrossRegistryResolver` fetching foreign
    contexts and capabilities.
-3. **Data-ref fetching** — `HttpsDataRefFetcher` fetching referenced data.
+4. **Data-ref fetching** — `HttpsDataRefFetcher` fetching referenced data.
 
 ## Defenses applied by default
 
@@ -37,7 +41,7 @@ you do not opt in:
 | **HTTPS-only** | `http://` URLs are rejected. | RFC-ACDP-0008 |
 | **IP-literal rejection** | `https://1.2.3.4/…` is rejected — forces a DNS lookup so the resolved IP can be filtered. | RFC-ACDP-0006 §7 |
 | **Private/loopback/link-local/multicast/IMDS blocking** | Resolved IPs in RFC 1918, loopback, link-local, CGNAT, multicast, ULA (`fc00::/7`), `fe80::/10`, and the metadata endpoint (`169.254.169.254`) are refused — IPv4 **and** IPv6, including IPv4-mapped. | RFC-ACDP-0008 §4.8/§4.9 |
-| **DNS-rebinding pin** | IPs are filtered **at DNS-resolution time, before any TCP connect** — a hostname whose answers fall in a forbidden range is refused. See below. | RFC-ACDP-0008 §7.6 |
+| **DNS-rebinding pin** | IPs are filtered **at DNS-resolution time, before any TCP connect** — a hostname whose answers fall in a forbidden range is refused. See below. | RFC-ACDP-0006 §7.6 |
 | **Body-size caps** | 1 MB for context retrievals; 64 KB for capabilities and DID documents. | RFC-ACDP-0006 §7 |
 | **Redirect cap** | Max 3 redirects, **same-authority only**. | RFC-ACDP-0006 §7 |
 | **Timeouts** | 5 s connect, 30 s total. | RFC-ACDP-0006 §7.4 |
@@ -48,14 +52,14 @@ you do not opt in:
 
 > The size, redirect, and timeout constants are exposed as
 > `acdp::registry::{MAX_CONTEXT_BYTES, MAX_METADATA_BYTES, MAX_REDIRECTS}` and
-> in `src/limits.rs`.
+> `acdp::limits` (the `limits` module of the `acdp-primitives` crate).
 
 ## ECDSA-P256 signatures: low-S on emit, high-S accepted
 
-ECDSA signatures are malleable: if `(r, s)` verifies, so does `(r, n - s)`,
-and anyone can compute that twin without the private key. It does not
-forge anything (the same key signed the same `content_hash`), but it means
-signature bytes are not unique.
+ECDSA signatures are not unique: anyone can turn a valid `(r, s)` into a
+second valid signature without the private key. The normative rules are in the
+spec's [`ecdsa-p256` signature non-uniqueness](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/registries/signature-algorithms.md#ecdsa-p256-signature-non-uniqueness-normative)
+section; this is how the crate applies them:
 
 - **Emit:** every P-256 signature this crate produces
   (`P256SigningKey::sign_content_hash` / `sign_string`, and so every
@@ -77,7 +81,7 @@ signature bytes are not unique.
 
 ## DNS-rebinding protection is active
 
-DNS-rebinding (RFC-ACDP-0008 §7.6) is **on**. `crate::safe_http::SafeDnsResolver`
+DNS-rebinding protection ([RFC-ACDP-0006 §7.6](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0006-cross-registry.md#76-dns-rebinding-protection)) is **on**. `crate::safe_http::SafeDnsResolver`
 is wired into reqwest's `dns_resolver` hook by every HTTP client the crate
 builds (`WebResolver`, `RegistryClient`, `HttpsDataRefFetcher`,
 `CrossRegistryResolver`). Each resolved IP is filtered through the active
@@ -142,6 +146,28 @@ need to opt in explicitly. The intended seams:
 > drive the `fed-001..006` and `pub-001/003/006` fixtures against an in-process
 > server (the `did-ssrf-*` fixtures run in `tests/conformance.rs`).
 
+## Read authentication
+
+The client side of read authentication is **not implemented**. `RegistryClient`
+reads anonymously: it sends no `Authorization` header on any request, so it
+sees only what a registry serves to anonymous callers. In particular the
+registered `bearer_jwt` method
+([RFC-ACDP-0008 §6.2](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0008-security.md#62-read-authentication),
+[`registries/auth-methods.md`](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/registries/auth-methods.md))
+is **not implemented client-side**. What the crate does provide:
+
+- `CapabilitiesDocument::read_authentication_methods` — the methods a
+  registry advertises, as opaque strings (no typed handling).
+- `SigningKey::sign_string` / `P256SigningKey::sign_string` — the producer's
+  half of a challenge-response flow (signing an arbitrary ASCII input with
+  the producer key). Obtaining the challenge, exchanging the signature for a
+  token, and presenting it are up to the host.
+
+For the flow `acdp-registry-rs` runs, including the exact signing input, see
+its [challenge-response flow](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/AUTHENTICATION.md#challenge-response-flow)
+and [`bearer_jwt` conformance](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/AUTHENTICATION.md#spec-conformance-bearer_jwt)
+notes.
+
 ## What the crate does *not* do
 
 Per RFC-ACDP-0008, some responsibilities sit with the registry or the operator,
@@ -149,11 +175,10 @@ not this client library:
 
 - **Rate limiting** (RFC-ACDP-0008 §4.3) — a registry concern. The `server`
   feature exposes a `RateLimiter` trait; see [Implementing a registry](registry.md).
-- **Authentication / authorization of cross-registry calls** — out of scope for
-  v0.1.0 (RFC-ACDP-0006). Cross-registry resolution is unauthenticated.
-- **Visibility enforcement at rest** — the registry enforces visibility on
-  retrieval; the consumer applies visibility rules client-side but cannot see
-  what a registry refuses to serve.
+- **Authenticated reads** — every client request is anonymous, including
+  cross-registry resolution (see [Read authentication](#read-authentication)).
+- **Visibility enforcement** — the registry enforces visibility on retrieval
+  and search; a consumer only sees what the registry chooses to serve.
 
 For the full threat enumeration (replay, Sybil/spam, existence-leak,
 supersession races), read RFC-ACDP-0008 directly — these docs do not duplicate

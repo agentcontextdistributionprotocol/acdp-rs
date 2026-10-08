@@ -1,5 +1,10 @@
 # DECISIONS
 
+> **Note (2026-10-08):** `plans/` is gitignored, so every `plans/...` path cited
+> below is local to the maintainer's checkout; finished plans now live under
+> `plans/archive/`. Entries are a historical log and are not rewritten — a later
+> entry supersedes an earlier one instead.
+
 Reconciliation log for `plans/archive/rs-wave1-conformance-hardening.md` (RS-1, RS-2, RS-10). Each
 entry: the original assumption, the recommending agent's analysis, the user's verdict, and
 the resulting status.

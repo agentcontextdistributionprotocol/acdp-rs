@@ -24,11 +24,12 @@ PublishRequest                               crates/acdp-types/src/publish.rs
   │                                            └─ ⚠️ the ASCII string, NOT the 32-byte digest
   │
   ├── content_hash          ← echoed in the request for transport
-  └── signature             ← the producer's Ed25519 signature
+  └── signature             ← the producer's signature (Ed25519 or ECDSA-P256)
 
-FullContext = Body + RegistryState                     ← retrieval shape
-                     │
-                     └── status, receipt, … (mutable/registry-derived)  crates/acdp-types/src/body.rs
+FullContext                                            ← retrieval shape   crates/acdp-types/src/body.rs
+  ├── body
+  ├── registry_state        ← mutable, registry-derived: status, lifecycle_events, extensions
+  └── registry_receipt / lineage_head_receipt / log_inclusion   ← optional trust artifacts
 ```
 
 Three operations are protocol-critical and the crate implements them exactly:
@@ -37,7 +38,7 @@ Three operations are protocol-critical and the crate implements them exactly:
 |---|---|---|
 | JCS canonicalization | RFC 8785 | `crates/acdp-jcs/src/lib.rs` — **in-house**, handles `-0.0` |
 | `content_hash` | RFC-ACDP-0001 §5.7 | `crates/acdp-crypto/src/hash.rs` — `sha256(JCS(ProducerContent))` |
-| Ed25519 / P-256 sign/verify | RFC-ACDP-0001 §5.8/§5.11 | `crates/acdp-crypto/src/{sign,verify}.rs` |
+| Ed25519 / P-256 sign/verify | RFC-ACDP-0001 §5.8/§5.10/§5.11; [signature-algorithms registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/registries/signature-algorithms.md) | `crates/acdp-crypto/src/{sign,verify}.rs` |
 
 ### Three things that trip people up
 
@@ -49,7 +50,9 @@ Three operations are protocol-critical and the crate implements them exactly:
    `content_hash`. This is load-bearing for the `sig-001` golden vector.
 3. **`Body` and `RegistryState` are split deliberately.** `status` is *not* a
    body field — it's registry-derived and lives in `RegistryState`. Merging
-   them would let mutable state into the signed preimage.
+   them would let mutable state into the signed preimage. Registry receipts,
+   head receipts, and log-inclusion proofs are not in `RegistryState` either:
+   they are optional siblings on `FullContext`.
 
 ## Workspace crate map
 
@@ -60,12 +63,12 @@ paths. The crates form a strict bottom→top dependency DAG:
 
 | Crate | Role |
 |---|---|
-| `acdp-primitives` | Leaf types (`AgentDid`, `CtxId`, …), `AcdpError`, `ACDP_VERSION`, limits/time/serde helpers. |
+| `acdp-primitives` | Leaf types (`AgentDid`, `CtxId`, …), `AcdpError`, `WireError`, `ACDP_VERSION`, limits/time/serde helpers. Its `primitives` module is re-exported as `acdp_types::primitives` (and `acdp::types::primitives`). |
 | `acdp-jcs` | RFC 8785 JCS — **in-house**, handles `-0.0`. |
 | `acdp-safe-http` | `SsrfPolicy`, the HTTPS guard, and `SafeDnsResolver` (the DNS-time IP filter). |
 | `acdp-did` | `WebResolver` for `did:web` (LRU-cached, SSRF-gated) and offline `did:key` resolution (Ed25519 + P-256). |
 | `acdp-crypto` | `hash` (`content_hash` + `lineage_id`), `sign`/`verify` (Ed25519 + ECDSA-P256), fingerprint, Merkle. |
-| `acdp-types` | Wire types: `body`, `publish`, `search`, `data_ref`, `capabilities`, `anchor`, `receipt`, `lifecycle`, `log`, `cosignature`, `revocation`, `primitives`. `Body`/`RegistryState` are kept apart; `Status`/`ContextType`/`Visibility` are **open enums**. |
+| `acdp-types` | Wire types: `body`, `publish`, `search`, `data_ref`, `capabilities`, `anchor`, `receipt`, `lifecycle`, `log`, `cosignature`, `revocation`, `profile` (typed profile vocabulary), plus the re-exported `primitives`. `Body`/`RegistryState` are kept apart. `Status` is the only **open enum** (unknown values land in `Status::Other`); `Visibility` is closed; `ContextType` accepts unknown values only as namespaced custom types (`ContextType::Custom`, `^[a-z][a-z0-9_]*:[a-z][a-z0-9_-]*$`). |
 | `acdp-validation` | One-stop schema validator: `validate_publish_request`, `validate_body`, `validate_data_ref`, `validate_metadata`, `compute_embedded_hash`. |
 | `acdp-verify` | High-level verification: resolver-backed `Verifier` (RFC-ACDP-0001 §5.11) plus offline `did:key` body/request/lifecycle verification. |
 | `acdp-producer` | `Producer` + `RequestBuilder`. Enforces v1-vs-v2+ rules, ms-truncates timestamps, validates, computes `content_hash`, then signs. |

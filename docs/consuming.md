@@ -6,11 +6,13 @@ here requires the **`client`** feature (the default).
 
 This crate implements the **`acdp-consumer`** profile. The verification
 algorithm is specified in
-[RFC-ACDP-0001 §5.11](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0001-core.md);
+[RFC-ACDP-0001 §5.11](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0001-core.md#511-key-resolution);
 retrieval semantics in
 [RFC-ACDP-0004](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0004-retrieval.md);
 cross-registry resolution in
 [RFC-ACDP-0006](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0006-cross-registry.md).
+For the language-neutral consumer walkthrough, see the spec's
+[integration guide](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/docs/integration-guide.md#consumer-flow).
 
 ## Two layers: transport and verification
 
@@ -39,7 +41,10 @@ let client = RegistryClient::new("https://registry.example.com")?;   // HTTPS-on
 
 `new` applies the [security defaults](security.md) automatically: HTTPS-only,
 IP-literal rejection, DNS-time SSRF filtering, 1 MB body cap, 3-redirect
-same-authority limit, 5 s connect / 30 s total timeouts.
+same-authority limit, 5 s connect / 30 s total timeouts. For a non-default
+connection posture (a private root certificate, a custom `SsrfPolicy`, timeout
+overrides, or pin-once DNS resolution) use `RegistryClient::builder(base_url)`;
+its defaults are identical to `new`.
 
 | Method | Endpoint | Returns |
 |---|---|---|
@@ -135,15 +140,26 @@ standalone function this stage wraps; the bindings expose it directly as
 This is exactly what the offline `cargo run --example consumer` demonstrates,
 step by step.
 
+On success the handle also tells you *how* it verified:
+`VerifiedContext::key_status()` returns the `KeyAuthorization` verdict
+(currently authorized, receipt-attested historical, or receipt-attested
+pre-compromise), and `VerifiedContext::verified_receipt()` returns the
+registry receipt when one was present and the policy verified it (`None`
+under `ReceiptPolicy::Ignore` or when the registry minted none).
+
 ### Verification policy
 
-`VerificationPolicy` tunes the pipeline. The default **is** the strict v0.1.0
-profile — `VerificationPolicy::strict_v0_1_0()` is an alias for `Default`.
+`VerificationPolicy` tunes the pipeline. `VerificationPolicy::default()` is
+the strict, receipt-aware policy below. `VerificationPolicy::strict_v0_1_0()`
+is **not** the same: it is a named profile that keeps receipts inert
+(`ReceiptPolicy::Ignore`) and refuses historical keys
+(`HistoricalKeyPolicy::Reject`), for callers pinned to the original
+receipt-less behavior.
 
 ```rust
 use acdp::client::VerificationPolicy;
 
-let policy = VerificationPolicy::strict_v0_1_0();   // == VerificationPolicy::default()
+let policy = VerificationPolicy::default();
 ```
 
 | Field | Default | Effect |
@@ -155,11 +171,18 @@ let policy = VerificationPolicy::strict_v0_1_0();   // == VerificationPolicy::de
 | `lineage_head` | `LineageHeadPolicy::default()` | Lineage-head receipt handling (RFC-ACDP-0011). Consulted only by `fetch_current_with_policy`. |
 | `revocations` | `RevocationPolicy::default()` (no known revocations, no discovery) | Key-revocation enforcement (RFC-ACDP-0014 §7): `known` revocations plus optional `discover`. See [below](#revocation-auto-discovery). |
 
-> There is no "relaxed `did:web`" or "skip-hash" mode in v0.1.0. The strict
-> profile is the only one the `acdp-consumer` conformance suite covers. To
+> There is no "relaxed `did:web`" or "skip-hash" mode. The strict profile is
+> the only one the `acdp-consumer` conformance suite covers. To
 > apply a custom policy use `fetch_with_policy(&client, &resolver, &ctx_id, &policy)`.
 
 ### Revocation auto-discovery
+
+How a consumer must assemble and fold a revocation lineage (which endpoint,
+which boundary wins, and what retraction or supersession does and does not
+change) is normative in
+[RFC-ACDP-0014 §7](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0014-key-revocation.md#7-consumer-semantics-normative);
+discovery here walks the full `GET /lineages/{lineage_id}` of every
+revocation it finds.
 
 By default `VerificationPolicy::revocations.known` is caller-supplied: you
 look up revocations yourself and hand the list to the policy, and
@@ -176,7 +199,7 @@ use acdp::client::{RevocationDiscovery, RevocationPolicy, VerificationPolicy};
 let policy = VerificationPolicy {
     revocations: RevocationPolicy::new(vec![])
         .with_discovery(RevocationDiscovery::producer_signed_only()),
-    ..VerificationPolicy::strict_v0_1_0()
+    ..VerificationPolicy::default()
 };
 # policy
 # }
@@ -195,7 +218,7 @@ revocations matter less.
 
 **`on_failure`: `FailClosed` vs `ProceedWithKnown`.** When discovery
 itself fails — a transport error, the search-safety-cap error
-`AcdpError::SearchTruncated`, or (issue #258) the budget error
+`AcdpError::SearchTruncated`, or the budget error
 `AcdpError::RevocationDiscoveryBudgetExceeded` covered below —
 `DiscoveryFailurePolicy::FailClosed` (the default) fails verification.
 `ProceedWithKnown` instead proceeds using `known` alone and records the
@@ -225,7 +248,7 @@ unless `.enable_time()` / `.enable_all()` is called). Calling any
 from a runtime without the time driver **panics**, it does not return
 `Err`.
 
-**Bounding request count and bytes (issue #258).** `total_timeout` bounds
+**Bounding request count and bytes.** `total_timeout` bounds
 wall clock only — a hostile-but-fast registry can still drive a large
 number of requests and a large volume of parsed bytes well inside the
 timeout. `RevocationDiscovery::max_requests` (an `Option<NonZeroUsize>`)
@@ -275,7 +298,7 @@ Two honesty caveats:
 Without a `RevocationCache` attached, every call still re-discovers from
 scratch, budgeted or not — see the next section for the opt-in cache.
 
-### Caching discovered revocations (issue #257)
+### Caching discovered revocations
 
 `RegistryClient::with_revocation_cache` attaches a `RevocationCache` —
 `RevocationCache::new()`, cheap to `Clone` (an `Arc` handle) — to a client.
@@ -286,7 +309,7 @@ against the same producer(s) to amortize discovery.
 reaching for the `freshness` knob:
 
 - **Facts** — verified `KeyRevocation`s discovery finds. RFC-ACDP-0014
-  §7:114 licenses caching these *indefinitely* ("the statement is
+  §7 licenses caching these *indefinitely* ("the statement is
   permanent"), and they are **always** unioned into classification —
   never used to replace or subset a discovery result, and **never gated
   behind `freshness`**. A revocation is monotone (more revocations ⇒ an
@@ -303,7 +326,7 @@ reaching for the `freshness` knob:
   points that can never set `discover` at all.
 - **Freshness markers** — "vantage V completed a full, untruncated
   discovery for this producer/trust-class at time T." This is a cached
-  *absence*, which §7:114 does **not** license and which §8 warns about
+  *absence*, which §7 does **not** license and which §8 warns about
   directly ("a malicious registry can hide a revocation … absence of
   search results is not evidence of absence"). A marker is bounded by
   `RevocationDiscovery::freshness` (a `Duration`), per vantage
@@ -324,8 +347,8 @@ reaching for the `freshness` knob:
 `producer_signed_only()` and `all_trust_classes()`.** Attaching a cache at
 the default changes nothing observable except anti-rollback — **the
 default cache saves zero requests.** Set `freshness` above zero (a
-recommended ceiling: 3600 s, matching `WebResolver`'s own DID-document
-cache TTL cap) to additionally let a fresh marker skip a repeat lookup
+recommended ceiling: 3600 s, matching `RegistryClient`'s capabilities-cache
+TTL cap; `WebResolver` caches DID documents for up to 24 h) to additionally let a fresh marker skip a repeat lookup
 entirely:
 
 ```rust,no_run
@@ -387,8 +410,7 @@ re-discovery, never safety).
 policy-taking entry points — `fetch_with_policy`,
 `fetch_current_with_policy`, `fetch_report`, `fetch_report_diagnose`,
 and `fetch_report_with_fetcher` — honor `discover` through the shared
-verification pipeline. `CrossRegistryResolver` (issue #260) now does
-too: `CrossRegistryResolver::with_revocation_policy` injects a
+verification pipeline. `CrossRegistryResolver` does too: `CrossRegistryResolver::with_revocation_policy` injects a
 `RevocationPolicy` into every node the resolver verifies, and
 `CrossRegistryResolver::with_revocation_cache` shares one
 `RevocationCache` across the walk. One path still structurally cannot
@@ -396,11 +418,10 @@ carry it:
 
 - `fetch` and `fetch_current` hardcode `VerificationPolicy::default()`
   and take no policy argument at all; use the `_with_policy` forms if
-  you need discovery. This is a known limitation (LIM-2), not an
-  oversight — see the `RevocationPolicy` rustdoc. (LIM-1, the `CrossRegistryResolver`
-  gap, was closed by issue #260.)
+  you need discovery. This is a deliberate limitation — see the
+  `RevocationPolicy` rustdoc.
 
-**`CrossRegistryResolver` and revocation discovery (issue #260).**
+**`CrossRegistryResolver` and revocation discovery.**
 `with_revocation_policy` takes a `RevocationPolicy`, never a full
 `VerificationPolicy` — the resolver derives `receipts` itself, per
 node, from that node's own advertised capabilities (`Require` iff the
@@ -460,7 +481,7 @@ Two caveats:
   called explicitly.
 
 `CrossRegistryResolver` does not add its own request/byte budget on top
-of this — issue #258's `RevocationDiscovery::max_requests`/`max_bytes`
+of this — `RevocationDiscovery::max_requests`/`max_bytes`
 already bound the per-node discovery cost; a duplicate resolver-level
 knob would be redundant *per node*. Composed across a walk, though, that
 per-node bound is not the whole story: `DiscoveryBudget` is enforced once
@@ -491,7 +512,7 @@ mismatch as fatal (see `data_ref_embedded` below).
 # async fn run(client: &acdp::client::RegistryClient, resolver: &acdp::did::WebResolver, ctx_id: &acdp::types::CtxId) -> Result<(), acdp::AcdpError> {
 use acdp::client::{VerificationPolicy, VerifiedContext};
 
-let policy = VerificationPolicy::strict_v0_1_0();
+let policy = VerificationPolicy::default();
 let (verified, report) =
     VerifiedContext::fetch_report(client, resolver, ctx_id, &policy).await?;
 
@@ -511,7 +532,7 @@ assert!(report.schema_ok && report.body_hash_ok && report.signature_ok);
 | `ctx_id_ok` | the served body's `ctx_id` matched the one requested (RFC-ACDP-0006 §4.1 step 7, NORMATIVE). |
 | `key_status` | the real `KeyAuthorization` verdict once the receipt/revocation/signature phases ran and passed; `None` if a top-level probe failed first (so those phases never ran) or one of them failed. |
 | `policy_phase_error` | which of the receipt/revocation/signature/unknown-status phases failed, if one did; `None` when every phase passed or none ran. |
-| `revocation_discovery` | `Some(Ok(DiscoveryOutcome))` / `Some(Err(AcdpError))` when `policy.revocations.discover` was `Some`, else `None`. Counts *discovered* revocations only — never `policy.revocations.known` — so it stays meaningful when discovery is off. See "Revocation auto-discovery" above. |
+| `revocation_discovery` | What auto-discovery did, when `policy.revocations.discover` was `Some` and the policy phases were reached: `Some(Ok(DiscoveryOutcome))` on success; `Some(Err(_))` when `ProceedWithKnown` swallowed a discovery failure. `None` when discovery is off, when a top-level probe failed first, or when a `FailClosed` discovery failure ended verification (that one surfaces in `policy_phase_error`). `DiscoveryOutcome` counts *discovered* revocations only (`producer_signed`, and `registry_attested` or `None` if that class was not queried) — never `known`. See "Revocation auto-discovery" above. |
 
 `fetch_report_with_fetcher` additionally fetches and verifies external
 `data_ref` locations (see below).
@@ -526,6 +547,20 @@ once the top-level probes (schema, body hash, signature, ctx_id) all pass,
 unknown-status phases, and withholds the handle — recording the cause in
 `policy_phase_error` — if any of those fails too, all while still
 returning `Ok`.
+
+### Standalone verifiers
+
+`VerifiedContext` runs these for you; they are also exported from
+`acdp::client` for callers that hold a trust artifact as raw JSON and want
+to check it outside the pipeline:
+
+| Function | Verifies | Spec |
+|---|---|---|
+| `verify_receipt_value` | a registry receipt against the body and its recomputed hash | [RFC-ACDP-0010](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0010-registry-receipts.md) |
+| `verify_lineage_head_receipt_value` | a lineage-head receipt against the served head | [RFC-ACDP-0011](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0011-lineage-head-receipts.md) |
+| `verify_log_checkpoint_value`, `verify_log_inclusion_value` | a transparency-log checkpoint, and a leaf's inclusion proof | [RFC-ACDP-0012](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0012-transparency-log.md) |
+| `verify_witness_cosignature_value`, `evaluate_witness_quorum` | one witness cosignature, and a quorum over a trusted witness set | [RFC-ACDP-0015](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0015-witness-cosigning.md) |
+| `verify_revocation_body`, `classify_under_revocation` | a key-revocation context, and a verdict under a set of revocations | [RFC-ACDP-0014](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0014-key-revocation.md) |
 
 ## Fetching data references
 
@@ -582,8 +617,7 @@ contact, and `.seed_client(authority, client)` to pre-wire a configured client
 (e.g. with a custom CA) for a known authority. Every URL the resolver builds is
 checked against its `SsrfPolicy` — see [Security](security.md).
 
-`.with_revocation_policy(...)` and `.with_revocation_cache(...)` (issue #260)
-let the resolver carry RFC-ACDP-0014 revocation discovery into every node it
+`.with_revocation_policy(...)` and `.with_revocation_cache(...)` let the resolver carry RFC-ACDP-0014 revocation discovery into every node it
 verifies — see "Caching discovered revocations" above for the full model,
 including the walk-scoped cache default and the 30s/30s timeout caveat.
 `seed_client` is fill-if-absent for the cache too: a seeded client with no

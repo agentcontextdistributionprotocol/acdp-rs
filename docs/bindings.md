@@ -12,9 +12,12 @@ The crate ships three SDKs that reuse the Rust crypto core:
   producer/signing surface.
 
 All implement the same protocol primitives as the Rust crate, so a context
-signed in Python verifies in Node, in the browser, and in Rust. The protocol
-contract they implement is the same RFC set (0001 through 0016) — see
-[RFC-ACDP-0001](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0001-core.md).
+signed in Python verifies in Node, in the browser, and in Rust. Each binding is
+released at the same version as the `acdp` crate (the release cascade stamps
+it at publish time) and carries the same protocol
+surface; which protocol lines each SDK version implements is recorded in the
+spec's
+[`docs/version-matrix.md`](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/docs/version-matrix.md).
 
 ## Design: crypto in Rust, HTTP in the host
 
@@ -67,6 +70,14 @@ req = producer.build_publish_request(title="Q1 snapshot", context_type="data_sna
 httpx.post("https://registry.example.com/contexts",
            content=req, headers={"Content-Type": "application/acdp+json"})
 
+# Optional RFC-ACDP-0016 external anchors: a JSON-encoded array of
+# {scheme, content_hash, uri?} objects, part of the content_hash preimage.
+# (Schemes: registries/anchor-schemes.md in the spec repo.)
+req = producer.build_publish_request(
+    title="Q1 snapshot", context_type="data_snapshot",
+    anchors=json.dumps([{"scheme": "macp.commitment",
+                         "content_hash": "sha256:" + "ab" * 32}]))
+
 # Verify a retrieved body (raises on mismatch)
 AcdpVerifier.verify_content_hash(body_json, stored_hash)
 AcdpVerifier.verify_signature(pub_key_b64, sig_b64, content_hash)
@@ -116,7 +127,10 @@ AcdpVerifier.verifySignature(pubKeyB64, sigB64, contentHash);
 AcdpVerifier.verifyCtxIdBinding(bodyJson, requestedCtxId);  // throws on mismatch
 ```
 
-The Node API is the same surface in camelCase.
+The Node API is the same surface in camelCase; external anchors are the
+same JSON-encoded string, passed as the `anchors` option of
+`buildPublishRequest` / `buildSupersedeRequest`. Known `scheme` identifiers are
+tracked in the spec's [anchor-schemes registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/registries/anchor-schemes.md).
 
 ## Verifying a registry receipt
 
@@ -244,8 +258,14 @@ that references the parent crate via `path = "../.."`. They are **not** part of
 `cargo test` on the root crate — build each independently with maturin / napi /
 wasm-pack. The top-level `Makefile` wraps the common targets: `make sdk-py`,
 `make sdk-node`, `make sdk-wasm`, `make interop`, `make audit-bindings`
-(`cargo deny` advisories for all three bindings plus `npm audit`), and
-`make ci-bindings` (what the bindings CI runs, locally).
+(`cargo deny` advisories for all three bindings; `npm audit` for `acdp-node`
+only), and `make ci-bindings`. `make ci-bindings` is a **local subset** of
+`.github/workflows/bindings.yml`: it runs the root tests, the Python and Node
+SDK suites, interop, and the advisory audits, but not `bindings-fmt`, the
+`acdp-wasm` job (native golden parity, `wasm32` builds, `wasm-pack test`), the
+`v030.rs`/`v040.rs` copy-parity guard, or the Python/Node version matrices —
+and `make interop` skips the wasm parity checks unless `make sdk-wasm` was run
+first.
 
 ### Pinned binding toolchain
 
@@ -257,4 +277,4 @@ The binding builds pin their toolchains so a release is reproducible:
 | `@napi-rs/cli` | `3.8.6`, exact | `bindings/acdp-node/package.json`; asserted in `bindings.yml` and `bindings-release.yml` |
 | `rustc` for the wasm release | `1.98.0` | `.github/workflows/acdp-wasm-release.yml` |
 | `wasm-pack` | `0.15.0` | `bindings.yml`, `acdp-wasm-release.yml` (via `taiki-e/install-action`) |
-| Cargo / npm lockfiles | `bindings/{acdp-py,acdp-node,acdp-wasm}/Cargo.lock` and `bindings/acdp-node/package-lock.json` are committed; builds run `--locked` | `.gitignore` (rationale), the binding workflows |
+| Cargo / npm lockfiles | `bindings/{acdp-py,acdp-node,acdp-wasm}/Cargo.lock` and `bindings/acdp-node/package-lock.json` are committed; Cargo builds run `--locked`, and CI installs the npm graph with `npm ci` (rationale at `.github/workflows/bindings.yml:124`) | `.gitignore` (rationale), the binding workflows |

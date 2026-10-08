@@ -2,11 +2,14 @@
 
 Thin PyO3 binding over the [`acdp`](https://crates.io/crates/acdp) Rust
 library. Implements the producer- and consumer-side crypto for the Agent
-Context Distribution Protocol — v0.1.0 core plus the v0.2.0 Trust &
-Hardening surface (RFC-ACDP-0001 through 0015). HTTP is intentionally left
-to the caller — pair this with `httpx` / `requests` for transport.
+Context Distribution Protocol — the 0.1.0–0.4.0 Final lines plus RFC-ACDP-0016
+external anchors; see the spec's
+[version matrix](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/docs/version-matrix.md) for exactly
+which protocol lines each release implements. HTTP is intentionally left to
+the caller — pair this with `httpx` / `requests` for transport.
 
-Package version tracks the binding release line (currently **0.8.0**).
+The package is released at the same version as the
+[`acdp`](https://crates.io/crates/acdp) crate.
 
 ## Install
 
@@ -17,10 +20,14 @@ pip install acdp               # from PyPI
 ## Install (development)
 
 ```bash
-pip install maturin
+pip install 'maturin==1.15.0' 'pytest==8.4.2'   # the versions CI pins
 maturin develop                # editable install into the active venv
 pytest tests/                  # in-process unit tests, no HTTP
 ```
+
+The pinned tool versions are listed in
+[Pinned binding toolchain](https://github.com/agentcontextdistributionprotocol/acdp-rs/blob/main/docs/bindings.md#pinned-binding-toolchain);
+that table is the source of truth if the line above drifts.
 
 ## Build a wheel
 
@@ -33,7 +40,7 @@ pip install target/wheels/acdp-*.whl
 
 Beyond `build_publish_request` / `build_supersede_request` (Ed25519 and
 P-256 producers) and the `verify_content_hash` / `verify_signature`
-basics, `AcdpVerifier` exposes the full 0.2.0 surface:
+basics, `AcdpVerifier` exposes the full verification surface:
 
 - `verify_ctx_id_binding` — bind the served `ctx_id` to the one you
   requested (RFC-ACDP-0006 §4.1 step 7, NORMATIVE); see
@@ -72,7 +79,7 @@ raw = producer.build_publish_request(
 )
 request = json.loads(raw)
 
-# POST `raw` (the JSON string) to the registry's /v1/contexts endpoint
+# POST `raw` (the JSON string) to the registry's /contexts endpoint
 # with your HTTP client of choice. On retrieve, validate the response:
 body = ...  # response.json()["body"]
 acdp.AcdpVerifier.verify_content_hash(json.dumps(body), body["content_hash"])
@@ -138,8 +145,7 @@ from) and recomputing (never trusting) the body hash you pass in.
 ## Design rules
 
 * **JSON across the FFI boundary.** Every method accepts and returns
-  JSON strings — never a Rust type, never a Python dataclass. The
-  wheel stays at ~500 lines of glue.
+  JSON strings — never a Rust type, never a Python dataclass.
 * **Crypto in Rust, HTTP in Python.** Key generation, JCS + SHA-256
   hashing, Ed25519 signing, and signature verification all happen in
   the underlying `acdp` crate. The Python side handles transport,
@@ -152,18 +158,8 @@ from) and recomputing (never trusting) the body hash you pass in.
   `sig-001` fixture — the same constants the Rust suite asserts. A
   drift on either side is a protocol break.
 
-## Layout
+## Public surface
 
-```
-bindings/acdp-py/
-├── Cargo.toml         # standalone [workspace]; depends on `acdp` via path
-├── pyproject.toml     # maturin build backend
-├── README.md          # this file
-├── src/
-│   ├── lib.rs         # #[pymodule] entry point
-│   ├── producer.rs    # AcdpProducer: build/sign publish requests
-│   ├── verifier.rs    # AcdpVerifier: content_hash + signature verify
-│   └── helpers.rs     # visibility / context_type string parsers
-└── tests/
-    └── test_producer.py
-```
+The canonical list of exported classes and methods (and their arity) is
+[`bindings/interop/expected_surface.json`](https://github.com/agentcontextdistributionprotocol/acdp-rs/blob/main/bindings/interop/expected_surface.json),
+enforced against this package by the interop parity tests.

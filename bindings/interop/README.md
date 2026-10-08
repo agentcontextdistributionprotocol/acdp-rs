@@ -11,6 +11,12 @@ Ed25519 seed on each side and asserting:
 * The Python verifier accepts Node-produced signatures and vice versa.
 * Each side matches the spec's `sig-001` golden constants the Rust
   suite asserts (`f170150d…` / `ErkbV+FU…`).
+* The 0.3 and 0.4 verification surfaces agree too:
+  `test_v030_interop.py` (RFC-ACDP-0011–0014: head receipts, log
+  checkpoints and proofs, lifecycle events, key revocations) and
+  `test_v040_interop.py` (RFC-ACDP-0015 witness cosignatures and quorum)
+  assert that every artifact the bindings mint and every verdict they
+  render is byte-identical between Python and Node.
 
 The Python side runs in-process via the `acdp` extension built by
 `maturin develop`. The Node side runs in a `node` subprocess driven
@@ -22,12 +28,11 @@ JSON.
 ## Run
 
 Build both bindings first (the Node side's `package-lock.json` is
-committed, so its `npm install` resolves the pinned dependency graph
-rather than fresh):
+committed; `npm ci` installs exactly that pinned graph, as CI does):
 
 ```bash
 (cd ../acdp-py   && maturin develop)
-(cd ../acdp-node && npm install && npm run build:debug)
+(cd ../acdp-node && npm ci && npm run build:debug)
 pytest
 ```
 
@@ -88,7 +93,7 @@ never silently drift:
   tests `pytest.skip` with a message pointing at `make sdk-wasm` when it's
   absent — unless `ACDP_REQUIRE_WASM_PARITY=1` (set in CI), which turns
   the skip into a hard failure. `make interop` does NOT require wasm-pack.
-* **Arity parity** (closes #242) — name-only parity above can't catch a
+* **Arity parity** — name-only parity above can't catch a
   field silently added to one binding's options object and not the
   other, so `expected_surface.json` also carries an `arity` block: for
   every one of the 61 `classes` entries, `[required, total]` parameter

@@ -22,6 +22,9 @@ cargo test -p acdp --no-default-features
 RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo +nightly doc --workspace --all-features --no-deps
 # Spec-fixture conformance (needs a spec checkout; skips silently without one)
 ACDP_SPEC_DIR=../agentcontextdistributionprotocol cargo test --test conformance
+# Optional, local only (not run in CI): Markdown link/anchor check; spec and
+# sibling-repo blob/main links are checked against ../<repo> checkouts if present
+scripts/check-doc-links.sh
 ```
 
 This repository is a Cargo **workspace**: the umbrella `acdp` crate is a thin

@@ -80,3 +80,11 @@ RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo +nightly doc --workspace --all-fea
 ```
 
 or read it on [docs.rs/acdp](https://docs.rs/acdp).
+
+## Keeping these docs honest
+
+`scripts/check-doc-links.sh` checks every relative link and `#anchor` in these
+guides, the READMEs, and `CONTRIBUTING.md`/`SECURITY.md`, and resolves spec and
+sibling-repo GitHub links against local checkouts when present. It is an
+optional local check (see [CONTRIBUTING.md § Local checks](../CONTRIBUTING.md#local-checks)),
+not a CI gate.

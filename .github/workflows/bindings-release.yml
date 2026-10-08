@@ -261,12 +261,12 @@ jobs:
       # failed) and NOT the plain implicit success() a bare `if:` would carry (would
       # skip this on the documented "Publish platform packages" already-published
       # idempotent-retry recovery, since success() scans every prior step in the job,
-      # not just the one immediately before it — see plans/issues-302-304-release-
-      # dispatch-fix.md Phase 1 for the full reasoning). Anchoring on the root-publish
+      # not just the one immediately before it). Anchoring on the root-publish
       # step's own recorded outcome is what actually means "the release shipped".
       # Ordered after "Tag the release" so the tag a bump PR might reference already
       # exists by the time the consumer reacts; this step's own gate does not depend on
-      # "Tag the release" succeeding (see the plan's Edge cases for why that's correct).
+      # "Tag the release" succeeding: a tag-step failure (e.g. a blank manual `version`)
+      # must not suppress the notification for a release that did ship.
       - name: Mint token for acdp-control-plane
         id: dispatch-token
         if: ${{ always() && steps.publish-root.outcome == 'success' && (github.event_name == 'push' || !inputs.dry_run) }}

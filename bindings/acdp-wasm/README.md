@@ -1,6 +1,6 @@
 # acdp-wasm — ACDP WebAssembly verification core
 
-The **browser / edge / WASI** member of the ACDP binding family
+The **browser / edge** member of the ACDP binding family
 (`bindings/acdp-py`, `bindings/acdp-node`). A pure, **offline**
 cryptographic verifier: it lets a consumer render an ACDP context and
 independently reach a real verification **verdict** — the producer
@@ -15,7 +15,12 @@ verdicts consume.
 It is a standalone Cargo package (its own `[workspace]`) that depends on
 the umbrella `acdp` crate with `default-features = false`, so
 `reqwest` / `tokio` / `rustls` never enter the `.wasm` binary. See
-`docs/research/wasm-target.md` for the design rationale.
+`docs/research/wasm-target.md` for the (historical) design rationale. The
+package is released at the same version as the `acdp` crate; which protocol
+lines each release implements is recorded in the spec's
+[version matrix](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/docs/version-matrix.md).
+Only `wasm32-unknown-unknown` (browser / bundler / Node via wasm-pack) is
+built and tested; WASI targets are untested.
 
 ## Design (same rules as the Python / Node bindings)
 
@@ -184,7 +189,7 @@ The backend is the getrandom **`wasm_js` feature** (on the
 inert at 0.4.3 and kept for forward compatibility. `uuid` additionally
 needs its own **`js` feature** for its v4 RNG shim. (An older direct
 `getrandom 0.2` dependency with the `js` feature, for the former
-`rand_core 0.6` / `OsRng` path, was removed in #363; nothing in this
+`rand_core 0.6` / `OsRng` path, has been removed; nothing in this
 binding's graph uses 0.2 any more.)
 
 Both are wired here, **target-gated to `wasm32` only** (see

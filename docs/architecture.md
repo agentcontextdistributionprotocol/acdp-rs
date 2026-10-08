@@ -38,7 +38,7 @@ Three operations are protocol-critical and the crate implements them exactly:
 |---|---|---|
 | JCS canonicalization | RFC 8785 | `crates/acdp-jcs/src/lib.rs` — **in-house**, handles `-0.0` |
 | `content_hash` | RFC-ACDP-0001 §5.7 | `crates/acdp-crypto/src/hash.rs` — `sha256(JCS(ProducerContent))` |
-| Ed25519 / P-256 sign/verify | RFC-ACDP-0001 §5.8/§5.10/§5.11 | `crates/acdp-crypto/src/{sign,verify}.rs` |
+| Ed25519 / P-256 sign/verify | RFC-ACDP-0001 §5.8/§5.10/§5.11; [signature-algorithms registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/registries/signature-algorithms.md) | `crates/acdp-crypto/src/{sign,verify}.rs` |
 
 ### Three things that trip people up
 

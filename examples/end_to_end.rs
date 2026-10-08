@@ -1,6 +1,6 @@
 //! Example: the full publish → retrieve → verify loop against a registry.
 //!
-//! Run with: `cargo run --example end_to_end --features client`
+//! Run with: `cargo run --example end_to_end --features client,test-transport`
 //!
 //! `examples/consumer.rs` shows the recommended network path as a
 //! *commented* sketch (because it has no registry to talk to). This

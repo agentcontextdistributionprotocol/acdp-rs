@@ -333,7 +333,9 @@ conforming way to meet the requirement.
 
 Your registry advertises what it supports via a `CapabilitiesDocument` served at
 `GET /.well-known/acdp.json` (RFC-ACDP-0007). It MUST include `ed25519` in
-`supported_signature_algorithms` and `did:web` in `supported_did_methods`.
+`supported_signature_algorithms` (identifiers per the spec's
+[signature-algorithms registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/registries/signature-algorithms.md)) and
+`did:web` in `supported_did_methods`.
 `did:key` is optional: add it to `supported_did_methods` to accept `did:key`
 producers; without it, `did:key` publishes are refused (fixture `dk-003`).
 

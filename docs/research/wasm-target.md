@@ -1,6 +1,13 @@
 # Research memo: WebAssembly target for the pure-crypto core
 
-**Status:** evaluation / not scheduled
+> **Historical — shipped as [`bindings/acdp-wasm`](../../bindings/acdp-wasm/README.md)**
+> (npm `@agentcontextdistributionprotocol/acdp-wasm`). This memo is the
+> pre-implementation evaluation, kept for its rationale; it is not updated to
+> match the shipped package. Where they differ, the package README wins — notably
+> on `getrandom` (needed at compile time on `wasm32-unknown-unknown`) and on
+> WASI (not built or tested; only `wasm32-unknown-unknown` ships).
+
+**Status:** historical (shipped)
 **Scope:** make the no-HTTP core (types, crypto, JCS, `did:key`, offline verification) run in browsers, edge runtimes, and WASI.
 **Effort:** **M** (medium) for the browser/WASI verifier surface; **S** if scoped to a build-check-only "it compiles to `wasm32`" milestone.
 

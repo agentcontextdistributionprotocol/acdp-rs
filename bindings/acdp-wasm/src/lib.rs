@@ -1,7 +1,7 @@
 //! `acdp-wasm` — the WebAssembly member of the ACDP binding family.
 //!
 //! A pure, **offline** cryptographic verifier for the browser (the
-//! console) and edge/WASI hosts: it lets a consumer render an ACDP
+//! console) and edge hosts: it lets a consumer render an ACDP
 //! context and independently reach a real verification VERDICT — the
 //! producer signature, the `content_hash`, the `ctx_id` binding
 //! (RFC-ACDP-0006 §4.1 step 7 — see `verifyCtxIdBinding`), a registry

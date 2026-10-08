@@ -140,3 +140,7 @@ The full error taxonomy and which errors are safe to retry is in
 If you're contributing to the crate, run the CI-equivalent local check set in
 [CONTRIBUTING.md § Local checks](../CONTRIBUTING.md#local-checks), including the
 spec-fixture conformance run described in [Conformance & testing](conformance.md).
+
+For a language-neutral walkthrough of the same publish/retrieve/verify flow, see
+the spec's [integration guide](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/docs/integration-guide.md); which wire lines
+this crate speaks is in the [version matrix](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/docs/version-matrix.md).

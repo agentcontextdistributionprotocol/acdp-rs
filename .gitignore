@@ -23,11 +23,12 @@ bindings/**/target/
 # bindings/acdp-node/package-lock.json is tracked for the same reason:
 # napi build's generated loader (index.js/index.d.ts, see below) is
 # produced by @napi-rs/cli, so the resolved npm dependency graph is part
-# of what a consumer of this application artifact trusts. `npm install`
-# (not `npm ci` — see ASSUMPTIONS.md for why that is not viable here) is
-# what every binding target runs against it, and it honors a committed
-# lock: it will not upgrade an entry that still satisfies its range, so
-# the tracked lock is what keeps the pinned @napi-rs/cli version real.
+# of what a consumer of this application artifact trusts. CI installs it
+# with `npm ci` (exact lock, fails on manifest/lock drift); the one
+# exception is bindings-release.yml's publish job, which stamps the
+# version before installing and so stays on `npm install` (documented in
+# place there). The tracked lock is what keeps the pinned @napi-rs/cli
+# version real.
 bindings/acdp-py/.venv/
 bindings/acdp-py/*.so
 bindings/acdp-py/dist/

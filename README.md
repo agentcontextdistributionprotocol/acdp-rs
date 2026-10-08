@@ -6,12 +6,12 @@
 [![License](https://img.shields.io/crates/l/acdp.svg)](#license)
 [![MSRV](https://img.shields.io/badge/MSRV-1.86-blue)](https://blog.rust-lang.org/2025/04/03/Rust-1.86.0.html)
 
-Reference Rust library for the **Agent Context Distribution Protocol** —
-ACDP 0.1.0–0.4.0 Final (`ACDP_VERSION` = `0.4.0`), with the 0.5.0 Draft
-surfaces (RFC-ACDP-0016 typed external anchors, the `unsupported_media_type`
-wire code, and the RFC-ACDP-0014 §4/§10 registry amendments) implemented
-ahead of promotion. For the status of each wire line, see the spec's
-[`VERSIONING.md`](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/VERSIONING.md).
+Reference Rust library for the **Agent Context Distribution Protocol**.
+`acdp::ACDP_VERSION` is the newest Final wire line the builder emits; some
+Draft-line surfaces are implemented ahead of promotion. For which wire lines
+and RFCs are Final or Draft, see the spec's
+[`VERSIONING.md`](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/VERSIONING.md) and
+[version matrix](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/docs/version-matrix.md).
 
 ACDP lets agents publish immutable, producer-signed context descriptors,
 retrieve and verify them locally, discover them by keyword, and follow signed
@@ -25,7 +25,7 @@ witness cosigning, key revocation, and lifecycle/retraction events.
 > This crate implements 0001–0008 (core + retrieval/lineage/search), 0010
 > (registry receipts), 0011 (lineage-head receipts), 0012 (transparency log),
 > 0013 (lifecycle/retraction), 0014 (key revocation), 0015 (witness
-> cosigning), and 0016 (typed external anchors, 0.5.0 Draft).
+> cosigning), and 0016 (typed external anchors, on the Draft line).
 
 This is a **Cargo workspace**: the umbrella `acdp` crate is a thin facade that
 re-exports a fine-grained set of crates under [`crates/`](./crates/)
@@ -47,6 +47,11 @@ Guides that complement the [rustdoc](https://docs.rs/acdp) live in [`docs/`](./d
 - [Implementing a registry](./docs/registry.md) · [CLI reference](./docs/cli.md) · [Language bindings](./docs/bindings.md) · [Conformance & testing](./docs/conformance.md)
 
 These docs are additive to the [specification](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol) and cite the relevant RFC sections rather than restating them.
+For a language-neutral producer/consumer walkthrough, read the spec's
+[integration guide](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/docs/integration-guide.md). Ecosystem-wide notes
+across the sibling repositories live in
+[acdp-docs](https://github.com/agentcontextdistributionprotocol/acdp-docs); a production registry built on this crate is
+[acdp-registry-rs](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs).
 
 ## Install
 
@@ -63,36 +68,37 @@ This crate implements the **`acdp-consumer`** profile (RFC-ACDP-0001 §9.1):
 - Verifies producer signatures end-to-end on every retrieved context.
 - Resolves cross-registry `acdp://` references with cycle detection,
   depth caps, SSRF defenses, and registry-DID web-binding verification.
-- Applies visibility rules client-side and tolerates unknown fields for
-  forward compatibility.
+- Tolerates unknown fields for forward compatibility.
 
 The library also ships the building blocks (`PublishValidator`,
 `SsrfPolicy`, `validate_publish_request`, `compute_embedded_hash`) that
-registry implementers compose into `acdp-registry-core` /
-`acdp-registry-discovery` / `acdp-registry-federated` services. See
+registry implementations compose to claim the registry profiles
+(`acdp-registry-core`, `acdp-registry-discovery`, `acdp-registry-federated`,
+…; see the spec's [profiles registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/registries/profiles.md)).
+[acdp-registry-rs](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs) is one such implementation. See
 `acdp::profile` for the typed profile vocabulary.
+
+Read authentication is **not implemented client-side**: `RegistryClient` sends
+no authentication header, and `CapabilitiesDocument::read_authentication_methods`
+is surfaced as opaque strings. For the provisional `bearer_jwt` method
+([RFC-ACDP-0008 §6.2](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0008-security.md#62-read-authentication),
+[auth-methods registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/registries/auth-methods.md)), the crate provides
+only the producer half — `SigningKey::sign_string` to sign a registry
+challenge; obtaining and presenting the token is up to the host.
 
 ## Glossary
 
-- **Body** — the immutable JSON object representing a context.
-- **ProducerContent** — the Body with the §5.7 exclusion set removed
-  (everything except the producer-controlled fields). The producer
-  signs ProducerContent; the SHA-256 of its JCS-canonicalized bytes
-  is the body's `content_hash`.
-- **RegistryState** — the mutable, registry-derived state (`status`, and
-  in 0.2.0 the optional registry receipt) returned alongside the Body on
-  retrieval.
-- **Lineage** — a chain of contexts representing successive versions of
-  the same logical work, identified by a stable `lineage_id` derived
-  from the v1 ctx_id.
-- **JCS** — JSON Canonicalization Scheme (RFC 8785). The deterministic
-  serialization used as the SHA-256 input for `content_hash`.
-- **DID** — Decentralized Identifier (W3C). `did:web` producers resolve
-  their keys over HTTPS; 0.2.0 adds offline `did:key` (Ed25519 + P-256,
-  no network) resolved purely from the identifier.
-- **Registry receipt** — a registry's signed attestation that it stored a
-  context (RFC-ACDP-0010), verified by recomputing the ProducerContent
-  hash rather than trusting the echoed value.
+Normative definitions are in
+[RFC-ACDP-0001 §2](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0001-core.md#2-conventions-and-terminology);
+in this crate:
+
+- **Body** (`types::Body`) — the immutable stored context.
+- **ProducerContent** — the Body minus the §5.7 exclusion set; its JCS SHA-256 is `content_hash`, and that string is what the producer signs.
+- **RegistryState** (`types::RegistryState`) — mutable registry-derived state (`status`, `lifecycle_events`, `extensions`); receipts and log proofs sit beside it on `types::FullContext`.
+- **Lineage** — successive versions of one logical work, keyed by `lineage_id`.
+- **JCS** — RFC 8785 canonical JSON (in-house in `acdp-jcs`).
+- **DID** — `did:web` (resolved over HTTPS by `did::WebResolver`) or `did:key` (resolved offline by `did::key`).
+- **Registry receipt** (`types::RegistryReceipt`) — a registry's signed attestation that it stored a context (RFC-ACDP-0010).
 
 ## Features
 
@@ -109,24 +115,19 @@ The `acdp` binary is its own crate (`cargo run -p acdp-cli -- …`). Offline
 
 ## Security defaults
 
-The library applies these defenses out of the box (RFC-ACDP-0006 §7,
-RFC-ACDP-0008):
+The public client APIs apply the RFC-ACDP-0006 §7 / RFC-ACDP-0008 defenses
+automatically:
 
-- **HTTPS-only** for all outbound requests; HTTP is rejected.
-- **IP-literal rejection** in `SsrfPolicy` (forces DNS resolution).
-- **Private-range blocking**: RFC 1918, loopback, link-local,
-  multicast, IMDS (`169.254.169.254`), IPv6 equivalents.
-- **Response-size caps**: 1 MB for context retrievals, 64 KB for
-  capabilities and DID documents.
-- **Redirect cap**: max 3 follows, same-authority only.
-- **Algorithm-downgrade rejection**: signatures are checked against
-  the algorithm declared by the resolved DID verification method.
-- **Ed25519 mandatory** (RFC-ACDP-0001 §5.10).
+- **Transport:** HTTPS-only; IP-literal URLs refused; private, loopback,
+  link-local/IMDS, and multicast addresses refused at DNS time (so DNS
+  rebinding is blocked); response-size and same-authority redirect caps.
+- **Signatures:** Ed25519 is mandatory and verified strictly
+  ([RFC-ACDP-0001 §5.10](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0001-core.md#510-signature-algorithms));
+  the signature algorithm must match the resolved verification method.
+- **Binding:** the served body's `ctx_id` must equal the one requested.
 
-DNS-rebinding protection (§7.6) is **active**: `SafeDnsResolver` is wired into
-every HTTP client's `dns_resolver` hook, so resolved IPs are filtered through
-the `SsrfPolicy` at DNS time, before any TCP connect. See
-[`docs/security.md`](./docs/security.md).
+Full list, error mapping, and test escape hatches:
+[`docs/security.md`](./docs/security.md#defenses-applied-by-default).
 
 ## Quick start
 
@@ -162,9 +163,8 @@ println!("content_hash: {}", req.content_hash);
 
 #### `acdp_version` field
 
-Since 0.2.0 the builder **emits `acdp_version` explicitly by default**
-(`"0.4.0"`, the value of `acdp::ACDP_VERSION`) — the omission default is closed
-for 0.2.0+ builders. Consumers still treat an absent field as `"0.1.0"`
+The builder **emits `acdp_version` explicitly by default** (the value of
+`acdp::ACDP_VERSION`) — the omission default is closed for 0.2.0+ builders. Consumers still treat an absent field as `"0.1.0"`
 (RFC-ACDP-0001 §6). To reproduce the 0.1.x omitted form, opt out:
 
 ```rust
@@ -233,7 +233,7 @@ The library implements three protocol-critical operations exactly:
 |-----------------------|-----------------------|--------------------------------------------------------|
 | JCS canonicalization  | RFC 8785              | `crates/acdp-jcs/src/lib.rs` (inline, handles `-0.0`)  |
 | `content_hash`        | RFC-ACDP-0001 §5.7    | `crates/acdp-crypto/src/hash.rs`                       |
-| Ed25519 / P-256 sign/verify | RFC-ACDP-0001 §5.8/11 | `crates/acdp-crypto/src/{sign,verify}.rs`        |
+| Ed25519 / P-256 sign/verify | RFC-ACDP-0001 §5.8/§5.10/§5.11 | `crates/acdp-crypto/src/{sign,verify}.rs` |
 
 The signature input is the ASCII bytes of the full `"sha256:<hex>"` string —
 **not** the raw 32-byte digest. See `crates/acdp-crypto/src/sign.rs` for details.
@@ -285,7 +285,8 @@ RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo +nightly doc --workspace --all-fea
 
 | Crate            | Purpose                                          |
 |------------------|--------------------------------------------------|
-| `ed25519-dalek`  | Ed25519 signing and verification                 |
+| `ed25519-dalek`  | Ed25519 signing and verification (`verify_strict`) |
+| `p256`           | ECDSA-P256 signing and verification              |
 | `sha2`           | SHA-256                                          |
 | `serde`/`serde_json` | JSON                                         |
 | `reqwest`/`rustls` | HTTPS (client feature, no OpenSSL)             |

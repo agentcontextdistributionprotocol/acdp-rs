@@ -4,8 +4,7 @@
 //! shared [`common::TlsTestServer`] helper and configures a `WebResolver`
 //! / `RegistryClient` to trust it. This unblocks the conformance
 //! fixtures that need a live `did:web` HTTPS endpoint or a live foreign
-//! registry — previously deferred behind a "needs TLS mock" note in
-//! `plans/defered/defered.md`.
+//! registry, which an offline test cannot provide.
 
 mod common;
 

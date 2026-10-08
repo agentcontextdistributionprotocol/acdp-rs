@@ -12,7 +12,7 @@
 //! acdp publish      <registry-url> --key-seed <64-hex>
 //!                                   [--key-algorithm ed25519|ecdsa-p256]
 //!                                   --agent-id <DID> --key-id <DID-URL>
-//!                                   [--title T] [--type CT] [--domain D]
+//!                                   --title T --type CT (or via stdin) [--domain D]
 //!                                   [--visibility V] [--audience DID,DID]
 //!                                   [--summary S] [--description D]
 //!                                   [--tags A,B,C]
@@ -23,7 +23,7 @@
 //! acdp canonicalize                          # JCS bytes from stdin JSON
 //! acdp hash                                  # content_hash from stdin JSON
 //! acdp verify       <body.json>              # verify a stored body via DID resolution
-//! acdp sign         <seed-hex> <key-id>      # sign content_hash from stdin JSON
+//! acdp sign         <seed-hex> <key-id>      # hash + Ed25519-sign ProducerContent from stdin
 //! ```
 //!
 //! Output is JSON (the resource on success, an error envelope on
@@ -63,7 +63,7 @@ fn print_usage() {
          \tacdp publish      <registry-url> --key-seed <64-hex>\n\
          \t                                  [--key-algorithm ed25519|ecdsa-p256]\n\
          \t                                  --agent-id <DID> --key-id <DID-URL>\n\
-         \t                                  [--title T] [--type CT] [--domain D]\n\
+         \t                                  --title T --type CT (or via stdin) [--domain D]\n\
          \t                                  [--visibility V] [--audience DID,DID]\n\
          \t                                  [--summary S] [--description D]\n\
          \t                                  [--tags A,B,C]\n\
@@ -74,7 +74,7 @@ fn print_usage() {
          \tacdp canonicalize                          # JCS bytes from stdin JSON\n\
          \tacdp hash                                  # content_hash from stdin JSON\n\
          \tacdp verify       <body.json>              # verify a stored body\n\
-         \tacdp sign         <seed-hex> <key-id>      # sign content_hash from stdin\n\
+         \tacdp sign         <seed-hex> <key-id>      # hash + Ed25519-sign ProducerContent from stdin\n\
          "
     );
 }

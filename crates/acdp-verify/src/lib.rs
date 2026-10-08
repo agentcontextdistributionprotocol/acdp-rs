@@ -114,7 +114,7 @@ impl<'a> Verifier<'a> {
 }
 
 /// Verify the producer signature on a [`PublishRequest`] per RFC-ACDP-0003
-/// §2.1 steps 7–8.
+/// §2.1 steps 6–7.
 ///
 /// Assumes structural validation and `content_hash` recomputation have
 /// already been performed (e.g. by `acdp::registry::PublishValidator::validate_post_schema`).

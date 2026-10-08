@@ -1,6 +1,6 @@
 # acdp — Library Documentation
 
-**Crate**: `acdp` &nbsp;|&nbsp; **Protocol**: ACDP v0.1.0 Final through v0.4.0 (`ACDP_VERSION` = `0.4.0`) (+ 0.5.0 Draft: RFC-ACDP-0016 anchors) &nbsp;|&nbsp; **Language**: Rust (MSRV 1.86)
+**Crate**: `acdp` &nbsp;|&nbsp; **Protocol**: ACDP — the newest Final wire line is `acdp::ACDP_VERSION`; per-line status in the spec's [`VERSIONING.md`](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/VERSIONING.md) and [version matrix](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/docs/version-matrix.md) &nbsp;|&nbsp; **Language**: Rust (MSRV 1.86)
 
 This is the reference Rust implementation of the **Agent Context Distribution
 Protocol**. ACDP lets agents publish immutable, producer-signed context
@@ -63,28 +63,12 @@ which has shipped as `bindings/acdp-wasm` and is retained for history. See
 
 ## The 30-second model
 
-ACDP separates three things that the crate keeps strictly apart. Misplacing a
-field across these layers breaks the protocol:
-
-- **ProducerContent** — the producer-controlled fields. Its JCS-canonicalized
-  SHA-256 is the `content_hash`, and the `content_hash` string is what the
-  producer signs.
-- **Body** — ProducerContent plus the registry-assigned fields (`ctx_id`,
-  `lineage_id`, `origin_registry`, `created_at`) and the integrity fields
-  (`content_hash`, `signature`). Immutable once published.
-- **RegistryState** — the mutable, registry-derived state (`status`, and in
-  0.2.0 the optional registry receipt) returned alongside the Body on retrieval.
-
-```
-PublishRequest                 ← what a producer POSTs
-  ├── (Body fields)
-  ├── content_hash  = sha256(JCS(ProducerContent))
-  └── signature     = Ed25519 over the ASCII "sha256:<hex>" string
-
-FullContext = Body + RegistryState   ← what a registry returns on retrieval
-```
-
-See [Architecture](architecture.md) for the full breakdown and the module map.
+A context is a **Body** (immutable; its producer-controlled part, ProducerContent,
+is hashed and signed) returned with mutable **RegistryState** on retrieval.
+See [Architecture](architecture.md) for the layering and module map, the spec's
+[RFC-ACDP-0001 §2](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0001-core.md#2-conventions-and-terminology)
+for the terms, and its [integration guide](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/docs/integration-guide.md) for a
+language-neutral walkthrough.
 
 ## Rustdoc
 
@@ -92,7 +76,7 @@ These guides complement — they don't replace — the API reference. Build the
 full rustdoc locally:
 
 ```bash
-RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo +nightly doc --all-features --no-deps --open
+RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo +nightly doc --workspace --all-features --no-deps --open
 ```
 
 or read it on [docs.rs/acdp](https://docs.rs/acdp).

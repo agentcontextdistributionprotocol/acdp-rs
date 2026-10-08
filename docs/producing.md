@@ -4,6 +4,8 @@ This page covers building and signing a `PublishRequest` with `Producer` and
 `RequestBuilder`. For what the fields *mean* and the publish wire contract, see
 [RFC-ACDP-0002 (Context Body)](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0002-context-body.md)
 and [RFC-ACDP-0003 (Publish & Supersession)](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0003-publish.md).
+The language-neutral walkthrough is the spec's
+[integration guide](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/docs/integration-guide.md#producer-flow).
 
 Available in the **default (core) build** — no feature flags, no HTTP. The
 producer only *builds and signs*; transport is your responsibility (use the
@@ -32,7 +34,7 @@ let producer = Producer::new(
 |---|---|---|
 | `Producer::new(key, agent_id, key_id)` | Ed25519 | The common case. |
 | `Producer::new_ed25519(...)` | Ed25519 | Explicit alias of `new`. |
-| `Producer::new_p256(key, ...)` | ECDSA-P256 | Interop only. **Ed25519 is mandatory** (RFC-ACDP-0001 §5.10); P256 is optional and some registries may not accept it. |
+| `Producer::new_p256(key, ...)` | ECDSA-P256 | Interop only. **Ed25519 is mandatory** (RFC-ACDP-0001 §5.10); P256 is optional and some registries may not accept it. Signatures are emitted low-S and deterministic (see [Security](security.md#ecdsa-p256-signatures-low-s-on-emit-high-s-accepted) and the spec's [non-uniqueness rules](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/registries/signature-algorithms.md#ecdsa-p256-signature-non-uniqueness-normative)). |
 | `Producer::new_did_key(key)` | Ed25519 | `did:key` identity derived from the key: no domain or DID-document hosting, and consumers verify offline. A `did:key` cannot rotate, so a new key is a new identity and ends the lineage. |
 | `Producer::new_did_key_p256(p256_key)` | ECDSA-P256 | As above, for P-256. Returns `Result` (fails only on a malformed SEC1 point). |
 
@@ -94,7 +96,7 @@ you pass (`expires_at`, `data_period`) are **truncated to milliseconds**
 | `.schema_uri(s)` | schema_uri | optional |
 | `.expires_at(dt)` / `.data_period(dp)` | expiry / period | optional |
 | `.version(n)` / `.expected_lineage_id(l)` | version / lineage check | **v2+ only** (see [Supersession](#supersession)) |
-| `.anchors(vec)` / `.clear_anchors()` | anchors (RFC-ACDP-0016 typed external anchors, 0.5.0 Draft) | optional — an empty `Vec` fails `build()` with `SchemaViolation`, so call `.anchors` only with at least one `AnchorEntry` |
+| `.anchors(vec)` / `.clear_anchors()` | anchors (RFC-ACDP-0016 typed external anchors; schemes in [`registries/anchor-schemes.md`](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/registries/anchor-schemes.md)) | optional — an empty `Vec` fails `build()` with `SchemaViolation`, so call `.anchors` only with at least one `AnchorEntry` |
 | `.acdp_version(v)` / `.omit_acdp_version()` | acdp_version | emitted as `ACDP_VERSION` by default (see [below](#the-acdp_version-field)) |
 
 ## Data references
@@ -145,8 +147,6 @@ A mismatch on either is `AcdpError::DataRefHashMismatch` (wire
 `data_ref_hash_mismatch`), not the body-level `HashMismatch`. For an embedded
 ref, a root `content_hash` carries no verification obligation and is **not**
 checked; the embedded integrity check is `embedded.content_hash` only.
-`EmbeddedContent.content_hash` was added in 0.14.0, a breaking change for code
-that builds `EmbeddedContent` with a struct literal.
 
 ## Supersession
 
@@ -175,8 +175,9 @@ let v2 = producer
 | `new_version_from(&prev)` | Most fields stay the same; you only change data/summary/metadata. Carries *every* producer field over from `prev`, then you override what changed. |
 | `supersede(prev_ctx_id)` | You only have the previous `ctx_id`. You **must** also call `.version(n)` yourself. |
 
-> **v1 vs v2+ rule.** `expected_lineage_id` MUST NOT appear on a v1 publish and
-> is required for v2+ self-verification. The builder enforces this — calling
+> **v1 vs v2+ rule.** `expected_lineage_id` MUST NOT appear on a v1 publish;
+> on v2+ it is optional and lets the registry check the lineage you expect.
+> The builder enforces the v1 rule — calling
 > `.expected_lineage_id(...)` on a v1 request (or omitting `.version()` on a
 > manual `supersede`) fails `build()`. Use `supersede_body` and you won't hit
 > this.
@@ -195,7 +196,8 @@ Two different relationships, easy to confuse:
 ## The `acdp_version` field
 
 Since 0.2.0 the builder **emits `acdp_version` explicitly by default**, set to
-`acdp::ACDP_VERSION` (currently `"0.4.0"`). Use `.acdp_version(v)` to pin a
+`acdp::ACDP_VERSION` (the newest Final wire line; see the spec's
+[`VERSIONING.md`](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/VERSIONING.md)). Use `.acdp_version(v)` to pin a
 different line. Conformant consumers treat an absent field as `"0.1.0"`
 (RFC-ACDP-0001 §6). To reproduce the 0.1.x omitted form, which is what the
 `sig-001` golden vector was signed with, opt out:

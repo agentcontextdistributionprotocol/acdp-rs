@@ -20,6 +20,8 @@ cargo clippy -p acdp --no-default-features --all-targets -- -D warnings
 cargo test --workspace --all-features
 cargo test -p acdp --no-default-features
 RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo +nightly doc --workspace --all-features --no-deps
+# Spec-fixture conformance (needs a spec checkout; skips silently without one)
+ACDP_SPEC_DIR=../agentcontextdistributionprotocol cargo test --test conformance
 ```
 
 This repository is a Cargo **workspace**: the umbrella `acdp` crate is a thin
@@ -27,7 +29,12 @@ facade re-exporting the fine-grained crates under `crates/`. `--workspace` runs
 the checks across every crate; `--no-default-features` is scoped to `-p acdp`
 because the pure-core feature matrix lives on the facade.
 
-(CI runs the same set on every PR.)
+CI runs these on every PR, plus jobs you don't need to reproduce locally: the
+spec-fixture conformance run against a pinned spec checkout (with
+`ACDP_REQUIRE_CONFORMANCE=1`, so a missing fixture fails), MSRV, `cargo deny`,
+`cargo vet`, `cargo semver-checks` (advisory), and coverage. See
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) and
+[`docs/conformance.md`](docs/conformance.md).
 
 Optional but recommended for crypto-sensitive changes:
 
@@ -81,9 +88,8 @@ behavior MUST:
 
 ## Adding a new wire error code
 
-When ACDP adds a new error code (e.g. 0.5.0's `unsupported_media_type`),
-wire it through the library in three
-places:
+When ACDP adds a new error code (e.g. `unsupported_media_type`), wire it
+through the library in three places:
 
 1. **`crates/acdp-primitives/src/error.rs` `AcdpError`** — add a typed
    variant with the appropriate documentation citing the RFC section.

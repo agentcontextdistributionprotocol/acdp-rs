@@ -23,16 +23,17 @@ MSRV is **1.86**. The crate is `#![forbid(unsafe_code)]`.
 | Feature | Default | Pulls in | Use when you are… |
 |---|---|---|---|
 | `client` | ✓ | `reqwest`, `tokio`, `rustls`, `lru` | an **agent or consumer** retrieving and verifying contexts. |
-| *(none)* | — | `serde`, `sha2`, `ed25519-dalek` | building or signing contexts **offline**, or embedding in a binding (HTTP done by the host). |
+| *(none)* | — | `serde`, `sha2`, `ed25519-dalek`, `p256` | building or signing contexts **offline**, or embedding in a binding (HTTP done by the host). |
 | `server` | ✗ | validation + store traits | implementing a **registry**. |
 | `tracing` | ✗ | `tracing` | you want `#[instrument]` spans on async ops. |
+| `test-transport` | ✗ | test-only constructors (`SsrfPolicy::allow_test_loopback`, `RegistryClient::with_test_transport`, …) | driving an in-process mock registry from **tests**. Never enable in production builds. |
 
 The pure-types/crypto core (`--no-default-features`) has **no HTTP stack** —
 this is exactly what the [language bindings](bindings.md) build against.
 
 ## Your first publish request (producer)
 
-A producer wraps a signing key and a `did:web` identity, then uses a fluent
+A producer wraps a signing key and a `did:web` (or `did:key`) identity, then uses a fluent
 builder. `.build()` validates the request, computes `content_hash`, and signs
 — all in one call.
 
@@ -43,7 +44,7 @@ use acdp::{
     types::{AgentDid, ContextType, DataRef, DataRefType, Visibility},
 };
 
-// In production, load the seed from secure storage (HSM, env, KMS).
+// In production, load key material from secure storage (OS keychain, HSM, KMS).
 let key = SigningKey::generate();
 
 let producer = Producer::new(
@@ -136,17 +137,6 @@ The full error taxonomy and which errors are safe to retry is in
 
 ## Pre-PR checks
 
-If you're contributing to the crate, the CI-equivalent local check set
-(canonical copy: [CONTRIBUTING.md § Local checks](../CONTRIBUTING.md#local-checks)) is:
-
-```bash
-cargo fmt --all -- --check
-cargo clippy --workspace --all-features --all-targets -- -D warnings
-cargo clippy -p acdp --no-default-features --all-targets -- -D warnings
-cargo test --workspace --all-features
-cargo test -p acdp --no-default-features
-RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo +nightly doc --workspace --all-features --no-deps
-ACDP_SPEC_DIR=../agentcontextdistributionprotocol cargo test --test conformance
-```
-
-See [Conformance & testing](conformance.md) for what the spec-dir variable does.
+If you're contributing to the crate, run the CI-equivalent local check set in
+[CONTRIBUTING.md § Local checks](../CONTRIBUTING.md#local-checks), including the
+spec-fixture conformance run described in [Conformance & testing](conformance.md).

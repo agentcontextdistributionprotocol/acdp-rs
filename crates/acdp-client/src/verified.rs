@@ -42,9 +42,9 @@ use std::time::Duration;
 ///   returning `Err` — that part of the behavior *is* shared with the
 ///   other two.
 ///
-/// For ACDP v0.1.0 the verification profile is **always strict**:
+/// The verification profile is **always strict**:
 ///
-/// - `did:web` is required for every producer identity — enforced
+/// - Every producer identity must be `did:web` or `did:key` — enforced
 ///   unconditionally by `verify_signature_envelope`
 ///   (RFC-ACDP-0001 §5.4), regardless of any policy field.
 /// - Embedded `DataRef` hashes are verified by

@@ -17,12 +17,12 @@ and [`registries/profiles.md`](https://github.com/agentcontextdistributionprotoc
 | `tests/proptest_jcs.rs` | **Canonicalization** | Property tests for RFC 8785 JCS, including the `-0.0` edge case. |
 | `tests/wire_serialization.rs` | **Serde** | Round-trip JSON serialization and the absent-vs-null convention. |
 | `tests/conformance.rs` | **Behavior** | The spec conformance fixtures (see below). |
-| `tests/tls_conformance.rs` | **Network/TLS** | `fed-001..006` and `pub-001/003/006` against an in-process TLS registry (the `did-ssrf-*` fixtures run in `tests/conformance.rs`). |
+| `tests/tls_conformance.rs` | **Network/TLS** | `fed-001..006` and `pub-001/003/006` against an in-process TLS registry. The other `fed-*` fixtures run elsewhere: `fed-007`/`fed-008` (with the `did-ssrf-*` / `data-ref-ssrf-*` families) in `tests/conformance.rs`, `fed-009`/`fed-011` in `tests/receipts.rs`. |
 | `tests/registry_client.rs` | **HTTP client** | `RegistryClient` / `WebResolver` against `wiremock`. |
 | `tests/verify_algorithm.rs` | **Verification** | The RFC-ACDP-0001 §5.11 algorithm, per step. |
 | `tests/ed25519_strict.rs` | **Verification** | Strict Ed25519 (RFC-ACDP-0001 §5.10, `sig-004`): the small-order forgery is rejected at every entry point (publish, did:key, historical, lifecycle, receipt, checkpoint, cosignature). |
 | `tests/receipts.rs` | **0.2.0** | Registry receipts (RFC-ACDP-0010), `rcpt-*` / `rot-001`. |
-| `tests/lineage_head_receipts.rs` | **0.3.0** | Lineage-head receipts (RFC-ACDP-0011). |
+| `tests/lineage_head_receipts.rs` | **0.3.0** | Lineage-head receipts (RFC-ACDP-0011); the `lhr-001..004` fixtures themselves run in `tests/conformance.rs`. |
 | `tests/transparency_log.rs` | **0.3.0** | Transparency log (RFC-ACDP-0012), `log-001..004`. |
 | `tests/lifecycle.rs` | **0.3.0** | Lifecycle events & retraction (RFC-ACDP-0013), `lc-001..003`. |
 | `tests/key_revocation.rs` | **0.3.0** | Key-revocation signal (RFC-ACDP-0014), `rev-001..004` / `rot-001`. |
@@ -43,8 +43,9 @@ format, the hash preimage, the signature input, or DID resolution **must** keep
 these passing:
 
 ```bash
-cargo test --all-features golden_vector::sig_001
-cargo test --all-features golden_vector::can_001
+cargo test --test golden_vector                              # the whole file
+cargo test --test golden_vector signature_matches_spec      # sig-001
+cargo test --test golden_vector canonical_form_matches_spec # can-001
 ```
 
 The binding test suites pin the same `sig-001` constants
@@ -52,11 +53,9 @@ The binding test suites pin the same `sig-001` constants
 [Language bindings](bindings.md#golden-vector-parity). If these drift, the
 protocol is broken, not just the test.
 
-`sig-004` is the negative counterpart: identity public key, identity `R`,
-`s = 0` satisfies the cofactorless Ed25519 equation for every message, so a
-non-strict verifier accepts it. acdp-rs verifies Ed25519 strictly and rejects
-it with `invalid_signature`; `tests/conformance.rs` executes the vector and
-its eight small-order encodings (as `A` and as `R`).
+`sig-004` is the negative counterpart — a small-order forgery that only a
+strict verifier rejects ([RFC-ACDP-0001 §5.10](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0001-core.md#510-signature-algorithms));
+`tests/conformance.rs` executes it and rejects it with `invalid_signature`.
 
 ## ACDP_SPEC_DIR — the conformance switch
 
@@ -77,6 +76,21 @@ ACDP_SPEC_DIR=../agentcontextdistributionprotocol cargo test --test conformance
 
 (Adjust the path to wherever you've checked out the spec repo.)
 
+What each fixture family covers is described in the spec's
+[`schemas/conformance/README.md`](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/schemas/conformance/README.md) —
+including the newer `rev-003` (revocation publish rejections, executed in
+`tests/key_revocation_publish_gate.rs`) and `rev-004` (interim-form retrieval
+unaffected, executed in `tests/key_revocation.rs`).
+
+### Fixtures not executed here
+
+A few fixtures describe obligations that sit outside this library, so
+`tests/conformance.rs` only accounts for their family:
+
+- `err-002` (`unsupported_media_type`) — an HTTP-layer check that belongs to
+  the registry host, not to `PublishValidator`.
+- `fed-010` (truncated walk reported) — not bound to a behavioral test.
+
 Set **`ACDP_REQUIRE_CONFORMANCE=1`** to turn the silent skip into a hard
 failure: a missing spec checkout, or any fixture a test references but cannot
 find, then fails the run. The dedicated CI conformance job sets it.
@@ -85,8 +99,11 @@ find, then fails the run. The dedicated CI conformance job sets it.
 
 CI does not test against the spec's moving `main`: the conformance job
 (`.github/workflows/ci.yml`) and the bindings conformance job
-(`.github/workflows/bindings.yml`) check out the spec at a pinned commit
-(currently `6d5cdb8`, the first spec commit carrying `sig-004`). To reproduce CI locally, check out that commit. How the
+(`.github/workflows/bindings.yml`) check out the spec at a pinned commit — the
+`ref:` of the "Check out the ACDP spec" step in
+[`ci.yml`](../.github/workflows/ci.yml) is the authority. The pin can lag
+the spec's `main` when later spec commits change no fixtures. To reproduce CI
+locally, check out that commit. How the
 pin is bumped when the spec moves is described in `acdp-ci`'s
 [Spec propagation](https://github.com/agentcontextdistributionprotocol/acdp-ci/blob/main/DELIVERY-STANDARD.md#spec-propagation-a-new-spec-revision--its-sha-pinners)
 section.
@@ -112,7 +129,7 @@ is optional and local-only — install them when touching dependencies or crypto
 ## Running a subset
 
 ```bash
-cargo test --all-features golden_vector::sig_001   # one golden vector
+cargo test --test golden_vector signature_matches_spec   # one golden vector
 cargo test --test conformance                      # one integration file
 cargo test -- --nocapture some_test                # with stdout
 cargo test -p acdp --no-default-features             # core only, no HTTP
@@ -122,7 +139,8 @@ cargo test -p acdp --no-default-features             # core only, no HTTP
 
 This crate implements the **`acdp-consumer`** profile (RFC-ACDP-0001 §9.1) —
 end-to-end signature verification, cross-registry resolution with SSRF defenses,
-client-side visibility, and forward-compatible field tolerance. The typed
+strict search-response parsing (a `results` key instead of `matches` is
+rejected, `vis-003`), and forward-compatible field tolerance. The typed
 vocabulary is in `acdp::profile`; `CapabilitiesDocument::claims_profile` and
 `supports_required` help registries check what a peer advertises.
 

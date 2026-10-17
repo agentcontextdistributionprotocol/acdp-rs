@@ -26,6 +26,7 @@ acdp-crypto     = { path = "../acdp-crypto", version = "=0.14.5" }
 tracing         = { version = "0.1", optional = true, default-features = false, features = ["attributes"] }
 acdp-did        = { path = "../acdp-did", version = "=0.14.5" }
 acdp-validation = { path = "../acdp-validation", version = "=0.14.5" }
+serde      = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 
 [dev-dependencies]

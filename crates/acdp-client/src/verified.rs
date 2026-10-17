@@ -262,6 +262,20 @@ pub struct RevocationPolicy {
     /// as part of verification, merging their results with
     /// [`Self::known`].
     pub discover: Option<RevocationDiscovery>,
+
+    /// Non-strict placement mode (RFC-ACDP-0014 §7 step 1, 0.5.0).
+    /// Under the strict profile (the default, `false`), a receipt
+    /// verified under a *historical* receipt key
+    /// ([`ReceiptKeyStatus::Historical`](acdp_types::receipt::ReceiptKeyStatus))
+    /// cannot place a revoked-key context before its compromise
+    /// boundary: the context is unplaceable (§7 step 4) and fails
+    /// closed. `true` also accepts a historical receipt key as a
+    /// placement — a deployment choice that is **non-conformant with the
+    /// strict profile**, reported per RFC-ACDP-0001 §5.11 like the step 4
+    /// pragmatic mode. Set it with
+    /// [`Self::accept_historical_receipt_key_for_pre_t`]. Ordinary
+    /// rotation with no revocation is unaffected either way.
+    pub accept_historical_receipt_key_for_pre_t: bool,
 }
 
 impl RevocationPolicy {
@@ -274,7 +288,18 @@ impl RevocationPolicy {
         Self {
             known,
             discover: None,
+            accept_historical_receipt_key_for_pre_t: false,
         }
+    }
+
+    /// Opt into the non-strict placement mode: a receipt verified under
+    /// a historical receipt key may place a revoked-key context before
+    /// its compromise boundary. See
+    /// [`Self::accept_historical_receipt_key_for_pre_t`](field@Self::accept_historical_receipt_key_for_pre_t).
+    #[must_use]
+    pub fn accept_historical_receipt_key_for_pre_t(mut self) -> Self {
+        self.accept_historical_receipt_key_for_pre_t = true;
+        self
     }
 
     /// Opt into RFC-ACDP-0014 §8 auto-discovery on top of any
@@ -612,7 +637,10 @@ pub struct DiscoveryOutcome {
 
 /// How to treat the optional `registry_receipt` on retrieval
 /// (RFC-ACDP-0010).
+///
+/// `#[non_exhaustive]` since 0.15.0 ([`Self::VerifyAndReport`] was added).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum ReceiptPolicy {
     /// Skip receipt verification entirely (0.1.0 behavior). The
     /// receipt value is still preserved verbatim on the context.
@@ -634,6 +662,24 @@ pub enum ReceiptPolicy {
     /// a withheld handle plus `VerificationReport::policy_phase_error`,
     /// not an `Err` — see that method's doc.
     Require,
+    /// Verify the receipt when one is present and report its verdict
+    /// separately from the body verdict (RFC-ACDP-0010 §8, 0.5.0 — the
+    /// `acdp-consumer` "receipt verdict reported separately" rule). A
+    /// failing receipt does not fail retrieval: it is recorded in
+    /// [`VerifiedContext::receipt_verdict`] /
+    /// [`VerificationReport::receipt_verdict`] and then treated exactly
+    /// as an absent one by every rule that consumes receipt-attested
+    /// facts — the RFC-ACDP-0010 §10 historical-key rule does not apply,
+    /// an RFC-ACDP-0014 §7 revoked-key context is unplaceable (fails
+    /// closed), and `lineage_id` is reported
+    /// [`LineageBinding::Unbound`](acdp_verify::LineageBinding). The
+    /// body is never presented as receipt-attested
+    /// ([`VerifiedContext::verified_receipt`] is `None`).
+    ///
+    /// On `/current` the same applies to the lineage-head receipt under
+    /// [`LineageHeadPolicy::receipts`]
+    /// ([`VerifiedContext::head_receipt_verdict`]).
+    VerifyAndReport,
 }
 
 /// How to treat the optional `lineage_head_receipt` on
@@ -836,6 +882,15 @@ pub struct VerifiedContext {
     /// policy verified it (RFC-ACDP-0010). `None` under
     /// [`ReceiptPolicy::Ignore`] or when the registry minted none.
     verified_receipt: Option<acdp_types::receipt::RegistryReceipt>,
+    /// RFC-ACDP-0010 §8 step 1 status of the key that signed
+    /// `verified_receipt` (0.5.0). `None` exactly when `verified_receipt`
+    /// is `None`.
+    receipt_key_status: Option<acdp_types::receipt::ReceiptKeyStatus>,
+    /// The receipt verdict, reported separately from the body verdict
+    /// (RFC-ACDP-0010 §8, 0.5.0). `None` when no receipt was evaluated.
+    receipt_verdict: Option<Result<(), AcdpError>>,
+    /// How `body.lineage_id` is bound (RFC-ACDP-0004 §2.1, 0.5.0).
+    lineage_binding: acdp_verify::LineageBinding,
     /// The verified lineage-head receipt (ACDP 0.3, RFC-ACDP-0011),
     /// when one was present and the policy verified it. Only populated
     /// by [`Self::fetch_current`] / [`Self::fetch_current_with_policy`]
@@ -850,6 +905,9 @@ pub struct VerifiedContext {
     /// within policy; `None` when there is no verified head receipt or
     /// the max-age knob is disabled.
     head_receipt_stale: Option<bool>,
+    /// The lineage-head receipt verdict (RFC-ACDP-0011 §7), reported
+    /// separately: `None` when none was evaluated.
+    head_receipt_verdict: Option<Result<(), AcdpError>>,
     /// RFC-ACDP-0014 §8 auto-discovery failure, when
     /// `policy.revocations.discover` was `Some`, discovery failed, and
     /// [`DiscoveryFailurePolicy::ProceedWithKnown`] let verification
@@ -863,18 +921,47 @@ pub struct VerifiedContext {
     revocation_discovery_failure: Option<AcdpError>,
 }
 
-/// `verify_retrieved`'s return type — private and free to shape (issue
-/// #248 Phase 4 grew a third tuple element for the discovery outcome).
-/// Named only to keep clippy's `type_complexity` lint quiet; every
-/// caller destructures it positionally exactly as before.
-type VerifyRetrievedResult = Result<
-    (
-        KeyAuthorization,
-        Option<acdp_types::receipt::RegistryReceipt>,
-        Option<Result<DiscoveryOutcome, AcdpError>>,
-    ),
-    AcdpError,
->;
+/// `verify_retrieved`'s verdicts — private and free to shape.
+struct Retrieved {
+    key_status: KeyAuthorization,
+    verified_receipt: Option<acdp_types::receipt::RegistryReceipt>,
+    receipt_key_status: Option<acdp_types::receipt::ReceiptKeyStatus>,
+    receipt_verdict: Option<Result<(), AcdpError>>,
+    lineage_binding: acdp_verify::LineageBinding,
+    revocation_discovery: Option<Result<DiscoveryOutcome, AcdpError>>,
+}
+
+type VerifyRetrievedResult = Result<Retrieved, AcdpError>;
+
+impl Retrieved {
+    /// Copy the verdicts onto a report.
+    fn record(&self, report: &mut VerificationReport) {
+        report.key_status = Some(self.key_status);
+        report.receipt_key_status = self.receipt_key_status;
+        report.receipt_verdict = self.receipt_verdict.clone();
+        report.lineage_binding = Some(self.lineage_binding);
+        report.revocation_discovery = self.revocation_discovery.clone();
+    }
+
+    fn into_context(self, inner: FullContext) -> VerifiedContext {
+        let revocation_discovery_failure = match self.revocation_discovery {
+            Some(Err(e)) => Some(e),
+            _ => None,
+        };
+        VerifiedContext {
+            inner,
+            key_status: self.key_status,
+            verified_receipt: self.verified_receipt,
+            receipt_key_status: self.receipt_key_status,
+            receipt_verdict: self.receipt_verdict,
+            lineage_binding: self.lineage_binding,
+            verified_head_receipt: None,
+            head_receipt_stale: None,
+            head_receipt_verdict: None,
+            revocation_discovery_failure,
+        }
+    }
+}
 
 impl VerifiedContext {
     /// Retrieve a context and verify its signature using the strict
@@ -926,20 +1013,8 @@ impl VerifiedContext {
         policy: &VerificationPolicy,
     ) -> Result<Self, AcdpError> {
         let ctx = client.retrieve(ctx_id).await?;
-        let (key_status, verified_receipt, revocation_discovery) =
-            Self::verify_retrieved(client, resolver, &ctx, ctx_id, policy).await?;
-        let revocation_discovery_failure = match revocation_discovery {
-            Some(Err(e)) => Some(e),
-            _ => None,
-        };
-        Ok(Self {
-            inner: ctx,
-            key_status,
-            verified_receipt,
-            verified_head_receipt: None,
-            head_receipt_stale: None,
-            revocation_discovery_failure,
-        })
+        let retrieved = Self::verify_retrieved(client, resolver, &ctx, ctx_id, policy).await?;
+        Ok(retrieved.into_context(ctx))
     }
 
     /// Retrieve the current head of a lineage
@@ -1000,62 +1075,67 @@ impl VerifiedContext {
     ) -> Result<Self, AcdpError> {
         let ctx = client.current(lineage_id).await?;
         let served_ctx_id = ctx.body.ctx_id.clone();
-        let (key_status, verified_receipt, revocation_discovery) =
+        let retrieved =
             Self::verify_retrieved(client, resolver, &ctx, &served_ctx_id, policy).await?;
-        let revocation_discovery_failure = match revocation_discovery {
-            Some(Err(e)) => Some(e),
-            _ => None,
-        };
 
         // ── Lineage-head receipt phase (RFC-ACDP-0011) ──────────────
-        let (verified_head_receipt, head_receipt_stale) =
-            match (policy.lineage_head.receipts, &ctx.lineage_head_receipt) {
-                (ReceiptPolicy::Ignore, _) | (ReceiptPolicy::VerifyIfPresent, None) => (None, None),
-                (ReceiptPolicy::Require, None) => {
-                    return Err(AcdpError::InvalidReceipt(
-                        "policy requires a lineage-head receipt but the /current response \
+        let head_policy = policy.lineage_head.receipts;
+        let head = match (head_policy, &ctx.lineage_head_receipt) {
+            (ReceiptPolicy::Ignore, _)
+            | (ReceiptPolicy::VerifyIfPresent | ReceiptPolicy::VerifyAndReport, None) => None,
+            (ReceiptPolicy::Require, None) => {
+                return Err(AcdpError::InvalidReceipt(
+                    "policy requires a lineage-head receipt but the /current response \
                          carries none (registry without the acdp-registry-head-receipts \
                          profile?)"
-                            .into(),
-                    ));
+                        .into(),
+                ));
+            }
+            (_, Some(value)) => {
+                let serving_authority = client
+                    .authority()
+                    .unwrap_or_else(|| served_ctx_id.authority().to_string());
+                // §7 step 3 needs capabilities.registry_did — fetched
+                // from the same authority the context came from.
+                let caps = client.capabilities().await?;
+                let verdict = super::receipt::verify_lineage_head_receipt_value(
+                    value,
+                    lineage_id,
+                    &served_ctx_id,
+                    ctx.body.version,
+                    &ctx.registry_state.status,
+                    true, // /current always serves the attested head
+                    &serving_authority,
+                    &caps.registry_did,
+                    chrono::Duration::seconds(policy.lineage_head.max_clock_skew_seconds as i64),
+                    resolver,
+                )
+                .await;
+                match verdict {
+                    Ok(receipt) => Some(Ok(receipt)),
+                    Err(e) if head_policy == ReceiptPolicy::VerifyAndReport => Some(Err(e)),
+                    Err(e) => return Err(e),
                 }
-                (_, Some(value)) => {
-                    let serving_authority = client
-                        .authority()
-                        .unwrap_or_else(|| served_ctx_id.authority().to_string());
-                    // §7 step 3 needs capabilities.registry_did — fetched
-                    // from the same authority the context came from.
-                    let caps = client.capabilities().await?;
-                    let receipt = super::receipt::verify_lineage_head_receipt_value(
-                        value,
-                        lineage_id,
-                        &served_ctx_id,
-                        ctx.body.version,
-                        &ctx.registry_state.status,
-                        true, // /current always serves the attested head
-                        &serving_authority,
-                        &caps.registry_did,
-                        chrono::Duration::seconds(
-                            policy.lineage_head.max_clock_skew_seconds as i64,
-                        ),
-                        resolver,
-                    )
-                    .await?;
-                    let stale = policy.lineage_head.max_age_seconds.map(|max| {
-                        receipt.age_at(chrono::Utc::now()) > chrono::Duration::seconds(max as i64)
-                    });
-                    (Some(receipt), stale)
-                }
-            };
+            }
+        };
+        let (verified_head_receipt, head_receipt_verdict) = match head {
+            None => (None, None),
+            Some(Ok(receipt)) => (Some(receipt), Some(Ok(()))),
+            Some(Err(e)) => (None, Some(Err(e))),
+        };
+        let head_receipt_stale = verified_head_receipt.as_ref().and_then(
+            |receipt: &acdp_types::receipt::LineageHeadReceipt| {
+                policy.lineage_head.max_age_seconds.map(|max| {
+                    receipt.age_at(chrono::Utc::now()) > chrono::Duration::seconds(max as i64)
+                })
+            },
+        );
 
-        Ok(Self {
-            inner: ctx,
-            key_status,
-            verified_receipt,
-            verified_head_receipt,
-            head_receipt_stale,
-            revocation_discovery_failure,
-        })
+        let mut verified = retrieved.into_context(ctx);
+        verified.verified_head_receipt = verified_head_receipt;
+        verified.head_receipt_stale = head_receipt_stale;
+        verified.head_receipt_verdict = head_receipt_verdict;
+        Ok(verified)
     }
 
     /// The shared retrieve-side verification pipeline: body schema,
@@ -1098,6 +1178,13 @@ impl VerifiedContext {
             });
         }
 
+        // Registry-assigned lineage/origin binding — RFC-ACDP-0004 §2.1
+        // (0.5.0): `lineage_id` and `origin_registry` are outside
+        // `content_hash`/signature coverage like `ctx_id`, so a first
+        // version's derivation and the origin authority are checked here,
+        // offline, before any crypto or network work.
+        acdp_verify::verify_registry_assigned_bindings(&ctx.body)?;
+
         if policy.validate_body_schema {
             acdp_validation::validate_body(&ctx.body)?;
         }
@@ -1122,8 +1209,9 @@ impl VerifiedContext {
         let serving_authority = client
             .authority()
             .unwrap_or_else(|| expected_ctx_id.authority().to_string());
-        let verified_receipt = match (policy.receipts, &ctx.registry_receipt) {
-            (ReceiptPolicy::Ignore, _) | (ReceiptPolicy::VerifyIfPresent, None) => None,
+        let receipt_outcome = match (policy.receipts, &ctx.registry_receipt) {
+            (ReceiptPolicy::Ignore, _)
+            | (ReceiptPolicy::VerifyIfPresent | ReceiptPolicy::VerifyAndReport, None) => None,
             (ReceiptPolicy::Require, None) => {
                 return Err(AcdpError::InvalidReceipt(
                     "policy requires a registry receipt but the response carries none \
@@ -1140,20 +1228,30 @@ impl VerifiedContext {
                     since,
                 )
                 .await?;
-                Some(
-                    super::receipt::verify_receipt_value_since(
-                        value,
-                        expected_ctx_id,
-                        &ctx.body,
-                        &ctx.body.content_hash,
-                        &fingerprint,
-                        &serving_authority,
-                        resolver,
-                        since,
-                    )
-                    .await?,
+                let verdict = super::receipt::verify_receipt_value_with_status_since(
+                    value,
+                    expected_ctx_id,
+                    &ctx.body,
+                    &ctx.body.content_hash,
+                    &fingerprint,
+                    &serving_authority,
+                    resolver,
+                    since,
                 )
+                .await;
+                match verdict {
+                    Ok(placed) => Some(Ok(placed)),
+                    // RFC-ACDP-0010 §8 (0.5.0): reported separately, then
+                    // treated exactly as an absent receipt below.
+                    Err(e) if policy.receipts == ReceiptPolicy::VerifyAndReport => Some(Err(e)),
+                    Err(e) => return Err(e),
+                }
             }
+        };
+        let (verified_receipt, receipt_key_status, receipt_verdict) = match receipt_outcome {
+            None => (None, None, None),
+            Some(Ok((receipt, status))) => (Some(receipt), Some(status), Some(Ok(()))),
+            Some(Err(e)) => (None, None, Some(Err(e))),
         };
 
         // ── Revocation discovery phase (RFC-ACDP-0014 §8) ────────────
@@ -1371,10 +1469,18 @@ impl VerifiedContext {
                 since,
             )
             .await?;
-            super::revocation::classify_under_revocation(
+            // RFC-ACDP-0014 §7 step 1 (0.5.0): under the strict profile
+            // only a receipt verified under a *current* receipt key places
+            // the context; a historical one is unplaceable unless the
+            // named non-strict mode is on.
+            super::revocation::classify_under_revocation_placed(
                 &effective,
                 &fingerprint,
-                verified_receipt.as_ref().map(|r| r.created_at),
+                verified_receipt
+                    .as_ref()
+                    .zip(receipt_key_status)
+                    .map(|(r, status)| (r.created_at, status)),
+                policy.revocations.accept_historical_receipt_key_for_pre_t,
             )?
         };
 
@@ -1420,7 +1526,15 @@ impl VerifiedContext {
             }
         }
 
-        Ok((key_status, verified_receipt, revocation_discovery))
+        let lineage_binding = acdp_verify::lineage_binding(&ctx.body, verified_receipt.is_some());
+        Ok(Retrieved {
+            key_status,
+            verified_receipt,
+            receipt_key_status,
+            receipt_verdict,
+            lineage_binding,
+            revocation_discovery,
+        })
     }
 
     /// Retrieve + verify, returning a structured [`VerificationReport`]
@@ -1513,6 +1627,9 @@ impl VerifiedContext {
             key_status: None,
             policy_phase_error: None,
             revocation_discovery: None,
+            receipt_key_status: None,
+            receipt_verdict: None,
+            lineage_binding: None,
         };
 
         // Schema (structural) — record pass/fail.
@@ -1577,21 +1694,9 @@ impl VerifiedContext {
             )
             .await; // borrow of `ctx` ends here
             match outcome {
-                Ok((key_status, verified_receipt, revocation_discovery)) => {
-                    report.key_status = Some(key_status);
-                    let revocation_discovery_failure = match &revocation_discovery {
-                        Some(Err(e)) => Some(e.clone()),
-                        _ => None,
-                    };
-                    report.revocation_discovery = revocation_discovery;
-                    Some(Self {
-                        inner: ctx,
-                        key_status,
-                        verified_receipt,
-                        verified_head_receipt: None,
-                        head_receipt_stale: None,
-                        revocation_discovery_failure,
-                    })
+                Ok(retrieved) => {
+                    retrieved.record(&mut report);
+                    Some(retrieved.into_context(ctx))
                 }
                 Err(e) => {
                     // Reports; never short-circuits — `fetch_report_diagnose`
@@ -1651,6 +1756,9 @@ impl VerifiedContext {
             key_status: None,
             policy_phase_error: None,
             revocation_discovery: None,
+            receipt_key_status: None,
+            receipt_verdict: None,
+            lineage_binding: None,
         };
 
         // Structural-only schema validation — embedded-hash checks are
@@ -1686,17 +1794,12 @@ impl VerifiedContext {
         // derived policy forces `validate_body_schema` off (P1 was already
         // handled, structurally-only, above) and passes everything else
         // through verbatim — see `VerificationPolicy::derived_for_report`.
-        let (key_status, verified_receipt, revocation_discovery) =
+        let retrieved =
             Self::verify_retrieved(client, resolver, &ctx, ctx_id, &policy.derived_for_report())
                 .await?;
         report.body_hash_ok = true;
         report.signature_ok = true;
-        report.key_status = Some(key_status);
-        let revocation_discovery_failure = match &revocation_discovery {
-            Some(Err(e)) => Some(e.clone()),
-            _ => None,
-        };
-        report.revocation_discovery = revocation_discovery;
+        retrieved.record(&mut report);
 
         // External fetches — record per-ref outcomes when a fetcher is
         // supplied; otherwise leave each slot as `None` so callers can
@@ -1709,17 +1812,7 @@ impl VerifiedContext {
             report.data_ref_external.push(slot);
         }
 
-        Ok((
-            Self {
-                inner: ctx,
-                key_status,
-                verified_receipt,
-                verified_head_receipt: None,
-                head_receipt_stale: None,
-                revocation_discovery_failure,
-            },
-            report,
-        ))
+        Ok((retrieved.into_context(ctx), report))
     }
 
     pub fn body(&self) -> &acdp_types::body::Body {
@@ -1757,6 +1850,45 @@ impl VerifiedContext {
     /// [`Self::receipt`].
     pub fn verified_receipt(&self) -> Option<&acdp_types::receipt::RegistryReceipt> {
         self.verified_receipt.as_ref()
+    }
+
+    /// RFC-ACDP-0010 §8 step 1 status of the key that signed the
+    /// verified receipt (0.5.0): [`ReceiptKeyStatus::Current`] when it is
+    /// in the registry DID document's `assertionMethod`,
+    /// [`ReceiptKeyStatus::Historical`] when it is in `verificationMethod`
+    /// only. A historical receipt is not a currently-authorized registry
+    /// attestation and, under the strict profile, cannot place a
+    /// revoked-key context before its boundary. `None` exactly when
+    /// [`Self::verified_receipt`] is `None`.
+    ///
+    /// [`ReceiptKeyStatus::Current`]: acdp_types::receipt::ReceiptKeyStatus::Current
+    /// [`ReceiptKeyStatus::Historical`]: acdp_types::receipt::ReceiptKeyStatus::Historical
+    pub fn receipt_key_status(&self) -> Option<acdp_types::receipt::ReceiptKeyStatus> {
+        self.receipt_key_status
+    }
+
+    /// The registry-receipt verdict, reported separately from the body
+    /// verdict (RFC-ACDP-0010 §8, 0.5.0). `None` when no receipt was
+    /// evaluated (none served, or [`ReceiptPolicy::Ignore`]);
+    /// `Some(Ok(()))` when it verified; `Some(Err(_))` only under
+    /// [`ReceiptPolicy::VerifyAndReport`] — the other policies turn a
+    /// failing receipt into the call's `Err`.
+    pub fn receipt_verdict(&self) -> Option<&Result<(), AcdpError>> {
+        self.receipt_verdict.as_ref()
+    }
+
+    /// How `body.lineage_id` is bound (RFC-ACDP-0004 §2.1, 0.5.0):
+    /// derived offline for a first version, attested by the verified
+    /// receipt for a later one, or registry-asserted only (`Unbound`).
+    pub fn lineage_binding(&self) -> acdp_verify::LineageBinding {
+        self.lineage_binding
+    }
+
+    /// The lineage-head receipt verdict (RFC-ACDP-0011 §7), reported
+    /// separately; `Some(Err(_))` only under
+    /// [`ReceiptPolicy::VerifyAndReport`] on [`LineageHeadPolicy::receipts`].
+    pub fn head_receipt_verdict(&self) -> Option<&Result<(), AcdpError>> {
+        self.head_receipt_verdict.as_ref()
     }
 
     /// The verified lineage-head receipt (ACDP 0.3, RFC-ACDP-0011),
@@ -1956,6 +2088,16 @@ pub struct VerificationReport {
     /// `policy_phase_error`, for the same "fail loudly on stale
     /// positional construction" reason that field was.
     pub revocation_discovery: Option<Result<DiscoveryOutcome, AcdpError>>,
+    /// RFC-ACDP-0010 §8 step 1 receipt-key status (0.5.0); see
+    /// [`VerifiedContext::receipt_key_status`]. `None` when no receipt
+    /// verified or the authorization phases were not reached.
+    pub receipt_key_status: Option<acdp_types::receipt::ReceiptKeyStatus>,
+    /// The receipt verdict, reported separately from the body verdict
+    /// (RFC-ACDP-0010 §8, 0.5.0); see [`VerifiedContext::receipt_verdict`].
+    pub receipt_verdict: Option<Result<(), AcdpError>>,
+    /// How `body.lineage_id` is bound (RFC-ACDP-0004 §2.1, 0.5.0);
+    /// `None` when the authorization phases were not reached.
+    pub lineage_binding: Option<acdp_verify::LineageBinding>,
 }
 
 /// Sentinel `DataRefFetcher` used as the type parameter for

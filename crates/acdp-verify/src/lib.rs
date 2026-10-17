@@ -19,7 +19,9 @@ use acdp_types::publish::PublishRequest;
 #[cfg(feature = "client")]
 use acdp_did::web::WebResolver;
 
+mod binding;
 mod raw_hash;
+pub use binding::{lineage_binding, verify_registry_assigned_bindings, LineageBinding};
 pub use raw_hash::{
     raw_describes_body, verify_context_hash, verify_raw_body_hash, verify_typed_body_hash,
     verify_typed_content_hash, verify_typed_publish_request_hash,

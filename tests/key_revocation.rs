@@ -6891,8 +6891,9 @@ async fn cache_ac2_facts_survive_induced_search_truncated_under_proceed_with_kno
     // Minimal mock: DID doc + one target context + a search route that
     // always truncates. No `/lineages/{id}` route is needed — a search
     // response of `matches: []` never names a lineage_id to walk.
-    let t2_ctx_id_str = "acdp://registry.example.com/00000000-0000-4000-8000-0000000000c3";
-    let t2_lineage = LineageId::parse(format!("lin:sha256:{}", "7".repeat(64))).unwrap();
+    let t2_ctx_id_str = "acdp://localhost/00000000-0000-4000-8000-0000000000c3";
+    // A v1 body: `lineage_id` must be the §5.6 derivation (RFC-ACDP-0004 §2.1).
+    let t2_lineage = derive_lineage_id(&CtxId(t2_ctx_id_str.into()));
     let t2_body = plain_signed_body(&id.target, t2_ctx_id_str, &t2_lineage, Utc::now());
     let t2_full_json = serde_json::to_value(full_context(t2_body)).unwrap();
     let doc = id.did_doc.clone();
@@ -7140,8 +7141,9 @@ async fn cache_ac6_no_marker_minted_on_induced_search_truncated() {
     use std::collections::HashMap;
 
     let id = cache_identity(0xE6, "cache-ac6-truncated");
-    let target_ctx_id_str = "acdp://registry.example.com/00000000-0000-4000-8000-0000000000e6";
-    let lineage = LineageId::parse(format!("lin:sha256:{}", "8".repeat(64))).unwrap();
+    let target_ctx_id_str = "acdp://localhost/00000000-0000-4000-8000-0000000000e6";
+    // A v1 body: `lineage_id` must be the §5.6 derivation (RFC-ACDP-0004 §2.1).
+    let lineage = derive_lineage_id(&CtxId(target_ctx_id_str.into()));
     let body = plain_signed_body(&id.target, target_ctx_id_str, &lineage, Utc::now());
     let full_json = serde_json::to_value(full_context(body)).unwrap();
 

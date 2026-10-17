@@ -21,6 +21,7 @@ use acdp_did::WebResolver;
 use acdp_primitives::error::AcdpError;
 use acdp_types::body::{Body, FullContext};
 use acdp_types::primitives::{AgentDid, CtxId, LineageId};
+use acdp_types::receipt::ReceiptKeyStatus;
 use acdp_types::revocation::{effective_boundary, KeyRevocation, RevocationTrustClass};
 use acdp_types::search::SearchParamsBuilder;
 use acdp_verify::Verifier;
@@ -78,13 +79,51 @@ const MAX_LINEAGE_WALKS: usize = 100;
 ///   error code; the key is simply not authorized to speak for the
 ///   producer in (or without placement relative to) the compromise
 ///   window.
+///
+/// `receipt_attested_created_at` is taken as a placement from a
+/// *current* receipt key; use [`classify_under_revocation_placed`] to
+/// apply the 0.5.0 receipt-key-status rule.
 pub fn classify_under_revocation(
     revocations: &[KeyRevocation],
     signing_key_fingerprint: &str,
     receipt_attested_created_at: Option<DateTime<Utc>>,
 ) -> Result<Option<KeyAuthorization>, AcdpError> {
+    classify_under_revocation_placed(
+        revocations,
+        signing_key_fingerprint,
+        receipt_attested_created_at.map(|t| (t, ReceiptKeyStatus::Current)),
+        false,
+    )
+}
+
+/// [`classify_under_revocation`] with the receipt-key status of the
+/// placing receipt (RFC-ACDP-0014 §7 step 1, 0.5.0). Under the strict
+/// profile (`accept_historical_receipt_key == false`) a receipt verified
+/// under a [`ReceiptKeyStatus::Historical`] key cannot place the context:
+/// it is unplaceable (§7 step 4) and fails closed. `true` is the named
+/// non-strict mode
+/// ([`RevocationPolicy::accept_historical_receipt_key_for_pre_t`](crate::RevocationPolicy::accept_historical_receipt_key_for_pre_t)).
+pub fn classify_under_revocation_placed(
+    revocations: &[KeyRevocation],
+    signing_key_fingerprint: &str,
+    receipt_placement: Option<(DateTime<Utc>, ReceiptKeyStatus)>,
+    accept_historical_receipt_key: bool,
+) -> Result<Option<KeyAuthorization>, AcdpError> {
     let Some(boundary) = effective_boundary(revocations, signing_key_fingerprint) else {
         return Ok(None);
+    };
+    let receipt_attested_created_at = match receipt_placement {
+        Some((_, ReceiptKeyStatus::Historical)) if !accept_historical_receipt_key => {
+            return Err(AcdpError::KeyNotAuthorized(format!(
+                "signing key {signing_key_fingerprint} is revoked (compromise boundary {}) \
+                 and the context's receipt is signed by a historical receipt key \
+                 (verificationMethod only), which cannot place a revoked-key context under \
+                 the strict profile — unplaceable, fail closed (RFC-ACDP-0014 §7 steps 1 \
+                 and 4)",
+                boundary.format("%Y-%m-%dT%H:%M:%S%.3fZ"),
+            )));
+        }
+        placement => placement.map(|(t, _)| t),
     };
     match receipt_attested_created_at {
         Some(created_at) if created_at < boundary => {

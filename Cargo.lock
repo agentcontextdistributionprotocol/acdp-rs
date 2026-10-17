@@ -236,6 +236,7 @@ dependencies = [
  "acdp-types",
  "acdp-validation",
  "chrono",
+ "serde",
  "serde_json",
  "tracing",
 ]

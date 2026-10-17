@@ -23,12 +23,13 @@ pub use data_ref::{
 pub use log::{verify_log_checkpoint_value, verify_log_inclusion_value};
 pub use receipt::{
     verify_lineage_head_receipt_value, verify_receipt_value, verify_receipt_value_since,
+    verify_receipt_value_with_status_since,
 };
 pub use registry::{RegistryClient, RegistryClientBuilder, ACDP_ACCEPT};
 pub use revocation::{
-    classify_under_revocation, find_registry_attested_revocations, find_revocations,
-    find_revocations_in_lineage, verify_revocation_body, verify_revocation_candidate,
-    verify_revocation_context,
+    classify_under_revocation, classify_under_revocation_placed,
+    find_registry_attested_revocations, find_revocations, find_revocations_in_lineage,
+    verify_revocation_body, verify_revocation_candidate, verify_revocation_context,
 };
 pub use revocation_cache::RevocationCache;
 pub use verified::{

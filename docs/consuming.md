@@ -113,10 +113,11 @@ The stages, in order (it returns on the **first** failure):
 | # | Stage | Failure error |
 |---|---|---|
 | 0 | **Identifier binding** — the served body's `ctx_id` must equal the one requested, per RFC-ACDP-0006 §4.1 step 7 (NORMATIVE); see RFC-ACDP-0008 §9.1 for the threat rationale | `ContextIdMismatch` |
+| 0b | **Registry-assigned bindings** (RFC-ACDP-0004 §2.1, 0.5.0) — a first version's (`supersedes: null`) `lineage_id` must be the offline derivation from its `ctx_id`, and `origin_registry` must equal the `ctx_id` authority, unconditionally (no receipt needed). Standalone: `acdp::verify::verify_registry_assigned_bindings` | `SchemaViolation` |
 | 1 | **Schema validation** (`validate_body`) — structural + embedded `data_ref` hashes | `SchemaViolation`, `DataRefHashMismatch` |
 | 2 | **`content_hash` recompute** — `sha256(JCS(ProducerContent))` vs declared | `HashMismatch` |
-| 3 | **Registry receipt** (RFC-ACDP-0010) per `policy.receipts` — verified by recomputing the ProducerContent hash, before the signature stage because the historical-key path depends on it | `InvalidReceipt` |
-| 4 | **Revocation** (RFC-ACDP-0014 §7/§8) — `policy.revocations.known`, plus discovered or cached revocations when configured | `KeyNotAuthorized`; `RevocationDiscoveryFailed { source }` under `on_failure: FailClosed` (the `source` may be `RevocationDiscoveryBudgetExceeded`) |
+| 3 | **Registry receipt** (RFC-ACDP-0010) per `policy.receipts` — verified by recomputing the ProducerContent hash, before the signature stage because the historical-key path depends on it. The receipt key's status (current = in `assertionMethod`, historical = `verificationMethod` only) is recorded; a stale "historical" answer triggers one rate-limited forced DID refresh first | `InvalidReceipt` (under `VerifyAndReport`: recorded, not returned) |
+| 4 | **Revocation** (RFC-ACDP-0014 §7/§8) — `policy.revocations.known`, plus discovered or cached revocations when configured. Strict profile: only a receipt under a *current* receipt key places a revoked-key context before its boundary | `KeyNotAuthorized`; `RevocationDiscoveryFailed { source }` under `on_failure: FailClosed` (the `source` may be `RevocationDiscoveryBudgetExceeded`) |
 | 5 | **Key resolution and signature verification** — `did:web` via `WebResolver` or `did:key` offline; the algorithm must match the key; historical-key fallback per `policy.historical_keys` | `KeyResolution`, `KeyResolutionUnreachable`, `InvalidSignature`, `UnsupportedAlgorithm`, `KeyNotAuthorized` |
 | 6 | **Status check** per policy | `SchemaViolation` if `allow_unknown_status` is `false` |
 
@@ -147,6 +148,33 @@ pre-compromise), and `VerifiedContext::verified_receipt()` returns the
 registry receipt when one was present and the policy verified it (`None`
 under `ReceiptPolicy::Ignore` or when the registry minted none).
 
+0.15.0 adds three more verdicts, each reported separately from the body
+verdict (and mirrored as `VerificationReport` fields):
+
+| Accessor | Meaning |
+|---|---|
+| `receipt_key_status() -> Option<ReceiptKeyStatus>` | `Current` / `Historical` for the key that signed the verified receipt (RFC-ACDP-0010 §8 step 1); `None` exactly when `verified_receipt()` is. |
+| `receipt_verdict() -> Option<&Result<(), AcdpError>>` | `Some(Ok(()))` when the receipt verified; `Some(Err(_))` only under `ReceiptPolicy::VerifyAndReport`; `None` when no receipt was evaluated. `head_receipt_verdict()` is the `/current` twin. |
+| `lineage_binding() -> LineageBinding` | `Derived` (v1, checked offline), `ReceiptAttested` (v2+, the verified receipt binds `lineage_id`), or `Unbound` (v2+, registry-asserted only). |
+
+**Receipt-key status and revoked keys (RFC-ACDP-0014 §7 step 1).** A
+historical receipt key is not a currently-authorized registry attestation.
+Under the strict profile it cannot place a revoked-key context before the
+compromise boundary — such a context is unplaceable and fails closed with
+`KeyNotAuthorized` ("historical receipt key"). Plain rotation with no
+revocation is unaffected: the RFC-ACDP-0010 §10 historical-key rule
+still accepts a historical receipt key. A deployment that accepts the
+risk opts in with
+`RevocationPolicy::new(known).accept_historical_receipt_key_for_pre_t()`;
+that mode is **non-conformant with the strict profile**.
+
+**`ReceiptPolicy::VerifyAndReport`.** Verifies a present receipt but does
+not fail retrieval when it is invalid: the error lands in
+`receipt_verdict()` and the receipt is then treated as absent everywhere —
+no historical-key rule, revoked-key contexts are unplaceable (fail closed),
+`lineage_binding()` is `Unbound` for v2+, and `verified_receipt()` is
+`None`. `CrossRegistryResolver` still escalates to `Require`.
+
 ### Verification policy
 
 `VerificationPolicy` tunes the pipeline. `VerificationPolicy::default()` is
@@ -166,7 +194,7 @@ let policy = VerificationPolicy::default();
 |---|---|---|
 | `validate_body_schema` | `true` | Run stage 1. Set `false` only in diagnostics that want to attempt signature checks on a body known to fail structural checks. |
 | `allow_unknown_status` | `true` | Accept `Status::Other` and degrade to active (RFC-ACDP-0004 §4.1). `false` rejects unknown statuses. |
-| `receipts` | `ReceiptPolicy::VerifyIfPresent` | Registry-receipt handling (RFC-ACDP-0010). `Ignore` skips receipts; `Require` fails a context that has no valid receipt. |
+| `receipts` | `ReceiptPolicy::VerifyIfPresent` | Registry-receipt handling (RFC-ACDP-0010). `Ignore` skips receipts; `Require` fails a context that has no valid receipt; `VerifyAndReport` records an invalid receipt's verdict instead of failing (see above). The enum is `#[non_exhaustive]` since 0.15.0. |
 | `historical_keys` | `HistoricalKeyPolicy::AcceptWithReceipt` | Whether a signature by a key no longer in the DID document is accepted when a verified receipt places the publish while the key was authorized. `Reject` refuses it. |
 | `lineage_head` | `LineageHeadPolicy::default()` | Lineage-head receipt handling (RFC-ACDP-0011). Consulted only by `fetch_current_with_policy`. |
 | `revocations` | `RevocationPolicy::default()` (no known revocations, no discovery) | Key-revocation enforcement (RFC-ACDP-0014 §7): `known` revocations plus optional `discover`. See [below](#revocation-auto-discovery). |

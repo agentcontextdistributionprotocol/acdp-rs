@@ -152,6 +152,25 @@ pub(crate) fn is_canonical_ms_utc(raw: &str) -> bool {
         && chrono::DateTime::parse_from_rfc3339(raw).is_ok()
 }
 
+/// Receipt-key status (RFC-ACDP-0010 §8 step 1, 0.5.0).
+///
+/// From a consumer's vantage a retired receipt key and a key that was
+/// never a receipt key look the same, so the status is reported rather
+/// than inferred: a receipt verified under a [`Self::Historical`] key
+/// MUST NOT be presented as a currently-authorized registry attestation,
+/// and under the strict profile it cannot place a revoked-key context
+/// before the compromise boundary (RFC-ACDP-0014 §7 step 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ReceiptKeyStatus {
+    /// The receipt key is referenced by the registry DID document's
+    /// `assertionMethod`.
+    Current,
+    /// The receipt key is present in `verificationMethod` only.
+    Historical,
+}
+
 /// A registry-signed publication receipt.
 ///
 /// CLOSED schema (RFC-ACDP-0010 §4, `additionalProperties: false`):

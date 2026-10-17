@@ -158,6 +158,12 @@ required-features = ["client", "server", "test-transport"]
 name              = "discovery_outcomes"
 path              = "tests/discovery_outcomes.rs"
 required-features = ["client", "server", "test-transport"]
+
+[[test]]
+name              = "receipt_bindings"
+path              = "tests/receipt_bindings.rs"
+required-features = ["client", "server", "test-transport"]
+
 # Criterion benchmarks for the crypto / JCS / SSRF hot paths.
 # `harness = false` hands `main` to criterion instead of libtest.
 [[bench]]

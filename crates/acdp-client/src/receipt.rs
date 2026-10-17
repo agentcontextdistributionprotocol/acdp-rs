@@ -9,7 +9,7 @@
 use acdp_did::web::WebResolver;
 use acdp_primitives::error::AcdpError;
 use acdp_types::primitives::{ContentHash, CtxId, LineageId};
-use acdp_types::receipt::{LineageHeadReceipt, RegistryReceipt};
+use acdp_types::receipt::{LineageHeadReceipt, ReceiptKeyStatus, RegistryReceipt};
 
 /// Resolve the registry DID document holding receipt key `#fragment`,
 /// re-fetching a stale cached copy once (RFC-ACDP-0001 §5.11 "Caching").
@@ -29,6 +29,52 @@ async fn resolve_receipt_key_doc(
             )),
             other => other,
         })
+}
+
+/// Resolve the registry DID document for receipt key `#fragment` and
+/// report its RFC-ACDP-0010 §8 step 1 status. A cached copy on which the
+/// key is absent or merely *historical* is re-fetched once (the status
+/// is an adverse input to RFC-ACDP-0014 §7 placement, so it is subject
+/// to the same RFC-ACDP-0001 §5.11 refresh rule as a step-5 verdict).
+/// Under the forced-refresh rate limit the stale copy is used: a key it
+/// lacks is [`AcdpError::KeyResolutionUnreachable`] (transient), a key
+/// it holds outside `assertionMethod` is reported `Historical`.
+async fn resolve_receipt_key_with_status(
+    did: &str,
+    fragment: &str,
+    resolver: &WebResolver,
+    since: std::time::Instant,
+) -> Result<(acdp_did::DidDocument, ReceiptKeyStatus), AcdpError> {
+    let res = resolver
+        .resolve_until(did, since, |doc| {
+            doc.find_by_fragment(fragment)
+                .is_some_and(|m| doc.is_assertion_method(&m.id))
+        })
+        .await
+        .map_err(|e| match e {
+            AcdpError::KeyResolution(why) => {
+                AcdpError::InvalidReceipt(format!("registry DID document: {why}"))
+            }
+            other => other,
+        })?;
+    let doc = res.document;
+    let status = match doc.find_by_fragment(fragment) {
+        Some(m) if doc.is_assertion_method(&m.id) => ReceiptKeyStatus::Current,
+        Some(_) => ReceiptKeyStatus::Historical,
+        None if res.fresh => {
+            return Err(AcdpError::InvalidReceipt(format!(
+                "registry DID document has no verification method '#{fragment}' — \
+                 receipt keys (including retired ones) must remain in verificationMethod"
+            )))
+        }
+        None => {
+            return Err(AcdpError::KeyResolutionUnreachable(format!(
+                "receipt key '#{fragment}' is absent from a stale cached copy of {did} \
+                 and the re-fetch is rate-limited (RFC-ACDP-0001 §5.11)"
+            )))
+        }
+    };
+    Ok((doc, status))
 }
 
 /// Verify a `registry_receipt` value end-to-end:
@@ -92,6 +138,39 @@ pub async fn verify_receipt_value_since(
     resolver: &WebResolver,
     since: std::time::Instant,
 ) -> Result<RegistryReceipt, AcdpError> {
+    verify_receipt_value_with_status_since(
+        value,
+        expected_ctx_id,
+        body,
+        recomputed_body_hash,
+        producer_key_fingerprint,
+        serving_authority,
+        resolver,
+        since,
+    )
+    .await
+    .map(|(receipt, _)| receipt)
+}
+
+/// [`verify_receipt_value_since`] that also reports the receipt-key
+/// status (RFC-ACDP-0010 §8 step 1, 0.5.0): [`ReceiptKeyStatus::Current`]
+/// when the receipt key is in the registry DID document's
+/// `assertionMethod`, [`ReceiptKeyStatus::Historical`] when it is in
+/// `verificationMethod` only. Both verify; a historical status MUST be
+/// reported as such and, under the strict profile, cannot place a
+/// revoked-key context before its compromise boundary
+/// (RFC-ACDP-0014 §7 step 1).
+#[allow(clippy::too_many_arguments)]
+pub async fn verify_receipt_value_with_status_since(
+    value: &serde_json::Value,
+    expected_ctx_id: &CtxId,
+    body: &acdp_types::body::Body,
+    recomputed_body_hash: &ContentHash,
+    producer_key_fingerprint: &str,
+    serving_authority: &str,
+    resolver: &WebResolver,
+    since: std::time::Instant,
+) -> Result<(RegistryReceipt, ReceiptKeyStatus), AcdpError> {
     let receipt = RegistryReceipt::from_value(value)?;
 
     // §8 step 6: canonical millisecond byte form, checked on the RAW
@@ -130,10 +209,11 @@ pub async fn verify_receipt_value_since(
             receipt.registry_did
         )));
     }
-    let doc = resolve_receipt_key_doc(did_part, fragment, resolver, since).await?;
+    let (doc, key_status) =
+        resolve_receipt_key_with_status(did_part, fragment, resolver, since).await?;
     let method = doc
         .find_by_fragment(fragment)
-        .expect("resolve_receipt_key_doc guarantees the fragment");
+        .expect("resolve_receipt_key_with_status guarantees the fragment");
 
     // §5 / RFC-ACDP-0001 §6 raw-JSON rule: hash the receipt exactly as
     // received — re-serializing the parsed struct could normalize byte
@@ -159,7 +239,7 @@ pub async fn verify_receipt_value_since(
         }
     }
 
-    Ok(receipt)
+    Ok((receipt, key_status))
 }
 
 /// Verify a `lineage_head_receipt` value end-to-end per the

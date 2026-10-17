@@ -131,8 +131,9 @@ impl TlsTestServer {
     /// Used to simulate a `did:web` host going from reachable (at
     /// publish time) to truly unreachable (at query time) — a real
     /// connection refusal (`AcdpError::KeyResolutionUnreachable`,
-    /// transient), as opposed to a 404 (host reachable, route just
-    /// missing — `AcdpError::KeyResolution`, permanent). Issue #248
+    /// transient). Since 0.15.0 a 404 is *also* transient
+    /// (RFC-ACDP-0001 §5.11 step 3, `did-001` A), but a dead port is the
+    /// stronger "host truly gone" simulation. Issue #248
     /// Phase 1's discovery tests need that distinction, which a merely-
     /// unregistered route cannot produce on its own since the rest of
     /// the harness (search/retrieve/lineage) is served by a different,

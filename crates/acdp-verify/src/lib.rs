@@ -7,8 +7,10 @@
 //! primitives ([`acdp_crypto::verify_ed25519`] /
 //! [`acdp_crypto::verify_ecdsa_p256`]) live in `crypto`.
 
-use acdp_crypto::{verify_content_hash, verify_ecdsa_p256, verify_ed25519};
+use acdp_crypto::{verify_ecdsa_p256, verify_ed25519};
 use acdp_primitives::error::AcdpError;
+#[cfg(feature = "client")]
+use acdp_types::body::FullContext;
 use acdp_types::body::{Body, Signature};
 use acdp_types::lifecycle::LifecycleEvent;
 use acdp_types::primitives::{AgentDid, ContentHash, CtxId};
@@ -16,6 +18,12 @@ use acdp_types::publish::PublishRequest;
 
 #[cfg(feature = "client")]
 use acdp_did::web::WebResolver;
+
+mod raw_hash;
+pub use raw_hash::{
+    raw_describes_body, verify_context_hash, verify_raw_body_hash, verify_typed_body_hash,
+    verify_typed_content_hash, verify_typed_publish_request_hash,
+};
 
 /// Stateless verifier.  Requires a DID resolver to fetch producer keys.
 #[cfg(feature = "client")]
@@ -93,9 +101,28 @@ impl<'a> Verifier<'a> {
     /// and compare against `body.content_hash`. Lets diagnostic
     /// callers record hash-pass/fail independently of the signature
     /// stage (FEAT-05).
+    ///
+    /// Typed path ([`verify_typed_body_hash`]). Prefer
+    /// [`Self::verify_context_hash`] for a retrieved context: it hashes
+    /// the raw received body (RFC-ACDP-0001 §5.7).
     pub fn verify_body_hash(&self, body: &Body) -> Result<(), AcdpError> {
-        let body_val = serde_json::to_value(body)?;
-        verify_content_hash(&body_val, &body.content_hash)
+        verify_typed_body_hash(body)
+    }
+
+    /// Step 0 over a retrieved context — hashes [`FullContext::raw_body`]
+    /// when present (RFC-ACDP-0001 §5.7 "Hash verification over raw
+    /// JSON"), else the typed body.
+    pub fn verify_context_hash(&self, ctx: &FullContext) -> Result<(), AcdpError> {
+        verify_context_hash(ctx)
+    }
+
+    /// [`Self::verify_body`] for a retrieved context: structural
+    /// validation, raw-JSON hash recomputation, then the signature
+    /// envelope.
+    pub async fn verify_context(&self, ctx: &FullContext) -> Result<(), AcdpError> {
+        acdp_validation::validate_body(&ctx.body)?;
+        verify_context_hash(ctx)?;
+        self.verify_body_signature(&ctx.body).await
     }
 
     /// Steps 1–7 only — resolve the producer's DID, find the signing
@@ -299,9 +326,32 @@ pub fn verify_body_offline(body: &Body) -> Result<(), AcdpError> {
         )));
     }
 
-    let body_val = serde_json::to_value(body)?;
-    verify_content_hash(&body_val, &body.content_hash)?;
+    verify_typed_body_hash(body)?;
+    verify_did_key_signature(body)
+}
 
+/// [`verify_body_offline`] over the body object exactly as received
+/// (RFC-ACDP-0001 §5.7 raw-JSON hashing). Returns the parsed [`Body`]
+/// on success. The language bindings use this so a host passing wire
+/// JSON gets the normative raw-hash path.
+pub fn verify_body_value_offline(raw: &serde_json::Value) -> Result<Body, AcdpError> {
+    let body: Body = serde_json::from_value(raw.clone())
+        .map_err(|e| AcdpError::SchemaViolation(format!("body does not parse: {e}")))?;
+    acdp_validation::validate_body(&body)?;
+    if !body.agent_id.as_str().starts_with("did:key:") {
+        return Err(AcdpError::KeyResolution(format!(
+            "verify_body_value_offline supports did:key producers only; '{}' requires \
+             the resolver-backed Verifier (client feature)",
+            body.agent_id
+        )));
+    }
+    // `raw` is by construction the source of `body`: hash it directly.
+    acdp_crypto::verify_content_hash(raw, &body.content_hash)?;
+    verify_did_key_signature(&body)?;
+    Ok(body)
+}
+
+fn verify_did_key_signature(body: &Body) -> Result<(), AcdpError> {
     let did_part = body
         .signature
         .key_id

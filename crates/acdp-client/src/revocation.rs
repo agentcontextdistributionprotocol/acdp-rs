@@ -19,7 +19,7 @@
 use acdp_crypto::fingerprint::fingerprint_for_key_id;
 use acdp_did::WebResolver;
 use acdp_primitives::error::AcdpError;
-use acdp_types::body::Body;
+use acdp_types::body::{Body, FullContext};
 use acdp_types::primitives::{AgentDid, CtxId, LineageId};
 use acdp_types::revocation::{effective_boundary, KeyRevocation, RevocationTrustClass};
 use acdp_types::search::SearchParamsBuilder;
@@ -141,6 +141,24 @@ pub async fn verify_revocation_body(
     resolver: &WebResolver,
 ) -> Result<KeyRevocation, AcdpError> {
     Verifier::new(resolver).verify_body(body).await?;
+    let revocation = KeyRevocation::from_body(body)?;
+    let signer_fingerprint =
+        fingerprint_for_key_id(&body.signature.key_id, &body.signature.algorithm, resolver).await?;
+    revocation.check_not_self_signed(&signer_fingerprint)?;
+    Ok(revocation)
+}
+
+/// [`verify_revocation_body`] for a retrieved [`FullContext`]: the
+/// `content_hash` is recomputed over the raw received body
+/// (RFC-ACDP-0001 §5.7), so a revocation whose producer spelled a
+/// timestamp differently from this crate's typed rendering still
+/// verifies. Prefer this whenever the whole context is at hand.
+pub async fn verify_revocation_context(
+    ctx: &FullContext,
+    resolver: &WebResolver,
+) -> Result<KeyRevocation, AcdpError> {
+    let body = &ctx.body;
+    Verifier::new(resolver).verify_context(ctx).await?;
     let revocation = KeyRevocation::from_body(body)?;
     let signer_fingerprint =
         fingerprint_for_key_id(&body.signature.key_id, &body.signature.algorithm, resolver).await?;
@@ -328,7 +346,7 @@ async fn walk_revocation_lineage(
     }
     let mut out = Vec::with_capacity(members.len());
     for ctx in members {
-        match verify_revocation_body(&ctx.body, resolver).await {
+        match verify_revocation_context(&ctx, resolver).await {
             Ok(rev) => out.push((ctx.body.ctx_id.clone(), rev)),
             // D5 (issue #248 Phase 1): a transient failure means "could
             // not check this member," not "this member is bad" — propagate
@@ -516,7 +534,7 @@ async fn discover_revocations(
                         continue;
                     }
                     let ctx = client.retrieve(&m.ctx_id).await?;
-                    match verify_revocation_body(&ctx.body, resolver).await {
+                    match verify_revocation_context(&ctx, resolver).await {
                         Ok(rev) => {
                             if keep(&rev) {
                                 revocations.push(rev);

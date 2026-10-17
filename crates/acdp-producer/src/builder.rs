@@ -501,7 +501,13 @@ impl<'a> RequestBuilder<'a> {
             pc.insert("domain".into(), json!(v));
         }
         if let Some(v) = &self.expires_at {
-            pc.insert("expires_at".into(), json!(v));
+            // §5.3 canonical `.mmmZ` — the same spelling the wire
+            // `PublishRequest.expires_at` serializer emits, so the hash
+            // matches the bytes a consumer receives.
+            pc.insert(
+                "expires_at".into(),
+                json!(acdp_primitives::time::fmt_rfc3339_canonical(*v)),
+            );
         }
         if let Some(v) = &self.data_period {
             pc.insert("data_period".into(), json!(v));

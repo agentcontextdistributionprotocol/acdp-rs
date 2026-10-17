@@ -500,6 +500,7 @@ async fn fetch_report_happy_path() {
         lineage_head_receipt: None,
         log_inclusion: None,
         extensions: Default::default(),
+        raw_body: None,
     };
     let full_value = serde_json::to_value(&full).expect("FullContext serializes");
 
@@ -623,6 +624,7 @@ async fn verification_policy_validate_body_schema_off_skips_structural_check() {
         lineage_head_receipt: None,
         log_inclusion: None,
         extensions: Default::default(),
+        raw_body: None,
     })
     .unwrap();
 
@@ -782,6 +784,7 @@ async fn fetch_report_records_embedded_hash_failure() {
         lineage_head_receipt: None,
         log_inclusion: None,
         extensions: Default::default(),
+        raw_body: None,
     })
     .expect("serialize full context");
 
@@ -942,6 +945,7 @@ async fn fetch_report_accepts_root_only_hash_disagreement() {
         lineage_head_receipt: None,
         log_inclusion: None,
         extensions: Default::default(),
+        raw_body: None,
     })
     .expect("serialize full context");
 
@@ -1059,6 +1063,7 @@ async fn fetch_report_diagnose_records_forged_signature() {
         lineage_head_receipt: None,
         log_inclusion: None,
         extensions: Default::default(),
+        raw_body: None,
     })
     .unwrap();
 

@@ -493,6 +493,7 @@ impl RegistryStore for InMemoryStore {
             lineage_head_receipt: None,
             log_inclusion: None,
             extensions: Default::default(),
+            raw_body: None,
         };
         let mut g = self.lock();
         if g.by_ctx.contains_key(&ctx_id) {
@@ -871,6 +872,7 @@ impl RegistryStore for InMemoryStore {
             lineage_head_receipt: None,
             log_inclusion: None,
             extensions: Default::default(),
+            raw_body: None,
         };
         g.by_ctx.insert(ctx_id_str.clone(), stored);
         g.lineages

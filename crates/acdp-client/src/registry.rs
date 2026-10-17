@@ -659,6 +659,22 @@ impl RegistryClient {
     }
 }
 
+/// `Accept` sent on every registry request: the canonical ACDP media
+/// type (RFC-ACDP-0001 §5.1, `registries/media-types.md`), with
+/// `application/json` as the lower-preference legacy fallback that
+/// registries may also emit. Per-request headers (e.g. `Content-Type`,
+/// `If-None-Match`) are added on top.
+pub const ACDP_ACCEPT: &str = "application/acdp+json, application/json;q=0.9";
+
+fn acdp_default_headers() -> reqwest::header::HeaderMap {
+    let mut h = reqwest::header::HeaderMap::new();
+    h.insert(
+        reqwest::header::ACCEPT,
+        reqwest::header::HeaderValue::from_static(ACDP_ACCEPT),
+    );
+    h
+}
+
 /// Same-authority + redirect-cap policy shared by every
 /// [`RegistryClient`] HTTP client (RFC-ACDP-0006 §7.5 / RFC-ACDP-0008
 /// §4.8): at most [`MAX_REDIRECTS`] follows, and each follow must stay
@@ -793,6 +809,7 @@ impl RegistryClientBuilder {
             .connect_timeout(self.connect_timeout)
             .timeout(self.request_timeout)
             .redirect(redirect_policy())
+            .default_headers(acdp_default_headers())
             .resolve(&host, pinned);
         builder = Self::apply_root_cert(builder, self.root_cert_pem.as_deref())?;
 
@@ -831,6 +848,7 @@ impl RegistryClientBuilder {
             .connect_timeout(self.connect_timeout)
             .timeout(self.request_timeout)
             .redirect(redirect_policy())
+            .default_headers(acdp_default_headers())
             // DNS-time SSRF filtering for every connection (incl. redirects
             // and reconnects), defeating DNS rebinding — RFC-ACDP-0006 §7.6.
             // Mirrors `WebResolver::build_http_client` / `HttpsDataRefFetcher`.

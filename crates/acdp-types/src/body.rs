@@ -22,6 +22,7 @@ pub struct Body {
     pub ctx_id: CtxId,
     pub lineage_id: LineageId,
     pub origin_registry: String,
+    #[serde(with = "acdp_primitives::time::canonical_rfc3339")]
     pub created_at: DateTime<Utc>,
 
     // ── Integrity fields (NOT in ProducerContent) ────────────────────────
@@ -83,7 +84,13 @@ pub struct Body {
         skip_serializing_if = "Option::is_none"
     )]
     pub domain: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Canonical emission (RFC-ACDP-0001 §5.3): a whole-second instant
+    /// serializes as `…:SS.000Z`, never chrono's default `…:SSZ`.
+    #[serde(
+        default,
+        with = "acdp_primitives::time::canonical_rfc3339_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub expires_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data_period: Option<DataPeriod>,
@@ -205,8 +212,10 @@ impl Body {
 #[serde(deny_unknown_fields)]
 pub struct DataPeriod {
     /// Inclusive start of the data period.
+    #[serde(with = "acdp_primitives::time::canonical_rfc3339")]
     pub start: DateTime<Utc>,
     /// Inclusive end of the data period.
+    #[serde(with = "acdp_primitives::time::canonical_rfc3339")]
     pub end: DateTime<Utc>,
 }
 
@@ -307,7 +316,13 @@ impl RegistryState {
 /// [`Self::extensions`]. These top-level fields are NOT part of
 /// `ProducerContent`, so unlike [`Body::extensions`] this carry-through
 /// is a forward-compatibility contract, not a hash-stability one.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// **Raw body retention (RFC-ACDP-0001 §5.7 "Hash verification over raw
+/// JSON").** Deserializing a `FullContext` also keeps the `body` object
+/// exactly as received in [`Self::raw_body`], so verifiers recompute
+/// `content_hash` over the producer's bytes rather than over a typed
+/// re-serialization (which can respell a valid timestamp — `can-013`).
+#[derive(Debug, Clone, Serialize)]
 pub struct FullContext {
     /// Producer-signed body.
     pub body: Body,
@@ -346,4 +361,43 @@ pub struct FullContext {
     /// top-level registry fields.
     #[serde(flatten)]
     pub extensions: serde_json::Map<String, serde_json::Value>,
+
+    /// The `body` object exactly as received on the wire — populated by
+    /// `Deserialize`, `None` for a hand-built context. Never serialized
+    /// (the typed [`Self::body`] is). Verifiers hash this when it still
+    /// describes [`Self::body`] (see `acdp_verify::verify_context_hash`);
+    /// a caller that mutates `body` after parsing gets the typed path,
+    /// so the mutation is detected, not masked.
+    #[serde(skip)]
+    pub raw_body: Option<serde_json::Value>,
+}
+
+impl<'de> Deserialize<'de> for FullContext {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Wire {
+            body: serde_json::Value,
+            registry_state: RegistryState,
+            #[serde(default)]
+            registry_receipt: Option<serde_json::Value>,
+            #[serde(default)]
+            lineage_head_receipt: Option<serde_json::Value>,
+            #[serde(default)]
+            log_inclusion: Option<serde_json::Value>,
+            #[serde(flatten)]
+            extensions: serde_json::Map<String, serde_json::Value>,
+        }
+        let w = Wire::deserialize(d)?;
+        let body = Body::deserialize(&w.body)
+            .map_err(|e| serde::de::Error::custom(format!("body: {e}")))?;
+        Ok(FullContext {
+            body,
+            registry_state: w.registry_state,
+            registry_receipt: w.registry_receipt,
+            lineage_head_receipt: w.lineage_head_receipt,
+            log_inclusion: w.log_inclusion,
+            extensions: w.extensions,
+            raw_body: Some(w.body),
+        })
+    }
 }

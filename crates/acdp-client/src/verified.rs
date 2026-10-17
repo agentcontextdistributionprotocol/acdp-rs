@@ -97,6 +97,18 @@ pub struct VerificationPolicy {
     /// Key-revocation handling (ACDP 0.3, RFC-ACDP-0014 §7). Default:
     /// no known revocations — the phase is inert.
     pub revocations: RevocationPolicy,
+
+    /// RFC-ACDP-0001 §5.11 v0.1.0 strict profile, item 1 (NORMATIVE for
+    /// `acdp-consumer`): when `body.acdp_version` is absent or `"0.1.0"`,
+    /// `body.agent_id` and the DID portion of `signature.key_id` MUST be
+    /// `did:web`; any other method fails with `schema_violation`.
+    /// Default `true` (and `true` in [`Self::strict_v0_1_0`]).
+    ///
+    /// `did:key` was introduced in 0.2.0, whose producers MUST emit
+    /// `acdp_version`, so a conformant body never trips this. Setting it
+    /// `false` is a relaxed mode that is **non-conformant with v0.1.0**
+    /// and outside the `acdp-consumer` conformance profile (§5.11).
+    pub require_did_web_for_v0_1_0: bool,
 }
 
 impl Default for VerificationPolicy {
@@ -108,6 +120,7 @@ impl Default for VerificationPolicy {
             historical_keys: HistoricalKeyPolicy::AcceptWithReceipt,
             lineage_head: LineageHeadPolicy::default(),
             revocations: RevocationPolicy::default(),
+            require_did_web_for_v0_1_0: true,
         }
     }
 }
@@ -716,6 +729,33 @@ pub enum KeyAuthorization {
     HistoricallyAuthorizedPreCompromise,
 }
 
+/// RFC-ACDP-0001 §5.11 v0.1.0 strict profile item 1: a body with
+/// `acdp_version` absent or `"0.1.0"` MUST be signed by a `did:web`
+/// producer (`agent_id` and the DID portion of `signature.key_id`).
+fn require_did_web_for_v0_1_0(body: &acdp_types::body::Body) -> Result<(), AcdpError> {
+    if !matches!(body.acdp_version.as_deref(), None | Some("0.1.0")) {
+        return Ok(());
+    }
+    let key_did = body
+        .signature
+        .key_id
+        .split_once('#')
+        .map_or(body.signature.key_id.as_str(), |(d, _)| d);
+    for (field, did) in [
+        ("agent_id", body.agent_id.as_str()),
+        ("signature.key_id", key_did),
+    ] {
+        if !did.starts_with("did:web:") {
+            return Err(AcdpError::SchemaViolation(format!(
+                "v0.1.0 context (acdp_version {}) requires a did:web {field}; got '{did}' \
+                 (RFC-ACDP-0001 §5.11 strict profile)",
+                body.acdp_version.as_deref().unwrap_or("absent"),
+            )));
+        }
+    }
+    Ok(())
+}
+
 impl VerificationPolicy {
     /// The v0.1.0 strict verification profile (RFC-ACDP-0001 §5.11, §9.2).
     ///
@@ -748,6 +788,7 @@ impl VerificationPolicy {
             // A 0.1.0-pinned consumer predates RFC-ACDP-0014 and is
             // unaffected by it (§10): no revocations enforced.
             revocations: RevocationPolicy::default(),
+            require_did_web_for_v0_1_0: true,
         }
     }
 
@@ -1060,12 +1101,15 @@ impl VerifiedContext {
         if policy.validate_body_schema {
             acdp_validation::validate_body(&ctx.body)?;
         }
+        if policy.require_did_web_for_v0_1_0 {
+            require_did_web_for_v0_1_0(&ctx.body)?;
+        }
 
         // Hash recomputation first: from here on `ctx.body.content_hash`
         // IS the independently recomputed value, which the receipt
         // cross-check below relies on.
         let verifier = Verifier::new(resolver);
-        verifier.verify_body_hash(&ctx.body)?;
+        verifier.verify_context_hash(ctx)?;
 
         // ── Receipt phase (RFC-ACDP-0010) ───────────────────────────
         // Verified BEFORE the signature phase because the historical-
@@ -1491,7 +1535,7 @@ impl VerifiedContext {
 
         // Hash + signature recorded independently (FEAT-05).
         let verifier = Verifier::new(resolver);
-        report.body_hash_ok = verifier.verify_body_hash(&ctx.body).is_ok();
+        report.body_hash_ok = verifier.verify_context_hash(&ctx).is_ok();
         report.signature_ok = verifier.verify_body_signature(&ctx.body).await.is_ok();
 
         // External fetches were not attempted (this method has no
@@ -1936,6 +1980,59 @@ mod tests {
     /// The RFC-ACDP-0001 §9.2 named constructor preserves exact v0.1.0
     /// semantics: receipts inert, assertionMethod-only keys. It is
     /// deliberately NOT the 0.2 default (which is receipt-aware).
+    /// RFC-ACDP-0001 §5.11 strict profile item 1 (acdp-rs#385 item 8).
+    #[test]
+    fn v0_1_0_bodies_require_did_web() {
+        use acdp_types::Body;
+
+        const DK: &str = "did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp";
+        const WEB: &str = "did:web:agents.example.com:p";
+        let body_for = |agent: &str, version: Option<&str>| -> Body {
+            let mut v = serde_json::json!({
+                "ctx_id": "acdp://registry.example.com/9f1e2d3c-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+                "lineage_id": "lin:sha256:6af6229c1c6a4a119695c77e47f6554941aebce3d25ba8567e2ae6ffbb6059cb",
+                "origin_registry": "registry.example.com",
+                "created_at": "2026-05-02T08:00:00.000Z",
+                "version": 1,
+                "supersedes": null,
+                "agent_id": agent,
+                "contributors": [],
+                "content_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                "signature": {"algorithm": "ed25519", "key_id": format!("{agent}#key-1"), "value": "AA=="},
+                "title": "strict v0.1.0",
+                "type": "data_snapshot",
+                "data_refs": [],
+                "derived_from": [],
+                "visibility": "public",
+            });
+            if let Some(ver) = version {
+                v["acdp_version"] = serde_json::json!(ver);
+            }
+            serde_json::from_value(v).unwrap()
+        };
+
+        for v in [None, Some("0.1.0")] {
+            let err = crate::verified::require_did_web_for_v0_1_0(&body_for(DK, v)).unwrap_err();
+            assert!(
+                matches!(err, AcdpError::SchemaViolation(_)),
+                "{v:?}: {err:?}"
+            );
+            crate::verified::require_did_web_for_v0_1_0(&body_for(WEB, v)).unwrap();
+        }
+        for v in ["0.2.0", "0.4.0"] {
+            crate::verified::require_did_web_for_v0_1_0(&body_for(DK, Some(v))).unwrap();
+        }
+
+        // A did:web agent_id with a did:key signing key on a v0.1.0 body
+        // is rejected too (the key_id DID portion is checked separately).
+        let mut mixed = body_for(WEB, None);
+        mixed.signature.key_id = format!("{DK}#k");
+        assert!(matches!(
+            crate::verified::require_did_web_for_v0_1_0(&mixed),
+            Err(AcdpError::SchemaViolation(_))
+        ));
+    }
+
     #[test]
     fn strict_v0_1_0_preserves_v0_1_0_semantics() {
         let strict = VerificationPolicy::strict_v0_1_0();
@@ -1943,6 +2040,11 @@ mod tests {
         assert!(strict.allow_unknown_status);
         assert_eq!(strict.receipts, ReceiptPolicy::Ignore);
         assert_eq!(strict.historical_keys, HistoricalKeyPolicy::Reject);
+        assert!(strict.require_did_web_for_v0_1_0);
+        assert!(
+            VerificationPolicy::default().require_did_web_for_v0_1_0,
+            "RFC-ACDP-0001 §5.11: a relaxed mode MUST NOT be the default"
+        );
         assert!(
             strict.revocations.known.is_empty(),
             "a 0.1.0-pinned consumer is unaffected by RFC-ACDP-0014"
@@ -1956,9 +2058,10 @@ mod tests {
 
     /// Phase 2 acceptance criterion 6 — the spine lock.
     ///
-    /// `verify_retrieved` must be the SOLE reader of the four
+    /// `verify_retrieved` must be the SOLE reader of the
     /// authorization-policy fields (`receipts`, `revocations`,
-    /// `historical_keys`, `allow_unknown_status`) anywhere in this file.
+    /// `historical_keys`, `allow_unknown_status`,
+    /// `require_did_web_for_v0_1_0`) anywhere in this file.
     /// Every public entry point (the four `fetch*` forms plus the three
     /// report forms) reaches every authorization phase through that one
     /// function, so a future RFC phase added anywhere else — instead of
@@ -1994,6 +2097,7 @@ mod tests {
             "revocations",
             "historical_keys",
             "allow_unknown_status",
+            "require_did_web_for_v0_1_0",
         ];
         let patterns: Vec<String> = fields
             .iter()

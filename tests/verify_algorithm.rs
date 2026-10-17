@@ -170,8 +170,10 @@ async fn unsupported_did_method_rejected() {
 // ── step 3 — DID document resolution ─────────────────────────────────────────
 
 #[tokio::test]
-async fn resolver_failure_is_key_resolution() {
+async fn resolver_failure_is_key_resolution_unreachable() {
     // Server serves no /.well-known/did.json → 404 → resolution fails.
+    // Since 0.15.0 a non-2xx DID-document fetch is transient
+    // (`key_resolution_unreachable`, RFC-ACDP-0001 §5.11 step 3, did-001 A).
     let key = SigningKey::generate();
     let server = TlsTestServer::start(Router::new()).await;
     let did = server.did();
@@ -182,7 +184,11 @@ async fn resolver_failure_is_key_resolution() {
         .verify_body_signature(&body)
         .await
         .expect_err("unresolvable DID MUST fail");
-    assert!(matches!(err, AcdpError::KeyResolution(_)), "got {err:?}");
+    assert!(
+        matches!(err, AcdpError::KeyResolutionUnreachable(_)),
+        "got {err:?}"
+    );
+    assert!(err.is_transient());
 }
 
 // ── step 4 — fragment present in the DID document ────────────────────────────

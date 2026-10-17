@@ -231,8 +231,14 @@ impl WebResolver {
             .await
             .map_err(|e| classify_reqwest_error(&e))?;
 
+        // RFC-ACDP-0001 §5.11 step 3 (did-001 A): ANY non-2xx DID-document
+        // response — 404 and 410 included — is `key_resolution_unreachable`
+        // (transient). A briefly-misconfigured or unavailable DID host is not
+        // evidence that the key does not exist, and a permanent verdict here
+        // is exactly what lets revocation discovery drop a real revocation
+        // candidate (RFC-ACDP-0014 §8, 0.5.0 discovery outcome classes).
         if !resp.status().is_success() {
-            return Err(AcdpError::KeyResolution(format!(
+            return Err(AcdpError::KeyResolutionUnreachable(format!(
                 "DID document fetch returned HTTP {}",
                 resp.status()
             )));

@@ -141,6 +141,18 @@ required-features = ["client", "test-transport"]
 name              = "ed25519_strict"
 path              = "tests/ed25519_strict.rs"
 required-features = ["client", "test-transport"]
+
+# did-001 DID-document fetch failure classification (RFC-ACDP-0001
+# §5.11 step 3): non-2xx/transport → transient, unparseable → permanent.
+[[test]]
+name              = "did_resolution"
+path              = "tests/did_resolution.rs"
+required-features = ["client", "server", "test-transport"]
+# `Accept: application/acdp+json` on every RegistryClient read (#385).
+[[test]]
+name              = "accept_header"
+path              = "tests/accept_header.rs"
+required-features = ["client", "server", "test-transport"]
 # Criterion benchmarks for the crypto / JCS / SSRF hot paths.
 # `harness = false` hands `main` to criterion instead of libtest.
 [[bench]]

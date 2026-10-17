@@ -114,19 +114,25 @@ fn expect_unknown(err: &AcdpError, want: UnknownReason) {
 async fn assert_unknown_both_policies(mode: SearchMode, want: UnknownReason) {
     let (w, ctx) = world().await;
     w.set_search_mode(mode);
+    assert_unknown_in(&w, &ctx, want).await;
+}
+
+/// The fail-closed / proceed-with-known / report assertions over a
+/// world already prepared to make discovery `unknown(want)`.
+async fn assert_unknown_in(w: &World, ctx: &FullContext, want: UnknownReason) {
     let client = w.client();
 
     let closed = policy(
         RevocationPolicy::default().with_discovery(discovering(DiscoveryFailurePolicy::FailClosed)),
     );
-    let err = fetch(&w, &client, &ctx, &closed).await.unwrap_err();
+    let err = fetch(w, &client, ctx, &closed).await.unwrap_err();
     expect_unknown(&err, want);
 
     let open = policy(
         RevocationPolicy::default()
             .with_discovery(discovering(DiscoveryFailurePolicy::ProceedWithKnown)),
     );
-    let v = fetch(&w, &client, &ctx, &open).await.expect("proceeds");
+    let v = fetch(w, &client, ctx, &open).await.expect("proceeds");
     assert_eq!(v.revocation_verdict().unknown_reason(), Some(want));
     assert!(!matches!(
         v.revocation_verdict(),
@@ -143,6 +149,24 @@ async fn assert_unknown_both_policies(mode: SearchMode, want: UnknownReason) {
         report.revocation_verdict.and_then(|v| v.unknown_reason()),
         Some(want)
     );
+}
+
+/// rev-005 B (typed): a candidate signed by a key the producer has
+/// rotated out, with no registry receipt to place it, cannot be
+/// verified. It is `unknown(unverifiable_candidate)`: verification fails
+/// closed, and under `ProceedWithKnown` the verdict stays unknown, never
+/// not-revoked and never a silently dropped candidate.
+#[tokio::test]
+async fn rev_005_b_unverifiable_candidate_fails_closed() {
+    let (w, ctx) = world().await;
+    publish_revocation(&w, PAST).await;
+    w.set_doc(producer_doc(
+        &[("key-1", K1), ("key-2", K2), ("key-3", K3)],
+        &["key-1", "key-3"],
+    ));
+    w.strip_receipts
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert_unknown_in(&w, &ctx, UnknownReason::UnverifiableCandidate).await;
 }
 
 /// F: a page cap hit while `next_cursor` remains is truncation, not

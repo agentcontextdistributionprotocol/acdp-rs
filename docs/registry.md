@@ -104,12 +104,12 @@ let server = RegistryServer::new(
 
 **Read authentication is the host's job.** `requester` is the DID the host
 has already authenticated, or `None` for an anonymous read; the server only
-applies visibility rules to it. This crate does not implement any read
+applies visibility rules to it. This crate does not verify any read
 authentication method — including the registered `bearer_jwt`
 ([RFC-ACDP-0008 §6.2](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0008-security.md#62-read-authentication),
-[`registries/auth-methods.md`](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/registries/auth-methods.md)),
-which is **not implemented client-side** (nor server-side) in this crate. `acdp-registry-rs`
-implements it; see its
+[`registries/auth-methods.md`](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/registries/auth-methods.md)).
+The client only presents tokens, through an `AuthProvider`. `acdp-registry-rs`
+implements the server side; see its
 [`bearer_jwt` conformance notes](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/AUTHENTICATION.md#spec-conformance-bearer_jwt).
 The client side is covered in [Security](security.md#read-authentication).
 

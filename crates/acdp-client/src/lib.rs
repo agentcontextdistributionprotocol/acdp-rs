@@ -6,6 +6,7 @@
 //! (one-shot fetch + verify), [`CrossRegistryResolver`] (RFC-ACDP-0006
 //! §4.1), and DataRef fetching with hash verification.
 
+pub mod auth;
 pub mod cross_registry;
 pub mod data_ref;
 pub mod log;
@@ -14,9 +15,11 @@ pub mod registry;
 pub mod revocation;
 pub mod revocation_cache;
 pub mod revocation_verdict;
+pub mod transparency;
 pub mod verified;
 pub mod witness;
 
+pub use auth::{AuthFuture, AuthProvider, BearerToken, PerAuthorityTokens, StaticBearerToken};
 pub use cross_registry::{CrossRegistryResolver, ResolverOptions};
 pub use data_ref::{
     fetch_and_verify_data_ref, DataRefFetcher, HttpsDataRefFetcher, DEFAULT_MAX_BYTES,
@@ -37,6 +40,9 @@ pub use revocation_verdict::{
     find_revocations_verdict, RevocationAssessment, RevocationEffect, RevocationRefusal,
     RevocationSource, RevocationVerdict, SourcedRevocation, UnknownReason,
     RECOMMENDED_NEGATIVE_FRESHNESS,
+};
+pub use transparency::{
+    LogInclusionPolicy, WitnessEnforcement, WitnessQuorumPolicy, DEFAULT_LOG_MAX_CLOCK_SKEW_SECONDS,
 };
 pub use verified::{
     DiscoveryFailurePolicy, DiscoveryOutcome, HistoricalKeyPolicy, KeyAuthorization,

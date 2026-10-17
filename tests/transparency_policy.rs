@@ -1,0 +1,442 @@
+//! Transparency corroboration during verification (RFC-ACDP-0012 §9,
+//! RFC-ACDP-0015 §8): `VerificationPolicy::{log_inclusion,
+//! witness_quorum}` wire the log and witness verifiers into
+//! `VerifiedContext` and `VerificationReport`. Their verdicts are reported
+//! separately from the body, receipt and revocation verdicts. A failure
+//! never invalidates the context unless the policy opts in (§9.3).
+
+mod common;
+mod world;
+
+use std::sync::atomic::Ordering;
+
+use acdp::client::{
+    LogInclusionPolicy, VerificationPolicy, VerifiedContext, WitnessEnforcement,
+    WitnessQuorumPolicy,
+};
+use acdp::crypto::SigningKey;
+use acdp::did::{did_key_from_ed25519, did_key_url};
+use acdp::error::AcdpError;
+use acdp::registry::MerkleLog;
+use acdp::types::cosignature::WitnessSigner;
+use acdp::types::log::{LogCheckpoint, LogLeaf};
+use acdp::types::receipt::ReceiptSigner;
+use acdp::types::{ContextType, FullContext};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use serde_json::{json, Value};
+use world::*;
+
+const LOG_ID: &str = "did:web:localhost/log/1";
+const W1: [u8; 32] = [0x51u8; 32];
+const W2: [u8; 32] = [0x52u8; 32];
+const WEB_WITNESS: &str = "did:web:witness.example";
+
+fn one_key() -> Value {
+    producer_doc(&[("key-1", K1)], &["key-1"])
+}
+
+fn registry_signer() -> ReceiptSigner {
+    ReceiptSigner::new(
+        SigningKey::from_bytes(&RECEIPT_SEED),
+        REGISTRY_DID,
+        format!("{REGISTRY_DID}#receipt-key-1"),
+    )
+    .unwrap()
+}
+
+fn did_key_witness(seed: [u8; 32]) -> WitnessSigner {
+    let did = did_key_from_ed25519(&SigningKey::from_bytes(&seed).verifying_key_bytes());
+    let key_id = did_key_url(&did).unwrap();
+    WitnessSigner::new(SigningKey::from_bytes(&seed), did, key_id).unwrap()
+}
+
+fn web_witness() -> (WitnessSigner, Value) {
+    let signer = WitnessSigner::new(
+        SigningKey::from_bytes(&W2),
+        WEB_WITNESS,
+        format!("{WEB_WITNESS}#witness-key-1"),
+    )
+    .unwrap();
+    let doc = json!({
+        "id": WEB_WITNESS,
+        "verificationMethod": [{
+            "id": format!("{WEB_WITNESS}#witness-key-1"),
+            "type": "JsonWebKey2020",
+            "controller": WEB_WITNESS,
+            "publicKeyJwk": {
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "x": URL_SAFE_NO_PAD.encode(SigningKey::from_bytes(&W2).verifying_key_bytes()),
+            }
+        }],
+        "assertionMethod": [format!("{WEB_WITNESS}#witness-key-1")],
+    });
+    (signer, doc)
+}
+
+/// The served wire value of `ctx`.
+async fn others(w: &World) -> [FullContext; 2] {
+    [
+        w.publish("key-1", K1, ContextType::Analysis, None).await,
+        w.publish("key-1", K1, ContextType::Analysis, None).await,
+    ]
+}
+
+fn served(w: &World, ctx: &FullContext) -> Value {
+    w.contexts
+        .read()
+        .unwrap()
+        .get(ctx.body.ctx_id.as_str())
+        .unwrap()
+        .clone()
+}
+
+/// The registry's §7.1 leaf for `ctx`, built from the served receipt.
+fn leaf_of(w: &World, ctx: &FullContext) -> LogLeaf {
+    let v = served(w, ctx);
+    let receipt = &v["registry_receipt"];
+    LogLeaf::for_publish(
+        &ctx.body,
+        &ctx.body.content_hash,
+        receipt["key_fingerprint"].as_str().unwrap(),
+        receipt,
+    )
+    .unwrap()
+}
+
+/// Append `ctx` (between `others`) to a fresh log, checkpoint
+/// it, and serve its inclusion proof as `log_inclusion`. Returns the
+/// checkpoint.
+fn serve_inclusion(w: &World, ctx: &FullContext, others: &[FullContext; 2]) -> LogCheckpoint {
+    let mut log = MerkleLog::new(LOG_ID).unwrap();
+    log.append(leaf_of(w, &others[0])).unwrap();
+    let idx = log.append(leaf_of(w, ctx)).unwrap();
+    log.append(leaf_of(w, &others[1])).unwrap();
+    let cp = log
+        .checkpoint(&registry_signer(), chrono::Utc::now())
+        .unwrap();
+    let proof = log.inclusion_proof(idx, &cp).unwrap();
+    w.tamper(ctx.body.ctx_id.as_str(), |v| {
+        v["log_inclusion"] = serde_json::to_value(&proof).unwrap();
+    });
+    cp
+}
+
+fn serve_cosignatures(w: &World, ctx: &FullContext, cosigs: Vec<Value>) {
+    w.tamper(ctx.body.ctx_id.as_str(), |v| {
+        v["witness_signatures"] = Value::Array(cosigs);
+    });
+}
+
+fn cosign(signer: &WitnessSigner, cp: &LogCheckpoint) -> Value {
+    serde_json::to_value(signer.mint(cp, chrono::Utc::now()).unwrap()).unwrap()
+}
+
+fn with_log(log_inclusion: LogInclusionPolicy) -> VerificationPolicy {
+    VerificationPolicy {
+        log_inclusion,
+        ..VerificationPolicy::default()
+    }
+}
+
+async fn fetch(w: &World, ctx: &FullContext, policy: &VerificationPolicy) -> VerifiedContext {
+    VerifiedContext::fetch_with_policy(&w.client(), &w.resolver(), &ctx.body.ctx_id, policy)
+        .await
+        .expect("verifies")
+}
+
+#[tokio::test]
+async fn valid_inclusion_is_reported_and_ignored_by_default() {
+    let w = World::start(one_key()).await;
+    let other = others(&w).await;
+    let ctx = w.publish("key-1", K1, ContextType::Analysis, None).await;
+    let cp = serve_inclusion(&w, &ctx, &other);
+
+    // Default policy: the proof is preserved, not evaluated.
+    let v = fetch(&w, &ctx, &VerificationPolicy::default()).await;
+    assert!(v.log_inclusion_verdict().is_none());
+    assert!(v.verified_log_inclusion().is_none());
+    assert!(v.full_context().log_inclusion.is_some());
+
+    for policy in [
+        LogInclusionPolicy::VerifyIfPresent,
+        LogInclusionPolicy::Require,
+    ] {
+        let v = fetch(&w, &ctx, &with_log(policy)).await;
+        assert!(
+            matches!(v.log_inclusion_verdict(), Some(Ok(()))),
+            "{policy:?}"
+        );
+        let inclusion = v.verified_log_inclusion().expect("verified");
+        assert_eq!(inclusion.leaf_index, 1);
+        assert_eq!(inclusion.log_checkpoint.root_hash, cp.root_hash);
+        assert!(v.witness_quorum().is_none());
+    }
+}
+
+/// §9.3: a failing proof "invalidates nothing else": it is reported, and
+/// the context still verifies, unless the policy is `Require`.
+#[tokio::test]
+async fn failing_proof_is_reported_not_fatal_unless_required() {
+    let w = World::start(one_key()).await;
+    let other = others(&w).await;
+    let ctx = w.publish("key-1", K1, ContextType::Analysis, None).await;
+    serve_inclusion(&w, &ctx, &other);
+    // Serve `other`'s proof position for `ctx`: the leaf the consumer
+    // rebuilds from `ctx` is not at index 0.
+    w.tamper(ctx.body.ctx_id.as_str(), |v| {
+        v["log_inclusion"]["leaf_index"] = json!(0);
+    });
+
+    let v = fetch(&w, &ctx, &with_log(LogInclusionPolicy::VerifyIfPresent)).await;
+    assert!(
+        matches!(
+            v.log_inclusion_verdict(),
+            Some(Err(AcdpError::InvalidLogProof(_)))
+        ),
+        "{:?}",
+        v.log_inclusion_verdict()
+    );
+    assert!(v.verified_log_inclusion().is_none());
+    assert!(
+        v.receipt_verdict().is_some_and(|r| r.is_ok()),
+        "receipt verdict unaffected"
+    );
+
+    let err = VerifiedContext::fetch_with_policy(
+        &w.client(),
+        &w.resolver(),
+        &ctx.body.ctx_id,
+        &with_log(LogInclusionPolicy::Require),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, AcdpError::InvalidLogProof(_)), "{err:?}");
+}
+
+/// A proof bound to another registry's checkpoint fails the §9.3 step 3
+/// binding (log_id DID vs. serving authority and capabilities).
+#[tokio::test]
+async fn checkpoint_from_another_registry_is_rejected() {
+    let w = World::start(one_key()).await;
+    let other = others(&w).await;
+    let ctx = w.publish("key-1", K1, ContextType::Analysis, None).await;
+    serve_inclusion(&w, &ctx, &other);
+    w.tamper(ctx.body.ctx_id.as_str(), |v| {
+        v["log_inclusion"]["log_checkpoint"]["log_id"] = json!("did:web:evil.example/log/1");
+    });
+    let v = fetch(&w, &ctx, &with_log(LogInclusionPolicy::VerifyIfPresent)).await;
+    assert!(matches!(
+        v.log_inclusion_verdict(),
+        Some(Err(AcdpError::InvalidLogProof(_)))
+    ));
+}
+
+#[tokio::test]
+async fn require_fails_on_an_absent_proof() {
+    let w = World::start(one_key()).await;
+    let ctx = w.publish("key-1", K1, ContextType::Analysis, None).await;
+
+    let v = fetch(&w, &ctx, &with_log(LogInclusionPolicy::VerifyIfPresent)).await;
+    assert!(
+        v.log_inclusion_verdict().is_none(),
+        "absent is not evaluated"
+    );
+
+    let err = VerifiedContext::fetch_with_policy(
+        &w.client(),
+        &w.resolver(),
+        &ctx.body.ctx_id,
+        &with_log(LogInclusionPolicy::Require),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(err, AcdpError::InvalidLogProof(ref m) if m.contains("no log_inclusion")),
+        "{err:?}"
+    );
+}
+
+/// §9.1 step 1: the leaf binds the receipt, so without a verified receipt
+/// the proof cannot be checked. That is an error verdict, and fatal under
+/// `Require`.
+#[tokio::test]
+async fn proof_without_a_receipt_cannot_be_verified() {
+    let w = World::start(one_key()).await;
+    let other = others(&w).await;
+    let ctx = w.publish("key-1", K1, ContextType::Analysis, None).await;
+    serve_inclusion(&w, &ctx, &other);
+    w.strip_receipts.store(true, Ordering::SeqCst);
+
+    let v = fetch(&w, &ctx, &with_log(LogInclusionPolicy::VerifyIfPresent)).await;
+    assert!(
+        matches!(v.log_inclusion_verdict(), Some(Err(AcdpError::InvalidLogProof(ref m))) if m.contains("receipt")),
+        "{:?}",
+        v.log_inclusion_verdict()
+    );
+    let err = VerifiedContext::fetch_with_policy(
+        &w.client(),
+        &w.resolver(),
+        &ctx.body.ctx_id,
+        &with_log(LogInclusionPolicy::Require),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, AcdpError::InvalidLogProof(_)), "{err:?}");
+}
+
+/// RFC-ACDP-0015 §8: trusted cosignatures over the verified checkpoint
+/// count toward the quorum. Witnesses can be did:key (resolved offline) or
+/// did:web with a pinned document. Untrusted witnesses never count.
+#[tokio::test]
+async fn witness_quorum_is_reported_over_the_verified_checkpoint() {
+    let w = World::start(one_key()).await;
+    let other = others(&w).await;
+    let ctx = w.publish("key-1", K1, ContextType::Analysis, None).await;
+    let cp = serve_inclusion(&w, &ctx, &other);
+    let w1 = did_key_witness(W1);
+    let (w2, w2_doc) = web_witness();
+    let untrusted = did_key_witness([0x53u8; 32]);
+    serve_cosignatures(
+        &w,
+        &ctx,
+        vec![cosign(&w1, &cp), cosign(&w2, &cp), cosign(&untrusted, &cp)],
+    );
+
+    // Witness policy alone verifies the checkpoint (log policy Ignore).
+    let witnesses = WitnessQuorumPolicy::new([w1.witness_id(), WEB_WITNESS])
+        .with_document(WEB_WITNESS, w2_doc)
+        .with_min_witnesses(2);
+    let policy = VerificationPolicy {
+        witness_quorum: Some(witnesses.clone()),
+        ..VerificationPolicy::default()
+    };
+    let v = fetch(&w, &ctx, &policy).await;
+    assert!(matches!(v.log_inclusion_verdict(), Some(Ok(()))));
+    let report = v.witness_quorum().unwrap().as_ref().unwrap();
+    assert_eq!(report.witnessed_count, 2, "{report:?}");
+    assert!(report.meets_quorum && report.meets_fresh_quorum);
+    let mut expected = vec![w1.witness_id().to_string(), WEB_WITNESS.to_string()];
+    expected.sort();
+    assert_eq!(report.witnesses, expected);
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+
+    // Enforced quorum of 3: fails with invalid_witness_cosignature.
+    let strict = VerificationPolicy {
+        witness_quorum: Some(
+            witnesses
+                .clone()
+                .with_min_witnesses(3)
+                .enforce(WitnessEnforcement::RequireQuorum),
+        ),
+        ..VerificationPolicy::default()
+    };
+    let err =
+        VerifiedContext::fetch_with_policy(&w.client(), &w.resolver(), &ctx.body.ctx_id, &strict)
+            .await
+            .unwrap_err();
+    assert!(
+        matches!(err, AcdpError::InvalidWitnessCosignature(ref m) if m.contains("2 of 3")),
+        "{err:?}"
+    );
+
+    // Report-only, the same shortfall is a verdict, not a failure.
+    let report_only = VerificationPolicy {
+        witness_quorum: Some(witnesses.with_min_witnesses(3)),
+        ..VerificationPolicy::default()
+    };
+    let v = fetch(&w, &ctx, &report_only).await;
+    assert!(!v.witness_quorum().unwrap().as_ref().unwrap().meets_quorum);
+}
+
+/// A cosignature over a different checkpoint, or a trusted witness whose
+/// DID document cannot be resolved, does not count. The resolution
+/// failure is recorded.
+#[tokio::test]
+async fn witnesses_that_cannot_be_verified_do_not_count() {
+    let w = World::start(one_key()).await;
+    let other = others(&w).await;
+    let ctx = w.publish("key-1", K1, ContextType::Analysis, None).await;
+    let cp = serve_inclusion(&w, &ctx, &other);
+    let w1 = did_key_witness(W1);
+    let (w2, _doc) = web_witness();
+    let mut stale = cp.clone();
+    stale.tree_size = 2;
+    serve_cosignatures(&w, &ctx, vec![cosign(&w1, &stale), cosign(&w2, &cp)]);
+
+    // did:web:witness.example is unreachable under the test resolver.
+    let policy = VerificationPolicy {
+        witness_quorum: Some(
+            WitnessQuorumPolicy::new([w1.witness_id(), WEB_WITNESS])
+                .enforce(WitnessEnforcement::RequireFreshQuorum),
+        ),
+        ..VerificationPolicy::default()
+    };
+    let err =
+        VerifiedContext::fetch_with_policy(&w.client(), &w.resolver(), &ctx.body.ctx_id, &policy)
+            .await
+            .unwrap_err();
+    assert!(
+        matches!(err, AcdpError::InvalidWitnessCosignature(ref m) if m.contains("0 of 1") && m.contains(WEB_WITNESS)),
+        "{err:?}"
+    );
+}
+
+/// With no `log_inclusion`, there is no checkpoint to corroborate. That is
+/// an error verdict, and fatal only under enforcement.
+#[tokio::test]
+async fn witness_quorum_without_a_checkpoint() {
+    let w = World::start(one_key()).await;
+    let ctx = w.publish("key-1", K1, ContextType::Analysis, None).await;
+    let witnesses = WitnessQuorumPolicy::new([did_key_witness(W1).witness_id()]);
+    let policy = VerificationPolicy {
+        witness_quorum: Some(witnesses.clone()),
+        ..VerificationPolicy::default()
+    };
+    let v = fetch(&w, &ctx, &policy).await;
+    assert!(matches!(
+        v.witness_quorum(),
+        Some(Err(AcdpError::InvalidLogProof(_)))
+    ));
+
+    let enforced = VerificationPolicy {
+        witness_quorum: Some(witnesses.enforce(WitnessEnforcement::RequireQuorum)),
+        ..VerificationPolicy::default()
+    };
+    VerifiedContext::fetch_with_policy(&w.client(), &w.resolver(), &ctx.body.ctx_id, &enforced)
+        .await
+        .expect_err("no checkpoint to corroborate");
+}
+
+/// The report family records both verdicts in their own fields.
+#[tokio::test]
+async fn report_carries_log_and_witness_verdicts() {
+    let w = World::start(one_key()).await;
+    let other = others(&w).await;
+    let ctx = w.publish("key-1", K1, ContextType::Analysis, None).await;
+    let cp = serve_inclusion(&w, &ctx, &other);
+    let w1 = did_key_witness(W1);
+    serve_cosignatures(&w, &ctx, vec![cosign(&w1, &cp)]);
+    let policy = VerificationPolicy {
+        log_inclusion: LogInclusionPolicy::VerifyIfPresent,
+        witness_quorum: Some(WitnessQuorumPolicy::new([w1.witness_id()])),
+        ..VerificationPolicy::default()
+    };
+    let (_, report) =
+        VerifiedContext::fetch_report(&w.client(), &w.resolver(), &ctx.body.ctx_id, &policy)
+            .await
+            .unwrap();
+    assert!(matches!(report.log_inclusion_verdict, Some(Ok(()))));
+    assert!(report.witness_quorum.unwrap().unwrap().meets_quorum);
+
+    let (verified, report) = VerifiedContext::fetch_report_diagnose(
+        &w.client(),
+        &w.resolver(),
+        &ctx.body.ctx_id,
+        &policy,
+    )
+    .await
+    .unwrap();
+    assert!(verified.is_some());
+    assert!(matches!(report.log_inclusion_verdict, Some(Ok(()))));
+}

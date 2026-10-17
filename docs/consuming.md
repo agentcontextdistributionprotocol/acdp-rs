@@ -43,8 +43,8 @@ let client = RegistryClient::new("https://registry.example.com")?;   // HTTPS-on
 IP-literal rejection, DNS-time SSRF filtering, 1 MB body cap, 3-redirect
 same-authority limit, 5 s connect / 30 s total timeouts. For a non-default
 connection posture (a private root certificate, a custom `SsrfPolicy`, timeout
-overrides, or pin-once DNS resolution) use `RegistryClient::builder(base_url)`;
-its defaults are identical to `new`.
+overrides, pin-once DNS resolution, or a read-auth provider) use
+`RegistryClient::builder(base_url)`; its defaults are identical to `new`.
 
 | Method | Endpoint | Returns |
 |---|---|---|
@@ -59,6 +59,51 @@ its defaults are identical to `new`.
 Conditional and idempotent variants exist too: `retrieve_with_metadata`,
 `retrieve_if_none_match` (ETag), `capabilities_with_ttl`, `publish_idempotent`,
 and `publish_with_retry`. The client is `Clone` (cheap — an inner `Arc`).
+
+### Read authentication
+
+A registry that sets `anonymous_public_reads: false`, or serves non-public
+contexts, refuses an anonymous read with `not_authorized` (RFC-ACDP-0008
+§6.2). Revocation discovery against it then reports `unknown`
+(`unanswerable`), never not-revoked. Attach an `AuthProvider` to present a
+`bearer_jwt` token:
+
+```rust,no_run
+# #[cfg(feature = "client")]
+# fn build(client: acdp::client::RegistryClient, jwt: String) -> Result<acdp::client::RegistryClient, acdp::AcdpError> {
+use std::sync::Arc;
+use acdp::client::{BearerToken, StaticBearerToken};
+
+let client = client.with_auth_provider(Arc::new(StaticBearerToken::new(
+    "registry.example.com",
+    BearerToken::new(jwt)?,
+)));
+# Ok(client) }
+```
+
+| Type | Use |
+|---|---|
+| `StaticBearerToken` | One token for exactly one authority. |
+| `PerAuthorityTokens` | A token per authority, replaceable at runtime (`set` / `remove`). Clones share one table, so a background task can refresh tokens while readers use them. |
+| `impl AuthProvider` | Your own source. `bearer_token(authority)` returns the token (or `Ok(None)` to read anonymously). `token_rejected(authority)` is called after a 401/403 to a request that carried your token, so you can drop it and mint a new one. |
+
+The rules:
+- **Per authority.** The provider is asked by authority (host plus a
+  non-default port). One registry's token is never presented to another,
+  including on a cross-registry walk.
+- **Reads only.** Tokens go on `retrieve*`, `lineage`, `current` and
+  `search`. They never go on `publish*`, because a bearer token never
+  replaces a producer signature, and never on the public `capabilities()`
+  fetch.
+- **Over `https` only.**
+- **No retry.** A rejected read fails with `not_authorized` and is not
+  retried.
+- **No leaks.** `BearerToken` refuses anything that is not an RFC 6750
+  `b64token`, so a token cannot inject a header, and its `Debug` output is
+  redacted.
+
+Minting the token (the signed-challenge exchange) is deployment-defined, so
+it is the provider's job.
 
 ### Searching
 
@@ -198,6 +243,9 @@ let policy = VerificationPolicy::default();
 | `historical_keys` | `HistoricalKeyPolicy::AcceptWithReceipt` | Whether a signature by a key no longer in the DID document is accepted when a verified receipt places the publish while the key was authorized. `Reject` refuses it. |
 | `lineage_head` | `LineageHeadPolicy::default()` | Lineage-head receipt handling (RFC-ACDP-0011). Consulted only by `fetch_current_with_policy`. |
 | `revocations` | `RevocationPolicy::default()` (no known revocations, no discovery) | Key-revocation enforcement (RFC-ACDP-0014 §7): `known` revocations plus optional `discover`. See [below](#revocation-auto-discovery). |
+| `require_did_web_for_v0_1_0` | `true` | RFC-ACDP-0001 §5.11 v0.1.0 strict profile: a body without `acdp_version` (or `0.1.0`) must be signed under `did:web`. |
+| `log_inclusion` | `LogInclusionPolicy::Ignore` | Transparency-log inclusion (RFC-ACDP-0012 §9): `VerifyIfPresent` reports a verdict, `Require` fails without a valid proof. See [below](#transparency-log-and-witnesses). |
+| `witness_quorum` | `None` | Witness cosignature quorum over the log checkpoint (RFC-ACDP-0015 §8). See [below](#transparency-log-and-witnesses). |
 
 > There is no "relaxed `did:web`" or "skip-hash" mode. The strict profile is
 > the only one the `acdp-consumer` conformance suite covers. To
@@ -627,6 +675,81 @@ walk-wide ceiling becomes `max_requests` (or `max_bytes`) **times**
 `ResolverOptions::max_nodes`, since every node can independently spend up
 to its own budget before falling back to `known`.
 
+### Transparency log and witnesses
+
+A registry with the `acdp-registry-transparency-log` profile can serve a
+`log_inclusion` proof with a context (RFC-ACDP-0012). Witnesses can
+cosign the log checkpoint, served as `witness_signatures` (RFC-ACDP-0015).
+Both are corroboration: a failing proof "invalidates nothing else"
+(RFC-ACDP-0012 §9.3). Their verdicts are reported on their own, separate
+from the body, receipt and revocation verdicts. They fail verification
+only when you opt in.
+
+```rust
+# #[cfg(feature = "client")]
+# fn build() -> acdp::client::VerificationPolicy {
+use acdp::client::{
+    LogInclusionPolicy, VerificationPolicy, WitnessEnforcement, WitnessQuorumPolicy,
+};
+
+let policy = VerificationPolicy {
+    log_inclusion: LogInclusionPolicy::VerifyIfPresent,
+    witness_quorum: Some(
+        WitnessQuorumPolicy::new(["did:web:witness-a.example", "did:web:witness-b.example"])
+            .with_min_witnesses(2)
+            .enforce(WitnessEnforcement::RequireQuorum),
+    ),
+    ..VerificationPolicy::default()
+};
+# policy
+# }
+```
+
+| `LogInclusionPolicy` | Effect |
+|---|---|
+| `Ignore` (default) | The proof is preserved verbatim and not evaluated. |
+| `VerifyIfPresent` | A present proof is verified and the verdict reported. A failure never fails verification. |
+| `Require` | Fails with `invalid_log_proof` unless the proof is present and verifies. A registry with the profile MAY still leave a proof off a response (§10), so use this only with registries known to serve it. |
+
+How the proof is verified (§9.1 step 1):
+- **The leaf is rebuilt from verified material only.** The consumer
+  reconstructs it from the body, the recomputed `content_hash`, the
+  receipt's verified producer-key fingerprint, and the receipt's
+  preimage hash. It never uses a leaf the registry supplies.
+- **A verified receipt is required.** Without one the verdict is an
+  error, and under `Require` verification fails.
+- **The checkpoint is bound to the registry.** It must be signed by the
+  registry's receipt key and its `log_id` must name the serving authority
+  and `capabilities.registry_did`. That costs one capabilities fetch when
+  a proof is present.
+
+The leaf builder is public as `LogLeaf::for_publish`, so a registry can
+use it at append time and both sides hash the same bytes.
+
+How the witness quorum works:
+- **Trust.** Only the witnesses in `WitnessQuorumPolicy::new` count.
+- **Documents.** A `did:key` witness is resolved offline. A `did:web`
+  witness is resolved through the verification's `WebResolver`, with the
+  usual SSRF protections, unless you pin its document with
+  `with_document`.
+- **Checkpoint.** Setting `witness_quorum` verifies the checkpoint even
+  under `LogInclusionPolicy::Ignore`. A cosignature only means something
+  over a checkpoint you verified yourself.
+
+| `WitnessEnforcement` | Effect |
+|---|---|
+| `Report` (default) | The quorum is reported and never fails verification. |
+| `RequireQuorum` | Fails with `invalid_witness_cosignature` unless `min_witnesses` distinct trusted witnesses cosigned. This is the split-view and anti-rewrite use, where a cosignature never expires. |
+| `RequireFreshQuorum` | As above, and the cosignatures must be within `max_age_seconds` (default 300 s). Use it for decisions that need a current checkpoint (§8.1). |
+
+The verdicts:
+
+| Accessor / report field | Meaning |
+|---|---|
+| `log_inclusion_verdict()` / `log_inclusion_verdict` | `None` means not evaluated (policy `Ignore` with no witness policy, or no proof served). `Some(Ok(()))` means the proof verified. `Some(Err(_))` means it failed (`invalid_log_proof`). |
+| `verified_log_inclusion()` | The verified proof and signed checkpoint. Keep the checkpoint to check consistency with later ones (§9.2). |
+| `witness_quorum()` / `witness_quorum` | `None` when no witness policy was set. `Some(Err(_))` when there was no verified checkpoint to corroborate. `Some(Ok(WitnessQuorumReport))` otherwise: `meets_quorum`, `meets_fresh_quorum`, the verified `witnesses`, and per-cosignature `failures`. |
+
 ### Diagnostics: fetch_report
 
 When you need to know *which* stage failed rather than just that it did, use
@@ -665,6 +788,9 @@ assert!(report.schema_ok && report.body_hash_ok && report.signature_ok);
 | `ctx_id_ok` | the served body's `ctx_id` matched the one requested (RFC-ACDP-0006 §4.1 step 7, NORMATIVE). |
 | `key_status` | the real `KeyAuthorization` verdict once the receipt/revocation/signature phases ran and passed; `None` if a top-level probe failed first (so those phases never ran) or one of them failed. |
 | `policy_phase_error` | which of the receipt/revocation/signature/unknown-status phases failed, if one did; `None` when every phase passed or none ran. |
+| `receipt_key_status`, `receipt_verdict`, `lineage_binding` | the receipt and lineage verdicts; see the accessor table [above](#verifiedcontext--the-verification-pipeline). |
+| `revocation_verdict`, `revocation_hints` | the typed revocation verdict and out-of-scope hints; see [Revocation verdicts](#revocation-verdicts). |
+| `log_inclusion_verdict`, `witness_quorum` | the transparency verdicts; see [above](#transparency-log-and-witnesses). |
 | `revocation_discovery` | What auto-discovery did, when `policy.revocations.discover` was `Some` and the policy phases were reached: `Some(Ok(DiscoveryOutcome))` on success; `Some(Err(_))` when `ProceedWithKnown` swallowed a discovery failure. `None` when discovery is off, when a top-level probe failed first, or when a `FailClosed` discovery failure ended verification (that one surfaces in `policy_phase_error`). `DiscoveryOutcome` counts *discovered* revocations only (`producer_signed`, and `registry_attested` or `None` if that class was not queried) — never `known`. See "Revocation auto-discovery" above. |
 
 `fetch_report_with_fetcher` additionally fetches and verifies external
@@ -756,6 +882,20 @@ including the walk-scoped cache default and the 30s/30s timeout caveat.
 `seed_client` is fill-if-absent for the cache too: a seeded client with no
 `RevocationCache` of its own is given the resolver's (or the current walk's);
 one that already carries its own keeps it.
+
+`.with_auth_provider(...)` presents [read credentials](#read-authentication)
+on every hop. The provider is asked per hop authority, so a
+`PerAuthorityTokens` table gives each registry only its own token. It is
+fill-if-absent like the cache: a seeded client that carries its own
+provider keeps it.
+
+**Per-authority clients.** The resolver builds one `RegistryClient` per
+foreign authority and reuses it. Each client filters DNS answers through
+the `SsrfPolicy` at resolution time, on every connection. It does not pin
+the first IP, so an authority whose addresses change is never stranded on
+a stale one, and a rebinding answer is refused at connect time. The cache
+holds at most `MAX_CACHED_CLIENTS` (256) built clients and evicts the
+oldest first. Clients passed to `seed_client` are never evicted.
 
 ## Publishing from the client
 

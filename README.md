@@ -78,13 +78,13 @@ registry implementations compose to claim the registry profiles
 [acdp-registry-rs](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs) is one such implementation. See
 `acdp::profile` for the typed profile vocabulary.
 
-Read authentication is **not implemented client-side**: `RegistryClient` sends
-no authentication header, and `CapabilitiesDocument::read_authentication_methods`
-is surfaced as opaque strings. For the provisional `bearer_jwt` method
+Read authentication: `RegistryClient` and `CrossRegistryResolver` present
+`bearer_jwt` tokens
 ([RFC-ACDP-0008 §6.2](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0008-security.md#62-read-authentication),
-[auth-methods registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/registries/auth-methods.md)), the crate provides
-only the producer half — `SigningKey::sign_string` to sign a registry
-challenge; obtaining and presenting the token is up to the host.
+[auth-methods registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/registries/auth-methods.md))
+from an `AuthProvider`. Tokens are scoped per authority and sent on reads
+only. Minting a token is up to the host; `SigningKey::sign_string` signs
+the registry challenge. See [Consuming § Read authentication](docs/consuming.md#read-authentication).
 
 ## Glossary
 

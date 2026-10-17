@@ -169,6 +169,16 @@ name              = "revocation_verdicts"
 path              = "tests/revocation_verdicts.rs"
 required-features = ["client", "server", "test-transport"]
 
+[[test]]
+name              = "read_auth"
+path              = "tests/read_auth.rs"
+required-features = ["client", "server", "test-transport"]
+
+[[test]]
+name              = "transparency_policy"
+path              = "tests/transparency_policy.rs"
+required-features = ["client", "server", "test-transport"]
+
 # Criterion benchmarks for the crypto / JCS / SSRF hot paths.
 # `harness = false` hands `main` to criterion instead of libtest.
 [[bench]]

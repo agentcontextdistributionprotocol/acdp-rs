@@ -20,6 +20,7 @@ use acdp_types::{
 use chrono::{DateTime, Utc};
 use reqwest::{redirect, Client};
 
+use crate::auth::AuthProvider;
 use crate::revocation_cache::RevocationCache;
 
 /// HTTP client for a single ACDP registry.
@@ -57,6 +58,9 @@ pub struct RegistryClient {
     budget: Option<DiscoveryBudget>,
     revocation_cache: Option<RevocationCache>,
     revocation_freshness: Duration,
+    /// RFC-ACDP-0008 §6.2 read credentials, asked per read request by
+    /// this client's authority. See [`crate::auth`].
+    auth: Option<Arc<dyn AuthProvider>>,
 }
 
 /// Combined request-count and cumulative-byte budget for RFC-ACDP-0014
@@ -209,11 +213,8 @@ impl RegistryClient {
     /// issued through it is never charged to this budget.
     pub(crate) fn with_discovery_budget(&self, budget: DiscoveryBudget) -> Self {
         Self {
-            base: self.base.clone(),
-            http: self.http.clone(),
             budget: Some(budget),
-            revocation_cache: self.revocation_cache.clone(),
-            revocation_freshness: self.revocation_freshness,
+            ..self.clone()
         }
     }
 
@@ -248,12 +249,62 @@ impl RegistryClient {
     /// `crate::revocation_cache` for the two-object model.
     pub fn with_revocation_cache(&self, cache: RevocationCache) -> Self {
         Self {
-            base: self.base.clone(),
-            http: self.http.clone(),
-            budget: self.budget.clone(),
             revocation_cache: Some(cache),
             revocation_freshness: Duration::ZERO,
+            ..self.clone()
         }
+    }
+
+    /// Return a clone of this client that presents read credentials from
+    /// `provider` (RFC-ACDP-0008 §6.2, `bearer_jwt`), replacing any provider
+    /// the original carried. The provider is asked once per read request,
+    /// with this client's [`Self::authority`]; see [`crate::auth`] for which
+    /// requests carry a token and why writes never do.
+    ///
+    /// A registry with `anonymous_public_reads: false` answers anonymous
+    /// reads `not_authorized`, which makes revocation discovery against it
+    /// `unknown` (`unanswerable`); a configured token makes it answerable.
+    pub fn with_auth_provider(&self, provider: Arc<dyn AuthProvider>) -> Self {
+        Self {
+            auth: Some(provider),
+            ..self.clone()
+        }
+    }
+
+    /// Whether this client carries an [`AuthProvider`].
+    #[must_use]
+    pub fn has_auth_provider(&self) -> bool {
+        self.auth.is_some()
+    }
+
+    /// Send a read request, presenting this client's bearer token when
+    /// its provider has one for this authority. Tokens go over `https`
+    /// only (RFC-ACDP-0008 §6.2); a 401/403 answer to a request that
+    /// carried one is reported to the provider via
+    /// [`AuthProvider::token_rejected`].
+    async fn send_read(
+        &self,
+        req: reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response, AcdpError> {
+        let (req, authority) = match (&self.auth, self.authority()) {
+            (Some(provider), Some(authority)) if self.base.starts_with("https://") => {
+                match provider.bearer_token(&authority).await? {
+                    Some(token) => (req.bearer_auth(token.expose()), Some(authority)),
+                    None => (req, None),
+                }
+            }
+            _ => (req, None),
+        };
+        let resp = req.send().await?;
+        if let (Some(provider), Some(authority)) = (&self.auth, authority) {
+            if matches!(
+                resp.status(),
+                reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+            ) {
+                provider.token_rejected(&authority);
+            }
+        }
+        Ok(resp)
     }
 
     /// Return a clone of this client with `freshness` overriding whatever
@@ -266,11 +317,8 @@ impl RegistryClient {
     /// per-client one.
     pub(crate) fn with_revocation_freshness(&self, freshness: Duration) -> Self {
         Self {
-            base: self.base.clone(),
-            http: self.http.clone(),
-            budget: self.budget.clone(),
-            revocation_cache: self.revocation_cache.clone(),
             revocation_freshness: freshness,
+            ..self.clone()
         }
     }
 
@@ -397,6 +445,7 @@ impl RegistryClient {
             resolve_target,
             connect_timeout: CONNECT_TIMEOUT,
             request_timeout: REQUEST_TIMEOUT,
+            auth: None,
         }
         .build_blocking()
     }
@@ -545,7 +594,7 @@ impl RegistryClient {
         self.check_discovery_budget()?;
         let encoded = urlencoding::encode(ctx_id.as_str());
         let url = format!("{}/contexts/{}", self.base, encoded);
-        let resp = self.http.get(&url).send().await?;
+        let resp = self.send_read(self.http.get(&url)).await?;
         let (body, nbytes) = self.parse_success(resp, MAX_CONTEXT_BYTES).await?;
         self.record_discovery_bytes(nbytes);
         Ok(body)
@@ -558,7 +607,7 @@ impl RegistryClient {
     ) -> Result<(FullContext, RetrievalMetadata), AcdpError> {
         let encoded = urlencoding::encode(ctx_id.as_str());
         let url = format!("{}/contexts/{}", self.base, encoded);
-        let resp = self.http.get(&url).send().await?;
+        let resp = self.send_read(self.http.get(&url)).await?;
         let metadata = parse_retrieval_metadata(&resp);
         let (body, _) = self.parse_success(resp, MAX_CONTEXT_BYTES).await?;
         Ok((body, metadata))
@@ -576,10 +625,7 @@ impl RegistryClient {
         let encoded = urlencoding::encode(ctx_id.as_str());
         let url = format!("{}/contexts/{}", self.base, encoded);
         let resp = self
-            .http
-            .get(&url)
-            .header("If-None-Match", etag)
-            .send()
+            .send_read(self.http.get(&url).header("If-None-Match", etag))
             .await?;
         if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
             return Ok(None);
@@ -593,7 +639,7 @@ impl RegistryClient {
     pub async fn retrieve_body(&self, ctx_id: &CtxId) -> Result<acdp_types::body::Body, AcdpError> {
         let encoded = urlencoding::encode(ctx_id.as_str());
         let url = format!("{}/contexts/{}/body", self.base, encoded);
-        let resp = self.http.get(&url).send().await?;
+        let resp = self.send_read(self.http.get(&url)).await?;
         self.parse_success(resp, MAX_CONTEXT_BYTES)
             .await
             .map(|(v, _)| v)
@@ -606,7 +652,7 @@ impl RegistryClient {
         self.check_discovery_budget()?;
         let encoded = urlencoding::encode(lineage_id.as_str());
         let url = format!("{}/lineages/{}", self.base, encoded);
-        let resp = self.http.get(&url).send().await?;
+        let resp = self.send_read(self.http.get(&url)).await?;
         let (value, nbytes) = self
             .parse_success::<serde_json::Value>(resp, MAX_CONTEXT_BYTES)
             .await?;
@@ -618,7 +664,7 @@ impl RegistryClient {
     pub async fn current(&self, lineage_id: &LineageId) -> Result<FullContext, AcdpError> {
         let encoded = urlencoding::encode(lineage_id.as_str());
         let url = format!("{}/lineages/{}/current", self.base, encoded);
-        let resp = self.http.get(&url).send().await?;
+        let resp = self.send_read(self.http.get(&url)).await?;
         self.parse_success(resp, MAX_CONTEXT_BYTES)
             .await
             .map(|(v, _)| v)
@@ -633,7 +679,7 @@ impl RegistryClient {
     pub async fn search(&self, params: &SearchParams) -> Result<SearchResponse, AcdpError> {
         self.check_discovery_budget()?;
         let url = format!("{}/contexts/search", self.base);
-        let resp = self.http.get(&url).query(params).send().await?;
+        let resp = self.send_read(self.http.get(&url).query(params)).await?;
         let (result, nbytes) = self.parse_success(resp, MAX_METADATA_BYTES).await?;
         self.record_discovery_bytes(nbytes);
         Ok(result)
@@ -727,6 +773,7 @@ pub struct RegistryClientBuilder {
     resolve_target: Option<std::net::SocketAddr>,
     connect_timeout: Duration,
     request_timeout: Duration,
+    auth: Option<Arc<dyn AuthProvider>>,
 }
 
 impl RegistryClientBuilder {
@@ -739,7 +786,15 @@ impl RegistryClientBuilder {
             resolve_target: None,
             connect_timeout: CONNECT_TIMEOUT,
             request_timeout: REQUEST_TIMEOUT,
+            auth: None,
         }
+    }
+
+    /// Present read credentials from `provider` (RFC-ACDP-0008 §6.2). See
+    /// [`RegistryClient::with_auth_provider`].
+    pub fn auth_provider(mut self, provider: Arc<dyn AuthProvider>) -> Self {
+        self.auth = Some(provider);
+        self
     }
 
     /// Select **pin-once** resolution (RFC-ACDP-0006 §7.6): resolve the
@@ -822,6 +877,7 @@ impl RegistryClientBuilder {
             budget: None,
             revocation_cache: None,
             revocation_freshness: Duration::ZERO,
+            auth: self.auth,
         })
     }
 
@@ -868,6 +924,7 @@ impl RegistryClientBuilder {
             budget: None,
             revocation_cache: None,
             revocation_freshness: Duration::ZERO,
+            auth: self.auth,
         })
     }
 

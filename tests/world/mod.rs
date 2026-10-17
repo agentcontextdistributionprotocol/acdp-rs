@@ -104,6 +104,9 @@ pub fn producer_doc(keys: &[(&str, [u8; 32])], assertion: &[&str]) -> Value {
     json!({ "id": AGENT, "verificationMethod": vms, "assertionMethod": am })
 }
 
+/// Every request's path and `Authorization` header, in arrival order.
+pub type AuthLog = Arc<RwLock<Vec<(String, Option<String>)>>>;
+
 pub struct World {
     pub tls: TlsTestServer,
     pub server: RegistryServer<InMemoryStore>,
@@ -125,6 +128,12 @@ pub struct World {
     pub search_hits: Arc<AtomicUsize>,
     /// Every `/contexts/{id}` id served, in order.
     pub retrieved: Arc<RwLock<Vec<String>>>,
+    /// When set, `/contexts*` and `/lineages*` answer 403 `not_authorized`
+    /// unless the request carries `Authorization: Bearer <this>`
+    /// (RFC-ACDP-0008 §6.2, `anonymous_public_reads: false`).
+    pub required_bearer: Arc<RwLock<Option<String>>>,
+    /// `(path, Authorization header)` of every request, in order.
+    pub auth_seen: AuthLog,
 }
 
 /// How the world's `/contexts/search` route answers.
@@ -154,6 +163,8 @@ impl World {
         let search_mode = Arc::new(RwLock::new(SearchMode::Normal));
         let search_hits = Arc::new(AtomicUsize::new(0));
         let retrieved: Arc<RwLock<Vec<String>>> = Arc::default();
+        let required_bearer: Arc<RwLock<Option<String>>> = Arc::default();
+        let auth_seen: AuthLog = Arc::default();
 
         let router = Router::new()
             .route(
@@ -270,7 +281,38 @@ impl World {
                         }
                     }
                 }),
-            );
+            )
+            .layer(axum::middleware::from_fn({
+                let (required, seen) = (required_bearer.clone(), auth_seen.clone());
+                move |req: axum::extract::Request, next: axum::middleware::Next| {
+                    let (required, seen) = (required.clone(), seen.clone());
+                    async move {
+                        let path = req.uri().path().to_string();
+                        let auth = req
+                            .headers()
+                            .get(axum::http::header::AUTHORIZATION)
+                            .map(|v| v.to_str().unwrap().to_string());
+                        seen.write().unwrap().push((path.clone(), auth.clone()));
+                        let gated = path.starts_with("/contexts") || path.starts_with("/lineages");
+                        let want = required.read().unwrap().clone();
+                        match want {
+                            Some(token)
+                                if gated && auth.as_deref() != Some(&format!("Bearer {token}")) =>
+                            {
+                                (
+                                    StatusCode::FORBIDDEN,
+                                    Json(json!({ "error": {
+                                        "code": "not_authorized",
+                                        "message": "bearer required",
+                                    }})),
+                                )
+                                    .into_response()
+                            }
+                            _ => next.run(req).await,
+                        }
+                    }
+                }
+            }));
         let tls = TlsTestServer::start(router).await;
 
         let server = RegistryServer::try_new(InMemoryStore::new(), caps(), REGISTRY_AUTHORITY)
@@ -301,7 +343,26 @@ impl World {
             search_mode,
             search_hits,
             retrieved,
+            required_bearer,
+            auth_seen,
         }
+    }
+
+    /// Gate reads behind `Authorization: Bearer <token>` (`None` = open).
+    pub fn require_bearer(&self, token: Option<&str>) {
+        *self.required_bearer.write().unwrap() = token.map(str::to_string);
+    }
+
+    /// The `Authorization` headers seen on requests whose path starts
+    /// with `prefix`.
+    pub fn auth_headers_for(&self, prefix: &str) -> Vec<Option<String>> {
+        self.auth_seen
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|(p, _)| p.starts_with(prefix))
+            .map(|(_, a)| a.clone())
+            .collect()
     }
 
     pub fn set_search_mode(&self, mode: SearchMode) {

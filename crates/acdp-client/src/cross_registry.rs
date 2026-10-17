@@ -16,12 +16,12 @@
 //!   7. Walk `derived_from` references (with cycle/depth/node/fanout/timeout limits)
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::{
-    ReceiptPolicy, RegistryClient, RevocationCache, RevocationPolicy, VerificationPolicy,
-    VerifiedContext,
+    AuthProvider, ReceiptPolicy, RegistryClient, RevocationCache, RevocationPolicy,
+    VerificationPolicy, VerifiedContext,
 };
 use acdp_did::WebResolver;
 use acdp_primitives::error::AcdpError;
@@ -67,6 +67,24 @@ impl Default for ResolverOptions {
     }
 }
 
+/// Upper bound on the per-authority [`RegistryClient`]s a
+/// [`CrossRegistryResolver`] keeps. `derived_from` edges are
+/// producer-chosen, so a long-lived resolver walking hostile graphs would
+/// otherwise grow without bound. At capacity the least recently built
+/// client is dropped (a seeded client never is); losing one costs only a
+/// rebuild on the next hop to that authority.
+pub const MAX_CACHED_CLIENTS: usize = 256;
+
+/// One cached per-authority client.
+struct CachedClient {
+    client: RegistryClient,
+    /// Insertion order, for eviction at [`MAX_CACHED_CLIENTS`].
+    built: u64,
+    /// Supplied through [`CrossRegistryResolver::seed_client`]: the
+    /// caller's explicit wiring, never evicted.
+    seeded: bool,
+}
+
 /// Resolver for cross-registry references.
 ///
 /// Holds a [`WebResolver`] for DID lookups and caches a [`RegistryClient`]
@@ -94,7 +112,7 @@ pub struct CrossRegistryResolver {
     // Per-authority caches. Mutex-guarded for interior mutability across
     // the immutable `&self` API surface; contention is low since
     // authorities are few per walk.
-    client_cache: Mutex<HashMap<String, RegistryClient>>,
+    client_cache: Mutex<ClientCache>,
     /// Per-authority capabilities cache. The `Duration` is the
     /// per-response TTL parsed from `Cache-Control: max-age=N` (capped
     /// at 3600s per RFC-ACDP-0006 §4.2). Replaces an earlier shape
@@ -114,6 +132,59 @@ pub struct CrossRegistryResolver {
     /// cache for each call instead of reusing one across walks — see
     /// that method's doc.
     revocation_cache: Option<RevocationCache>,
+    /// Injected via [`Self::with_auth_provider`]: read credentials per
+    /// authority (RFC-ACDP-0008 §6.2), attached fill-if-absent to every
+    /// per-authority client.
+    auth: Option<Arc<dyn AuthProvider>>,
+}
+
+/// The per-authority client cache, bounded at [`MAX_CACHED_CLIENTS`].
+#[derive(Default)]
+struct ClientCache {
+    entries: HashMap<String, CachedClient>,
+    next: u64,
+}
+
+impl ClientCache {
+    fn get(&self, authority: &str) -> Option<RegistryClient> {
+        self.entries.get(authority).map(|e| e.client.clone())
+    }
+
+    /// Insert unless present (a racing build loses to the first); a
+    /// `seeded` insert always replaces. Returns the client now cached.
+    fn insert(
+        &mut self,
+        authority: String,
+        client: RegistryClient,
+        seeded: bool,
+    ) -> RegistryClient {
+        if !seeded {
+            if let Some(existing) = self.entries.get(&authority) {
+                return existing.client.clone();
+            }
+            if self.entries.len() >= MAX_CACHED_CLIENTS {
+                let oldest = self
+                    .entries
+                    .iter()
+                    .filter(|(_, e)| !e.seeded)
+                    .min_by_key(|(_, e)| e.built)
+                    .map(|(k, _)| k.clone());
+                if let Some(oldest) = oldest {
+                    self.entries.remove(&oldest);
+                }
+            }
+        }
+        self.next += 1;
+        self.entries.insert(
+            authority,
+            CachedClient {
+                client: client.clone(),
+                built: self.next,
+                seeded,
+            },
+        );
+        client
+    }
 }
 
 impl Default for CrossRegistryResolver {
@@ -131,10 +202,11 @@ impl CrossRegistryResolver {
             options: ResolverOptions::default(),
             allowlist: None,
             ssrf_policy: SsrfPolicy::default(),
-            client_cache: Mutex::new(HashMap::new()),
+            client_cache: Mutex::new(ClientCache::default()),
             caps_cache: Mutex::new(HashMap::new()),
             revocation_policy: RevocationPolicy::default(),
             revocation_cache: None,
+            auth: None,
         }
     }
 
@@ -211,6 +283,20 @@ impl CrossRegistryResolver {
         self
     }
 
+    /// Present read credentials from `provider` on every hop
+    /// (RFC-ACDP-0008 §6.2, `bearer_jwt`). The provider is asked per
+    /// request with the hop's authority, so give it one token per registry
+    /// — [`crate::PerAuthorityTokens`] — and a registry's token is never
+    /// presented to another. Attached fill-if-absent: a client passed to
+    /// [`Self::seed_client`] that already carries a provider keeps its own.
+    ///
+    /// This is what makes revocation discovery answerable against a
+    /// registry with `anonymous_public_reads: false` during a walk.
+    pub fn with_auth_provider(mut self, provider: Arc<dyn AuthProvider>) -> Self {
+        self.auth = Some(provider);
+        self
+    }
+
     /// Borrow the active revocation policy. Useful for tests + telemetry.
     pub fn revocation_policy(&self) -> &RevocationPolicy {
         &self.revocation_policy
@@ -233,14 +319,14 @@ impl CrossRegistryResolver {
     /// whose HTTP layer trusts the in-process TLS server's self-signed
     /// root certificate (via [`RegistryClient::with_root_cert_pem`]), so
     /// the resolver hits the mock instead of attempting a real network
-    /// call. The seeded client wins over the lazy pin-once
-    /// `RegistryClient::builder(..).pinned(true)` client that
-    /// [`Self::resolve`] would otherwise build on first access.
+    /// call. The seeded client wins over the lazily built client that
+    /// [`Self::resolve`] would otherwise create on first access, and is
+    /// never evicted.
     pub fn seed_client(&self, authority: impl Into<String>, client: RegistryClient) {
         self.client_cache
             .lock()
             .unwrap()
-            .insert(authority.into(), client);
+            .insert(authority.into(), client, true);
     }
 
     /// Restrict cross-registry resolution to a fixed set of authorities
@@ -331,6 +417,14 @@ impl CrossRegistryResolver {
         let registry = match cache {
             Some(cache) if registry.revocation_cache().is_none() => {
                 registry.with_revocation_cache(cache.clone())
+            }
+            _ => registry,
+        };
+        // RFC-ACDP-0008 §6.2: same fill-if-absent precedence for read
+        // credentials.
+        let registry = match &self.auth {
+            Some(provider) if !registry.has_auth_provider() => {
+                registry.with_auth_provider(provider.clone())
             }
             _ => registry,
         };
@@ -571,36 +665,35 @@ impl CrossRegistryResolver {
 
     /// Return a cached `RegistryClient` for the authority, building one
     /// on first use. Reuse across hops avoids per-hop reqwest
-    /// connection-pool churn.
+    /// connection-pool churn. The cache is bounded at
+    /// [`MAX_CACHED_CLIENTS`].
     ///
-    /// SEC-01: the client is built via
-    /// `RegistryClient::builder(base).pinned(true)`, which resolves the
-    /// authority's DNS up-front, filters every resolved IP through the
-    /// resolver's [`SsrfPolicy`], and pins the connection to that
-    /// address. Without pinning a hostile `ctx_id`
-    /// authority (e.g. `internal-host.example.com` resolving to
-    /// `10.0.0.1` or `169.254.169.254`) would slip past the URL-syntax
-    /// `check_url` gate and reach an internal target. The seeded test
-    /// path ([`Self::seed_client`]) bypasses this constructor.
+    /// SEC-01 / #385 item 9: the client uses the default `SafeDnsResolver`
+    /// DNS-hook posture (RFC-ACDP-0006 §7.6) under the resolver's
+    /// [`SsrfPolicy`]. Every DNS answer — first connect, redirect, and
+    /// every reconnect over the client's lifetime — is filtered before any
+    /// TCP connect, so a hostile `ctx_id` authority resolving to
+    /// `10.0.0.1` or `169.254.169.254` is refused (surfacing as
+    /// `cross_registry_resolution_failed`, fed-007), and a registry whose
+    /// IP legitimately changes is followed rather than stranded. Before
+    /// 0.15.0 this was a pin-once client cached for the resolver's
+    /// lifetime: weaker (one answer validated, then reused) and broken by
+    /// an IP change until restart. The seeded path ([`Self::seed_client`])
+    /// bypasses this constructor.
     async fn client_for(&self, authority: &str, base: &str) -> Result<RegistryClient, AcdpError> {
-        {
-            let cache = self.client_cache.lock().unwrap();
-            if let Some(c) = cache.get(authority) {
-                return Ok(c.clone());
-            }
+        if let Some(c) = self.client_cache.lock().unwrap().get(authority) {
+            return Ok(c);
         }
-        // Build with pin-once DNS resolution before taking the cache
-        // lock — the builder's `.build()` is async (it resolves the
-        // authority up front) and the cache mutex must not be held
-        // across the await.
         let client = RegistryClient::builder(base)
-            .pinned(true)
             .ssrf_policy(self.ssrf_policy.clone())
             .build()
             .await
             .map_err(|e| ssrf_refusal_to_cross_registry(authority, e))?;
-        let mut cache = self.client_cache.lock().unwrap();
-        Ok(cache.entry(authority.to_string()).or_insert(client).clone())
+        Ok(self
+            .client_cache
+            .lock()
+            .unwrap()
+            .insert(authority.to_string(), client, false))
     }
 
     /// Return the cached capabilities for `authority`, fetching when
@@ -708,10 +801,10 @@ mod tests {
 
     /// fed-007 / RFC-ACDP-0007 §5 ("DNS resolution refused"): an
     /// authority that resolves into a forbidden range is refused at the
-    /// resolver's pin-once DNS step and surfaces as
+    /// built client's DNS hook and surfaces as
     /// `cross_registry_resolution_failed`, not `schema_violation`.
     #[tokio::test]
-    async fn resolve_maps_pin_time_ssrf_refusal_to_cross_registry_failure() {
+    async fn resolve_maps_built_client_ssrf_refusal_to_cross_registry_failure() {
         let resolver = CrossRegistryResolver::new();
         let err = resolver
             .resolve(&CtxId::parse(SSRF_CTX).unwrap())
@@ -727,8 +820,8 @@ mod tests {
     /// Issue #321: the DNS-time `SafeDnsResolver` refusal, which a direct
     /// `RegistryClient` caller sees as the permanent `SchemaViolation`, is
     /// re-mapped to `cross_registry_resolution_failed` when it happens
-    /// inside the resolver (here on the capabilities fetch of a seeded,
-    /// unpinned client — the path that bypasses pin-once resolution).
+    /// inside the resolver (here on the capabilities fetch of a seeded
+    /// client).
     #[tokio::test]
     async fn resolve_maps_dns_time_ssrf_refusal_to_cross_registry_failure() {
         let direct = RegistryClient::new("https://localhost").unwrap();
@@ -815,6 +908,49 @@ mod tests {
         let err = resolver.check_allowlist("evil.com").unwrap_err();
         assert!(matches!(err, AcdpError::CrossRegistryResolutionFailed(_)));
         resolver.check_allowlist("registry.example.com").unwrap();
+    }
+
+    fn dummy_client(authority: &str) -> RegistryClient {
+        RegistryClient::new(&format!("https://{authority}")).unwrap()
+    }
+
+    /// #385 item 9: the per-authority client cache is bounded; at capacity
+    /// the oldest built client goes, a seeded one never does.
+    #[test]
+    fn client_cache_is_bounded_and_keeps_seeded_clients() {
+        let mut cache = ClientCache::default();
+        cache.insert(
+            "seeded.example".into(),
+            dummy_client("seeded.example"),
+            true,
+        );
+        for i in 0..MAX_CACHED_CLIENTS + 10 {
+            let a = format!("r{i}.example");
+            cache.insert(a.clone(), dummy_client(&a), false);
+        }
+        assert_eq!(cache.entries.len(), MAX_CACHED_CLIENTS);
+        assert!(
+            cache.get("seeded.example").is_some(),
+            "seeded never evicted"
+        );
+        assert!(cache.get("r0.example").is_none(), "oldest built evicted");
+        let newest = format!("r{}.example", MAX_CACHED_CLIENTS + 9);
+        assert!(cache.get(&newest).is_some());
+    }
+
+    /// A racing build loses to the client already cached; a seed replaces.
+    #[test]
+    fn client_cache_first_build_wins_seed_replaces() {
+        let mut cache = ClientCache::default();
+        let first = cache.insert("a.example".into(), dummy_client("a.example"), false);
+        let second = cache.insert("a.example".into(), dummy_client("b.example"), false);
+        assert_eq!(first.authority(), second.authority());
+        let seeded = cache.insert("a.example".into(), dummy_client("c.example"), true);
+        assert_eq!(seeded.authority().as_deref(), Some("c.example"));
+        assert_eq!(
+            cache.get("a.example").unwrap().authority().as_deref(),
+            Some("c.example")
+        );
     }
 
     #[test]

@@ -209,6 +209,42 @@ impl LogLeaf {
     pub fn leaf_hash_hex(&self) -> Result<String, AcdpError> {
         Ok(encode_sha256_hex(&self.leaf_hash()?))
     }
+
+    /// Build the §4 leaf for one receipted publish event. A verifier
+    /// uses it for §9.1 step 1, and a registry uses it at §7.1 append
+    /// time, so both sides hash the same bytes.
+    ///
+    /// Pass only *verified* material:
+    /// - `body` is the accepted body. Its `ctx_id`, `lineage_id`,
+    ///   `origin_registry` and `created_at` are used.
+    /// - `content_hash` is recomputed from the body, never the echoed
+    ///   value.
+    /// - `key_fingerprint` is the RFC-ACDP-0010 §6 fingerprint of the
+    ///   resolved producer key.
+    /// - `receipt_value` is the raw wire receipt. `receipt_hash` is its
+    ///   §2 preimage hash (minus `signature`), recomputed here.
+    ///
+    /// # Errors
+    /// [`AcdpError::InvalidReceipt`] when `receipt_value` is not a JSON
+    /// object.
+    pub fn for_publish(
+        body: &crate::body::Body,
+        content_hash: &ContentHash,
+        key_fingerprint: &str,
+        receipt_value: &serde_json::Value,
+    ) -> Result<Self, AcdpError> {
+        let receipt_hash = crate::receipt::RegistryReceipt::preimage_hash_of_value(receipt_value)?;
+        Ok(Self {
+            leaf_version: LOG_LEAF_VERSION.to_string(),
+            ctx_id: body.ctx_id.clone(),
+            lineage_id: body.lineage_id.clone(),
+            origin_registry: body.origin_registry.clone(),
+            created_at: body.created_at,
+            content_hash: content_hash.clone(),
+            key_fingerprint: key_fingerprint.to_string(),
+            receipt_hash: receipt_hash.0,
+        })
+    }
 }
 
 // ── Checkpoint (signed tree head) ────────────────────────────────────────────

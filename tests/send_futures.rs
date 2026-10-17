@@ -209,3 +209,30 @@ fn revocation_verdict_surface_is_send() {
     }
     let _ = recheck_is_send;
 }
+
+/// 0.15.0 (Seam, Phase 6): read auth and transparency policy types are
+/// `Send + Sync`, so a `VerificationPolicy` or an `Arc<dyn AuthProvider>`
+/// can be shared across tasks.
+#[test]
+fn read_auth_and_transparency_surface_is_send() {
+    use acdp::client::{
+        AuthProvider, BearerToken, LogInclusionPolicy, PerAuthorityTokens, StaticBearerToken,
+        VerificationPolicy, VerificationReport, WitnessEnforcement, WitnessQuorumPolicy,
+        WitnessQuorumReport,
+    };
+
+    fn assert_send_sync<T: Send + Sync + ?Sized>() {}
+    assert_send_sync::<dyn AuthProvider>();
+    assert_send_sync::<BearerToken>();
+    assert_send_sync::<StaticBearerToken>();
+    assert_send_sync::<PerAuthorityTokens>();
+    assert_send_sync::<LogInclusionPolicy>();
+    assert_send_sync::<WitnessEnforcement>();
+    assert_send_sync::<WitnessQuorumPolicy>();
+    assert_send_sync::<WitnessQuorumReport>();
+    assert_send_sync::<VerificationPolicy>();
+    assert_send_sync::<VerificationReport>();
+
+    let tokens = PerAuthorityTokens::new();
+    assert_send(tokens.bearer_token("registry.example.com"));
+}

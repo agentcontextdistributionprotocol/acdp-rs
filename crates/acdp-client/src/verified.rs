@@ -9,6 +9,8 @@ use acdp_verify::Verifier;
 use std::time::Duration;
 
 use super::revocation_verdict::{RevocationAssessment, RevocationVerdict, SourcedRevocation};
+use super::transparency::{LogInclusionPolicy, TransparencyVerdicts, WitnessQuorumPolicy};
+use super::witness::WitnessQuorumReport;
 
 /// Consumer-tunable strictness for [`VerifiedContext::fetch_with_policy`],
 /// [`VerifiedContext::fetch_current_with_policy`], and the
@@ -111,6 +113,20 @@ pub struct VerificationPolicy {
     /// `false` is a relaxed mode that is **non-conformant with v0.1.0**
     /// and outside the `acdp-consumer` conformance profile (§5.11).
     pub require_did_web_for_v0_1_0: bool,
+
+    /// Transparency-log inclusion handling (ACDP 0.4, RFC-ACDP-0012 §9).
+    /// Default [`LogInclusionPolicy::Ignore`]. The verdict is reported
+    /// separately, through [`VerifiedContext::log_inclusion_verdict`] and
+    /// [`VerificationReport::log_inclusion_verdict`]. A failure fails
+    /// verification only under [`LogInclusionPolicy::Require`] (§9.3).
+    pub log_inclusion: LogInclusionPolicy,
+
+    /// Witness-quorum corroboration of the log checkpoint (ACDP 0.4,
+    /// RFC-ACDP-0015 §8). Default `None`, which means not evaluated. When
+    /// set, the `log_inclusion` checkpoint is verified even under
+    /// [`LogInclusionPolicy::Ignore`], because cosignatures can only be
+    /// checked against a checkpoint the consumer verified itself.
+    pub witness_quorum: Option<WitnessQuorumPolicy>,
 }
 
 impl Default for VerificationPolicy {
@@ -123,6 +139,8 @@ impl Default for VerificationPolicy {
             lineage_head: LineageHeadPolicy::default(),
             revocations: RevocationPolicy::default(),
             require_did_web_for_v0_1_0: true,
+            log_inclusion: LogInclusionPolicy::Ignore,
+            witness_quorum: None,
         }
     }
 }
@@ -843,6 +861,9 @@ impl VerificationPolicy {
             // unaffected by it (§10): no revocations enforced.
             revocations: RevocationPolicy::default(),
             require_did_web_for_v0_1_0: true,
+            // Likewise RFC-ACDP-0012/0015 (0.4.0): transparency inert.
+            log_inclusion: LogInclusionPolicy::Ignore,
+            witness_quorum: None,
         }
     }
 
@@ -931,6 +952,8 @@ pub struct VerifiedContext {
     revocation_verdict: RevocationVerdict,
     /// Verified revocations outside the producer's scope — hints only.
     revocation_hints: Vec<SourcedRevocation>,
+    /// RFC-ACDP-0012 §9 / RFC-ACDP-0015 §8 verdicts.
+    transparency: TransparencyVerdicts,
 }
 
 /// `verify_retrieved`'s verdicts — private and free to shape.
@@ -941,6 +964,7 @@ struct Retrieved {
     receipt_verdict: Option<Result<(), AcdpError>>,
     lineage_binding: acdp_verify::LineageBinding,
     revocation: RevocationAssessment,
+    transparency: TransparencyVerdicts,
 }
 
 type VerifyRetrievedResult = Result<Retrieved, AcdpError>;
@@ -955,6 +979,8 @@ impl Retrieved {
         report.revocation_discovery = self.revocation.discovery.clone();
         report.revocation_verdict = Some(self.revocation.verdict.clone());
         report.revocation_hints = self.revocation.hints.clone();
+        report.log_inclusion_verdict = self.transparency.log_verdict();
+        report.witness_quorum = self.transparency.witness.clone();
     }
 
     fn into_context(self, inner: FullContext) -> VerifiedContext {
@@ -981,6 +1007,7 @@ impl Retrieved {
             revocation_discovery_failure,
             revocation_verdict: verdict,
             revocation_hints: hints,
+            transparency: self.transparency,
         }
     }
 }
@@ -1363,6 +1390,29 @@ impl VerifiedContext {
             }
         }
 
+        // ── Transparency phase (RFC-ACDP-0012 §9, RFC-ACDP-0015 §8) ──
+        // Runs last: the leaf is rebuilt only from material verified
+        // above (recomputed content_hash, verified receipt). Its verdicts
+        // are independent of the ones above (§9.3), and under the default
+        // policies they never fail verification.
+        let material = match (&verified_receipt, &ctx.registry_receipt) {
+            (Some(receipt), Some(receipt_value)) => Some(super::transparency::LeafMaterial {
+                receipt,
+                receipt_value,
+            }),
+            _ => None,
+        };
+        let transparency = super::transparency::evaluate(
+            client,
+            ctx,
+            material,
+            &serving_authority,
+            policy.log_inclusion,
+            policy.witness_quorum.as_ref(),
+            resolver,
+        )
+        .await?;
+
         let lineage_binding = acdp_verify::lineage_binding(&ctx.body, verified_receipt.is_some());
         Ok(Retrieved {
             key_status,
@@ -1371,6 +1421,7 @@ impl VerifiedContext {
             receipt_verdict,
             lineage_binding,
             revocation,
+            transparency,
         })
     }
 
@@ -1469,6 +1520,8 @@ impl VerifiedContext {
             lineage_binding: None,
             revocation_verdict: None,
             revocation_hints: Vec::new(),
+            log_inclusion_verdict: None,
+            witness_quorum: None,
         };
 
         // Schema (structural) — record pass/fail.
@@ -1600,6 +1653,8 @@ impl VerifiedContext {
             lineage_binding: None,
             revocation_verdict: None,
             revocation_hints: Vec::new(),
+            log_inclusion_verdict: None,
+            witness_quorum: None,
         };
 
         // Structural-only schema validation — embedded-hash checks are
@@ -1780,6 +1835,51 @@ impl VerifiedContext {
     /// never applied to the verdict.
     pub fn revocation_hints(&self) -> &[SourcedRevocation] {
         &self.revocation_hints
+    }
+
+    /// The RFC-ACDP-0012 §9 transparency-log inclusion verdict, reported
+    /// separately from the body, receipt and revocation verdicts (§9.3:
+    /// log-proof failure "invalidates nothing else").
+    ///
+    /// - `None`: not evaluated. Either the policy is
+    ///   [`LogInclusionPolicy::Ignore`] with no witness policy, or the
+    ///   response carried no `log_inclusion`.
+    /// - `Some(Ok(()))`: the proof verified. The context is included in
+    ///   the log the registry committed to; see
+    ///   [`Self::verified_log_inclusion`].
+    /// - `Some(Err(_))`: the proof was present and failed (wire code
+    ///   `invalid_log_proof`). Under the default policy the context still
+    ///   verified.
+    #[must_use]
+    pub fn log_inclusion_verdict(&self) -> Option<Result<(), AcdpError>> {
+        self.transparency.log_verdict()
+    }
+
+    /// The verified inclusion proof, including the signed checkpoint, when
+    /// [`Self::log_inclusion_verdict`] is `Some(Ok(()))`. Keep the
+    /// checkpoint to check consistency with later ones (RFC-ACDP-0012 §9.2).
+    #[must_use]
+    pub fn verified_log_inclusion(&self) -> Option<&acdp_types::log::LogInclusion> {
+        match &self.transparency.log {
+            Some(Ok(inclusion)) => Some(inclusion),
+            _ => None,
+        }
+    }
+
+    /// The RFC-ACDP-0015 §8 witness-quorum verdict over the verified
+    /// checkpoint.
+    /// - `None`: [`VerificationPolicy::witness_quorum`] was unset.
+    /// - `Some(Err(_))`: there was no verified checkpoint to corroborate.
+    /// - `Some(Ok(report))`: the quorum was evaluated.
+    ///
+    /// Read the quorum from the report:
+    /// - [`WitnessQuorumReport::meets_quorum`] is the split-view and
+    ///   anti-rewrite quorum;
+    /// - [`WitnessQuorumReport::meets_fresh_quorum`] is the quorum for
+    ///   decisions that need a current checkpoint.
+    #[must_use]
+    pub fn witness_quorum(&self) -> Option<&Result<WitnessQuorumReport, AcdpError>> {
+        self.transparency.witness.as_ref()
     }
 
     /// Raw registry receipt value as served on the wire
@@ -2007,6 +2107,16 @@ pub struct VerificationReport {
     /// Verified revocations outside the producer's scope (RFC-ACDP-0014 §7
     /// "Producer scope", 0.5.0) — reported, never applied.
     pub revocation_hints: Vec<SourcedRevocation>,
+    /// The RFC-ACDP-0012 §9 log-inclusion verdict (0.4.0), reported
+    /// separately from every verdict above; see
+    /// [`VerifiedContext::log_inclusion_verdict`]. `None` when not
+    /// evaluated or when the authorization phases were not reached.
+    pub log_inclusion_verdict: Option<Result<(), AcdpError>>,
+    /// The RFC-ACDP-0015 §8 witness-quorum verdict (0.4.0); see
+    /// [`VerifiedContext::witness_quorum`]. `None` when
+    /// [`VerificationPolicy::witness_quorum`] is unset or when the
+    /// authorization phases were not reached.
+    pub witness_quorum: Option<Result<WitnessQuorumReport, AcdpError>>,
 }
 
 /// Sentinel `DataRefFetcher` used as the type parameter for
@@ -2157,6 +2267,8 @@ mod tests {
             "historical_keys",
             "allow_unknown_status",
             "require_did_web_for_v0_1_0",
+            "log_inclusion",
+            "witness_quorum",
         ];
         let patterns: Vec<String> = fields
             .iter()

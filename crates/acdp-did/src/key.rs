@@ -159,6 +159,61 @@ pub fn did_key_from_p256_sec1(sec1: &[u8]) -> Result<String, AcdpError> {
     ))
 }
 
+/// The DID document a `did:key` DID resolves to, built offline (the
+/// did:key method has no document to fetch).
+///
+/// The document has exactly one verification method, `did:key:z<mb>#z<mb>`,
+/// and lists it in `assertionMethod`:
+/// - an Ed25519 key is a `Multikey` carrying `publicKeyMultibase`;
+/// - a P-256 key is a `JsonWebKey2020` carrying the uncompressed point as
+///   `publicKeyJwk`, because document-based verifiers read P-256 keys from
+///   a JWK.
+///
+/// Use it to feed a `did:key` signer into an API that takes a DID document,
+/// such as RFC-ACDP-0015 witness cosignature verification.
+///
+/// # Errors
+/// [`AcdpError::KeyResolution`] when `did` is not a valid did:key.
+pub fn did_key_document(did: &str) -> Result<crate::DidDocument, AcdpError> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    let material = resolve_did_key(did)?;
+    let vm_id = did_key_url(did)?;
+    let (method_type, public_key_jwk, public_key_multibase) = match material {
+        DidKeyMaterial::Ed25519(_) => (
+            "Multikey",
+            None,
+            Some(did.trim_start_matches("did:key:").to_string()),
+        ),
+        DidKeyMaterial::EcdsaP256(compressed) => {
+            let vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(&compressed)
+                .map_err(|e| AcdpError::KeyResolution(format!("did:key p256 point: {e}")))?;
+            let point = vk.to_sec1_point(false);
+            let bytes = point.as_bytes();
+            (
+                "JsonWebKey2020",
+                Some(serde_json::json!({
+                    "kty": "EC",
+                    "crv": "P-256",
+                    "x": URL_SAFE_NO_PAD.encode(&bytes[1..33]),
+                    "y": URL_SAFE_NO_PAD.encode(&bytes[33..65]),
+                })),
+                None,
+            )
+        }
+    };
+    Ok(crate::DidDocument {
+        id: did.to_string(),
+        verification_methods: vec![crate::VerificationMethod {
+            id: vm_id.clone(),
+            method_type: method_type.to_string(),
+            controller: did.to_string(),
+            public_key_jwk,
+            public_key_multibase,
+        }],
+        assertion_method: vec![crate::AssertionMethodRef::Id(vm_id)],
+    })
+}
+
 /// The canonical `signature.key_id` DID URL for a did:key DID:
 /// `did:key:z<mb>#z<mb>` (fragment = method-specific identifier).
 pub fn did_key_url(did: &str) -> Result<String, AcdpError> {
@@ -206,6 +261,37 @@ mod tests {
             }
             other => panic!("expected EcdsaP256, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn did_key_document_exposes_the_key_to_document_verifiers() {
+        let did = did_key_from_ed25519(&test_pub());
+        let doc = did_key_document(&did).unwrap();
+        assert_eq!(doc.id, did);
+        let url = did_key_url(&did).unwrap();
+        let (_, frag) = url.split_once('#').unwrap();
+        let vm = doc.find_by_fragment(frag).expect("the key itself");
+        assert_eq!(vm.ed25519_public_key_bytes().unwrap(), test_pub());
+        assert_eq!(vm.declared_algorithm(), Some("ed25519"));
+        assert!(doc.is_assertion_method(&url));
+
+        let key = acdp_crypto::sign::P256SigningKey::generate();
+        let did = did_key_from_p256_sec1(&key.verifying_key_sec1()).unwrap();
+        let doc = did_key_document(&did).unwrap();
+        let url = did_key_url(&did).unwrap();
+        let (_, frag) = url.split_once('#').unwrap();
+        let vm = doc.find_by_fragment(frag).unwrap();
+        assert_eq!(
+            vm.ecdsa_p256_public_key_sec1().unwrap(),
+            key.verifying_key_sec1().to_vec()
+        );
+        assert_eq!(vm.declared_algorithm(), Some("ecdsa-p256"));
+        assert!(doc.is_assertion_method(&url));
+
+        assert!(matches!(
+            did_key_document("did:web:example.com"),
+            Err(AcdpError::KeyResolution(_))
+        ));
     }
 
     #[test]

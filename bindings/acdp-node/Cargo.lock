@@ -183,6 +183,7 @@ dependencies = [
  "acdp-primitives",
  "acdp-types",
  "acdp-validation",
+ "serde",
  "serde_json",
 ]
 

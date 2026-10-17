@@ -120,6 +120,23 @@ pub struct World {
     pub lineages: Arc<RwLock<HashMap<String, Value>>>,
     /// When set, `/contexts/{id}` serves contexts without `registry_receipt`.
     pub strip_receipts: Arc<std::sync::atomic::AtomicBool>,
+    /// How `/contexts/search` answers.
+    pub search_mode: Arc<RwLock<SearchMode>>,
+    pub search_hits: Arc<AtomicUsize>,
+    /// Every `/contexts/{id}` id served, in order.
+    pub retrieved: Arc<RwLock<Vec<String>>>,
+}
+
+/// How the world's `/contexts/search` route answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchMode {
+    /// Serve the published revocations, one page.
+    Normal,
+    /// Answer every search with this HTTP status and an ACDP error body.
+    Status(u16),
+    /// Serve the matches with a `next_cursor` on every page, forever —
+    /// drives the page cap (truncation).
+    Paginate,
 }
 
 impl World {
@@ -134,6 +151,9 @@ impl World {
         let strip_receipts = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let registry_doc = Arc::new(RwLock::new(registry_doc(ReceiptKey::Current)));
         let registry_did_hits = Arc::new(AtomicUsize::new(0));
+        let search_mode = Arc::new(RwLock::new(SearchMode::Normal));
+        let search_hits = Arc::new(AtomicUsize::new(0));
+        let retrieved: Arc<RwLock<Vec<String>>> = Arc::default();
 
         let router = Router::new()
             .route(
@@ -172,26 +192,57 @@ impl World {
             .route(
                 "/contexts/search",
                 get({
-                    let matches = matches.clone();
+                    let (matches, mode, hits) =
+                        (matches.clone(), search_mode.clone(), search_hits.clone());
                     move || {
-                        let matches = matches.clone();
-                        async move { Json(json!({ "matches": matches.read().unwrap().clone() })) }
+                        let (matches, mode, hits) = (matches.clone(), mode.clone(), hits.clone());
+                        async move {
+                            hits.fetch_add(1, Ordering::SeqCst);
+                            let matches = matches.read().unwrap().clone();
+                            let mode = *mode.read().unwrap();
+                            match mode {
+                                SearchMode::Normal => {
+                                    Json(json!({ "matches": matches })).into_response()
+                                }
+                                SearchMode::Paginate => Json(json!({
+                                    "matches": matches,
+                                    "next_cursor": "more",
+                                }))
+                                .into_response(),
+                                SearchMode::Status(code) => {
+                                    let wire = match code {
+                                        403 => "not_authorized",
+                                        501 => "not_implemented",
+                                        _ => "internal_error",
+                                    };
+                                    (
+                                        StatusCode::from_u16(code).unwrap(),
+                                        Json(
+                                            json!({ "error": { "code": wire, "message": "test" } }),
+                                        ),
+                                    )
+                                        .into_response()
+                                }
+                            }
+                        }
                     }
                 }),
             )
             .route(
                 "/contexts/{id}",
                 get({
-                    let (contexts, hits, strip) = (
+                    let (contexts, hits, strip, log) = (
                         contexts.clone(),
                         retrieve_hits.clone(),
                         strip_receipts.clone(),
+                        retrieved.clone(),
                     );
                     move |axum::extract::Path(id): axum::extract::Path<String>| {
-                        let (contexts, hits, strip) =
-                            (contexts.clone(), hits.clone(), strip.clone());
+                        let (contexts, hits, strip, log) =
+                            (contexts.clone(), hits.clone(), strip.clone(), log.clone());
                         async move {
                             hits.fetch_add(1, Ordering::SeqCst);
+                            log.write().unwrap().push(id.clone());
                             let mut v = contexts.read().unwrap().get(&id).cloned().expect("known");
                             if strip.load(Ordering::SeqCst) {
                                 v.as_object_mut().unwrap().remove("registry_receipt");
@@ -247,7 +298,28 @@ impl World {
             matches,
             lineages,
             strip_receipts,
+            search_mode,
+            search_hits,
+            retrieved,
         }
+    }
+
+    pub fn set_search_mode(&self, mode: SearchMode) {
+        *self.search_mode.write().unwrap() = mode;
+    }
+
+    /// How many times `/contexts/{ctx_id}` was served.
+    pub fn retrievals_of(&self, ctx_id: &str) -> usize {
+        self.retrieved
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|id| id.as_str() == ctx_id || ctx_id.ends_with(&format!("/{id}")))
+            .count()
+    }
+
+    pub fn search_hits(&self) -> usize {
+        self.search_hits.load(Ordering::SeqCst)
     }
 
     pub fn set_doc(&self, doc: Value) {
@@ -412,7 +484,7 @@ pub fn agent() -> AgentDid {
 pub fn is_unverifiable(e: &AcdpError) -> bool {
     match e {
         AcdpError::RevocationCandidateUnverifiable(_) => true,
-        AcdpError::RevocationDiscoveryFailed { source } => is_unverifiable(source),
+        AcdpError::RevocationUnknown { source, .. } => is_unverifiable(source),
         _ => false,
     }
 }

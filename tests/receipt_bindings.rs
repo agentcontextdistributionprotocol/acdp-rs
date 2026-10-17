@@ -8,7 +8,7 @@ mod world;
 use std::sync::atomic::Ordering;
 
 use acdp::client::{
-    verify_revocation_context, KeyAuthorization, ReceiptPolicy, RevocationPolicy,
+    verify_revocation_context, KeyAuthorization, ReceiptPolicy, RevocationEffect, RevocationPolicy,
     VerificationPolicy, VerifiedContext,
 };
 use acdp::error::AcdpError;
@@ -138,10 +138,15 @@ async fn rcpt_005_d_historical_receipt_key_cannot_place_pre_t() {
     // Historical receipt key → unplaceable, fail closed.
     w.set_receipt_key(ReceiptKey::Historical);
     let err = fetch(&w, &ctx, &strict).await.unwrap_err();
-    assert!(
-        matches!(&err, AcdpError::KeyNotAuthorized(m) if m.contains("historical receipt key")),
-        "{err:?}"
-    );
+    match &err {
+        AcdpError::KeyRevoked(r) => {
+            assert_eq!(r.effect, RevocationEffect::Unplaceable, "{err:?}");
+            assert!(r.placement.is_some(), "placed, but by a historical key");
+            assert!(r.detail.contains("historical receipt key"), "{err:?}");
+        }
+        other => panic!("expected an unplaceable KeyRevoked, got {other:?}"),
+    }
+    assert!(err.is_key_not_authorized());
 
     // The explicitly named non-strict mode accepts it.
     let relaxed = VerificationPolicy {
@@ -238,7 +243,7 @@ async fn rcpt_006_failed_receipt_disables_historical_rule() {
         ..VerificationPolicy::default()
     };
     let err = fetch(&w, &ctx, &policy).await.unwrap_err();
-    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "{err:?}");
+    assert!(err.is_key_not_authorized(), "{err:?}");
 }
 
 /// A failed receipt cannot place a revoked-key context either.
@@ -254,7 +259,13 @@ async fn rcpt_006_failed_receipt_is_unplaceable() {
         ..VerificationPolicy::default()
     };
     let err = fetch(&w, &ctx, &policy).await.unwrap_err();
-    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "{err:?}");
+    match &err {
+        AcdpError::KeyRevoked(r) => {
+            assert_eq!(r.effect, RevocationEffect::Unplaceable, "{err:?}");
+            assert_eq!(r.placement, None, "a failed receipt places nothing");
+        }
+        other => panic!("expected an unplaceable KeyRevoked, got {other:?}"),
+    }
 }
 
 // ── lin-002 / body-003: registry-assigned bindings ───────────────────

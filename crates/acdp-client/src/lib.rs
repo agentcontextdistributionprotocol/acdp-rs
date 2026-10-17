@@ -13,6 +13,7 @@ pub mod receipt;
 pub mod registry;
 pub mod revocation;
 pub mod revocation_cache;
+pub mod revocation_verdict;
 pub mod verified;
 pub mod witness;
 
@@ -32,6 +33,11 @@ pub use revocation::{
     verify_revocation_body, verify_revocation_candidate, verify_revocation_context,
 };
 pub use revocation_cache::RevocationCache;
+pub use revocation_verdict::{
+    find_revocations_verdict, RevocationAssessment, RevocationEffect, RevocationRefusal,
+    RevocationSource, RevocationVerdict, SourcedRevocation, UnknownReason,
+    RECOMMENDED_NEGATIVE_FRESHNESS,
+};
 pub use verified::{
     DiscoveryFailurePolicy, DiscoveryOutcome, HistoricalKeyPolicy, KeyAuthorization,
     LineageHeadPolicy, ReceiptPolicy, RevocationDiscovery, RevocationPolicy, VerificationPolicy,

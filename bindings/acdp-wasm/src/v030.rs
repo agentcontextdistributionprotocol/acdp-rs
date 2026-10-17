@@ -55,6 +55,9 @@ fn error_code(e: &AcdpError) -> &'static str {
         AcdpError::InvalidLifecycleTransition(_) => "invalid_lifecycle_transition",
         AcdpError::InvalidSignature(_) => "invalid_signature",
         AcdpError::KeyNotAuthorized(_) => "key_not_authorized",
+        AcdpError::KeyRevoked(_) => "key_not_authorized",
+        // Not a wire code: discovery could not establish revocation status.
+        AcdpError::RevocationUnknown { .. } => "revocation_unknown",
         AcdpError::KeyResolution(_) => "key_resolution",
         AcdpError::UnsupportedAlgorithm(_) => "unsupported_algorithm",
         AcdpError::SchemaViolation(_) => "schema_violation",

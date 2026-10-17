@@ -117,7 +117,7 @@ The stages, in order (it returns on the **first** failure):
 | 1 | **Schema validation** (`validate_body`) — structural + embedded `data_ref` hashes | `SchemaViolation`, `DataRefHashMismatch` |
 | 2 | **`content_hash` recompute** — `sha256(JCS(ProducerContent))` vs declared | `HashMismatch` |
 | 3 | **Registry receipt** (RFC-ACDP-0010) per `policy.receipts` — verified by recomputing the ProducerContent hash, before the signature stage because the historical-key path depends on it. The receipt key's status (current = in `assertionMethod`, historical = `verificationMethod` only) is recorded; a stale "historical" answer triggers one rate-limited forced DID refresh first | `InvalidReceipt` (under `VerifyAndReport`: recorded, not returned) |
-| 4 | **Revocation** (RFC-ACDP-0014 §7/§8) — `policy.revocations.known`, plus discovered or cached revocations when configured. Strict profile: only a receipt under a *current* receipt key places a revoked-key context before its boundary | `KeyNotAuthorized`; `RevocationDiscoveryFailed { source }` under `on_failure: FailClosed` (the `source` may be `RevocationDiscoveryBudgetExceeded`) |
+| 4 | **Revocation** (RFC-ACDP-0014 §7/§8) — `policy.revocations.known`, plus discovered or cached revocations when configured. Strict profile: only a receipt under a *current* receipt key places a revoked-key context before its boundary | `KeyRevoked` (attributed `RevocationRefusal`; wire code `key_not_authorized`); `RevocationUnknown { reason, .. }` under `on_failure: FailClosed` |
 | 5 | **Key resolution and signature verification** — `did:web` via `WebResolver` or `did:key` offline; the algorithm must match the key; historical-key fallback per `policy.historical_keys` | `KeyResolution`, `KeyResolutionUnreachable`, `InvalidSignature`, `UnsupportedAlgorithm`, `KeyNotAuthorized` |
 | 6 | **Status check** per policy | `SchemaViolation` if `allow_unknown_status` is `false` |
 
@@ -161,7 +161,7 @@ verdict (and mirrored as `VerificationReport` fields):
 historical receipt key is not a currently-authorized registry attestation.
 Under the strict profile it cannot place a revoked-key context before the
 compromise boundary — such a context is unplaceable and fails closed with
-`KeyNotAuthorized` ("historical receipt key"). Plain rotation with no
+`KeyRevoked` (effect `Unplaceable`, detail "historical receipt key"). Plain rotation with no
 revocation is unaffected: the RFC-ACDP-0010 §10 historical-key rule
 still accepts a historical receipt key. A deployment that accepts the
 risk opts in with
@@ -248,8 +248,10 @@ revocations matter less.
 itself fails — a transport error, the search-safety-cap error
 `AcdpError::SearchTruncated`, or the budget error
 `AcdpError::RevocationDiscoveryBudgetExceeded` covered below —
-`DiscoveryFailurePolicy::FailClosed` (the default) fails verification.
-`ProceedWithKnown` instead proceeds using `known` alone and records the
+`DiscoveryFailurePolicy::FailClosed` (the default) fails verification
+with `AcdpError::RevocationUnknown { reason, .. }`.
+`ProceedWithKnown` instead proceeds using `known` and cached facts alone,
+reports the verdict as `RevocationVerdict::Unknown`, and records the
 failure, retrievable via both
 `VerifiedContext::revocation_discovery_failure()` and
 `VerificationReport::revocation_discovery`. Choose `ProceedWithKnown`
@@ -302,9 +304,9 @@ class searches — enabling `include_registry_attested` does not double
 the ceiling — and are checked **before** each request is issued, so a
 request that would exceed the budget is never sent. Exhaustion raises
 `AcdpError::RevocationDiscoveryBudgetExceeded`, wrapped the same way a
-`SearchTruncated` failure is (`AcdpError::RevocationDiscoveryFailed`,
-dispatched through `on_failure` exactly like the case above) and is
-**never** transient.
+`SearchTruncated` failure is (`AcdpError::RevocationUnknown` with reason
+`truncated`, dispatched through `on_failure` exactly like the case
+above) and is **never** transient.
 
 Two honesty caveats:
 
@@ -360,6 +362,68 @@ transient `KeyResolutionUnreachable`, never as the permanent
 bogus-fragment bodies just before a producer adds a new key and revokes
 an old one, and so make discovery silently drop that revocation.
 
+### Revocation verdicts
+
+0.15.0 reports every revocation decision as a typed, attributable
+verdict (RFC-ACDP-0014 §7 "Attribution" and "Producer scope", §8
+"Discovery outcome classes"). It is available from
+`VerifiedContext::revocation_verdict()` and
+`VerificationReport::revocation_verdict`:
+
+| `RevocationVerdict` | Meaning | Verification |
+|---|---|---|
+| `Revoked { effect: PreCompromise, .. }` | a verified receipt places the context strictly before the boundary T (§7 step 2) | accepted under the historical-key rule |
+| `Revoked { effect: Revoked, .. }` | placed at or after T (§7 step 3) | `AcdpError::KeyRevoked` |
+| `Revoked { effect: Unplaceable, .. }` | no verified receipt, or (strict profile) one under a historical receipt key (§7 step 4) | `AcdpError::KeyRevoked` |
+| `NotRevoked { complete, registry_attested_checked, observed_at }` | no verified, in-scope revocation names the key; `complete` is `true` only when discovery ran and every configured lookup finished untruncated; `observed_at` is set when a cached absence answered | accepted |
+| `Unknown { reason, detail }` | discovery could not decide: `truncated`, `unanswerable` (`not_authorized`, `not_implemented`, malformed response), `transient`, or `unverifiable_candidate` | `RevocationUnknown` under `FailClosed`; accepted under `ProceedWithKnown` |
+
+Precedence is refusal, then `Unknown`, then pre-compromise, then
+not-revoked. A verified revocation therefore refuses the context even
+when another lookup in the same call failed. `Unknown` is never folded
+into not-revoked and never cached.
+
+Every `Revoked` verdict, and every `KeyRevoked` error (through
+`AcdpError::revocation_refusal()`), carries a `SourcedRevocation`: the
+revocation's `ctx_id`, `issuer`, `revoked_key_controller`,
+`trust_class`, boundary, and `source` (`Known`, `Discovered { authority }`,
+or `Cached { origin }`). The boundary is the earliest
+`compromised_since` across every in-scope revocation naming the key.
+
+**Producer scope.** A revocation changes a producer's verdict only if it
+speaks for that producer: a producer-signed revocation whose `issuer`
+is the producer, or a registry-attested one whose
+`revoked_key_controller` is the producer. Any other verified revocation
+naming the key is reported in `revocation_hints()` and never applied.
+
+**Re-checking a context you already hold.**
+`VerifiedContext::recheck_revocation(&client, &resolver, &policy)`
+re-assesses the context's signing key without refetching it. The free
+function `find_revocations_verdict(client, resolver, agent_id,
+signing_key_fingerprint, receipt_placement, policy)` does the same from
+raw inputs. Both return a `RevocationAssessment` and never fail on a
+verdict; call `.enforce()` to turn a refusal into `KeyRevoked` and a
+fail-closed `Unknown` into `RevocationUnknown`:
+
+```rust,no_run
+# #[cfg(feature = "client")]
+# async fn run(
+#     v: &acdp::client::VerifiedContext,
+#     client: &acdp::client::RegistryClient,
+#     resolver: &acdp::did::WebResolver,
+# ) -> Result<(), acdp::AcdpError> {
+use acdp::client::{RevocationDiscovery, RevocationPolicy, RevocationVerdict};
+
+let policy =
+    RevocationPolicy::default().with_discovery(RevocationDiscovery::producer_signed_only());
+let assessment = v.recheck_revocation(client, resolver, &policy).await?;
+if let RevocationVerdict::Unknown { reason, .. } = &assessment.verdict {
+    eprintln!("revocation status unknown: {reason}");
+}
+assessment.enforce()?;
+# Ok(()) }
+```
+
 ### Caching discovered revocations
 
 `RegistryClient::with_revocation_cache` attaches a `RevocationCache` —
@@ -405,13 +469,15 @@ reaching for the `freshness` knob:
   power to a hostile vantage: the marker is per-vantage already, and that
   vantage already controls what it serves.
 
-**`freshness` defaults to `Duration::ZERO` (off) from both
-`producer_signed_only()` and `all_trust_classes()`.** Attaching a cache at
-the default changes nothing observable except anti-rollback — **the
-default cache saves zero requests.** Set `freshness` above zero (a
-recommended ceiling: 3600 s, matching `RegistryClient`'s capabilities-cache
-TTL cap; `WebResolver` caches DID documents for up to 24 h) to additionally let a fresh marker skip a repeat lookup
-entirely:
+**`freshness` defaults to 300 s
+(`acdp::client::RECOMMENDED_NEGATIVE_FRESHNESS`, RFC-ACDP-0014 §8's
+RECOMMENDED bound) from both `producer_signed_only()` and
+`all_trust_classes()`** (0.15.0; it was `Duration::ZERO` through 0.14).
+Within that window a fresh marker skips a repeat lookup entirely, and the
+verdict says so: `RevocationVerdict::NotRevoked { observed_at: Some(t), .. }`
+reports when the cached absence was observed. Set `freshness` to
+`Duration::ZERO` to re-discover on every call, or lower it; raising it
+widens the window in which a newly published revocation goes unseen:
 
 ```rust,no_run
 # #[cfg(feature = "client")]
@@ -430,7 +496,7 @@ use acdp::client::RevocationDiscovery;
 use std::time::Duration;
 
 let mut discovery = RevocationDiscovery::producer_signed_only();
-discovery.freshness = Duration::from_secs(300); // opt in to skipping repeat lookups
+discovery.freshness = Duration::ZERO; // re-discover on every call
 # discovery
 # }
 ```
@@ -461,12 +527,17 @@ self-contained (RFC-ACDP-0014 §5/§8) and applies regardless of which
 registry served it — it is filtered by neither trust class (once opted
 into `known`/discovery at all) nor origin.
 
-Facts are deduplicated on insert and capped per producer; once the cap is
-reached an entry stops accepting new facts and drops its markers,
-degrading to plain pass-through rather than false completeness. The cache
-itself is capacity-bounded (oldest-is-not-tracked; a plain
-capacity-triggered eviction, since losing an entry can only cost a future
-re-discovery, never safety).
+**Facts and markers are stored separately and have different
+lifetimes** (0.15.0). Verified facts are **never evicted** — a fact
+leaves only with the cache itself. Admission is deduplicated and capped
+per producer (`MAX_FACTS_PER_CLASS` per trust class, and per origin for
+the registry-attested class); a fact refused at the cap still applies to
+the call that found it, and the capped slot stops minting markers, so
+that lookup runs in full every time instead of claiming a completeness
+the cache can no longer track. Markers live in a bounded map
+(`MAX_MARKERS`) that evicts its oldest entry at capacity, since losing a
+marker only costs a re-discovery. An `unknown` outcome never mints a
+marker.
 
 **Where discovery is, and is not, reachable.** All five
 policy-taking entry points — `fetch_with_policy`,

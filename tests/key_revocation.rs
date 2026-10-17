@@ -576,7 +576,7 @@ fn rev_002_b_at_or_after_t_fails_closed() {
             Some(at(when)),
         )
         .expect_err("at/after the boundary must fail closed");
-        assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+        assert!(matches!(err, AcdpError::KeyRevoked(_)), "got {err:?}");
     }
 }
 
@@ -596,7 +596,7 @@ fn rev_002_c_unverifiable_time_fails_closed() {
 
     let err = classify_under_revocation(&[revocation], revoked_fp, None)
         .expect_err("receipt-less revoked-key context must fail closed under strict");
-    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+    assert!(matches!(err, AcdpError::KeyRevoked(_)), "got {err:?}");
 }
 
 /// Scenario D — trust classes are distinguishable: the same statement
@@ -679,7 +679,7 @@ fn rev_002_earliest_boundary_across_lineage() {
     // inside the effective window.
     let err = classify_under_revocation(&lineage, revoked_fp, Some(at(before_t)))
         .expect_err("the earliest compromised_since across the lineage is effective");
-    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+    assert!(matches!(err, AcdpError::KeyRevoked(_)), "got {err:?}");
 
     // Strictly before both boundaries still verifies.
     assert_eq!(
@@ -1006,7 +1006,7 @@ async fn rev_002_e_narrowing_supersession_effective_boundary_stays_t1() {
 
     let err = classify_under_revocation(&revs, revoked_fp, Some(at(receipt_time)))
         .expect_err("scenario E: R2's narrower T2 must not shrink the effective window below T1");
-    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+    assert!(matches!(err, AcdpError::KeyRevoked(_)), "got {err:?}");
 }
 
 /// Scenario F (RFC-ACDP-0014 §7): identical to scenario E's lineage
@@ -1119,7 +1119,7 @@ async fn rev_002_f_retracted_predecessor_still_governs_verdict() {
         "scenario F: retraction of R1 must not remove it from the fold — the effective \
          boundary stays T1",
     );
-    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+    assert!(matches!(err, AcdpError::KeyRevoked(_)), "got {err:?}");
 }
 
 /// Scenario G (RFC-ACDP-0014 §7): lineage L2 — R1-prime (T1,
@@ -1232,7 +1232,7 @@ async fn rev_002_g_non_revocation_supersession_does_not_disarm() {
         "scenario G: a non-revocation supersession must not disarm the revocation still \
          governing the lineage",
     );
-    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+    assert!(matches!(err, AcdpError::KeyRevoked(_)), "got {err:?}");
 }
 
 /// Scenario H (RFC-ACDP-0014 §7): lineage L3 — R1-triple-prime (T1,
@@ -1332,7 +1332,7 @@ async fn rev_002_h_interim_form_widening_successor_is_counted() {
         "scenario H: the interim-typed widening successor is itself a revocation and MUST \
          be counted, not disregarded as a disarming non-revocation",
     );
-    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+    assert!(matches!(err, AcdpError::KeyRevoked(_)), "got {err:?}");
 }
 
 // ── rev-004: interim-form retrieval unaffected by the (0.5.0) retirement
@@ -1662,6 +1662,7 @@ fn local_revocation(producer_fp: &str, t: DateTime<Utc>) -> KeyRevocation {
         revoked_key_controller: AgentDid::new(LOCAL_PRODUCER_DID),
         publisher: AgentDid::new(LOCAL_PRODUCER_DID),
         trust_class: RevocationTrustClass::ProducerSigned,
+        ctx_id: None,
     }
 }
 
@@ -1722,7 +1723,7 @@ async fn rev_002_fetch_pipeline_boundary_matrix() {
         let err = VerifiedContext::fetch_with_policy(&client, &h.resolver, &ctx_id, &post)
             .await
             .expect_err("inside the compromise window must fail closed");
-        assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+        assert!(matches!(err, AcdpError::KeyRevoked(_)), "got {err:?}");
     }
 
     // C: no verified receipt → publish time unverifiable → fail closed,
@@ -1740,7 +1741,7 @@ async fn rev_002_fetch_pipeline_boundary_matrix() {
     let err = VerifiedContext::fetch_with_policy(&client, &h.resolver, &ctx_id, &future_boundary)
         .await
         .expect_err("receipt-less revoked-key context must fail closed");
-    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+    assert!(matches!(err, AcdpError::KeyRevoked(_)), "got {err:?}");
 
     // …or present but unverified because policy ignores receipts.
     *h.context_json.write().unwrap() = Some(ctx_json.clone());
@@ -1754,7 +1755,7 @@ async fn rev_002_fetch_pipeline_boundary_matrix() {
     let err = VerifiedContext::fetch_with_policy(&client, &h.resolver, &ctx_id, &ignoring)
         .await
         .expect_err("an unverified receipt provides no publish time");
-    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+    assert!(matches!(err, AcdpError::KeyRevoked(_)), "got {err:?}");
 
     // A revocation of some OTHER key leaves this context fully current.
     let unrelated = policy_with(
@@ -1997,10 +1998,7 @@ async fn report_diagnose_reports_revocation_without_erroring() {
         "the phase failed, so no real key_status verdict was produced"
     );
     assert!(
-        matches!(
-            report.policy_phase_error,
-            Some(AcdpError::KeyNotAuthorized(_))
-        ),
+        matches!(report.policy_phase_error, Some(AcdpError::KeyRevoked(_))),
         "got {:?}",
         report.policy_phase_error
     );
@@ -2729,6 +2727,52 @@ async fn find_registry_attested_revocations_recovers_what_find_revocations_now_d
     assert_eq!(recovered[0].revoked_key_fingerprint, K2_FP);
     assert_eq!(
         recovered[0].trust_class,
+        RevocationTrustClass::RegistryAttested
+    );
+}
+
+/// `find_revocations` has returned ONLY producer-signed revocations since
+/// acdp-client 0.9.0 (58e16ae, #191/#204): a genuine §6 registry
+/// attestation naming the queried producer as controller sits in the
+/// same search response as the producer's own revocation and is dropped
+/// by `find_revocations` — it is reachable only through
+/// `find_registry_attested_revocations`. Pinned as the 0.15.0 Seam
+/// precondition (both classes tagged, never collapsed).
+#[tokio::test]
+async fn find_revocations_is_producer_signed_only_since_0_9_0() {
+    use acdp::client::{find_registry_attested_revocations, find_revocations};
+
+    let candidates = [
+        Candidate {
+            path: "agent",
+            seed: [7u8; 32],
+            title: "the producer's own revocation",
+            metadata: revocation_metadata(),
+        },
+        registry_attested_candidate(),
+    ];
+    let (client, resolver, _caps_hits) =
+        discover_with_candidates(LOCAL_PRODUCER_DID, &candidates).await;
+    let producer = AgentDid::new(LOCAL_PRODUCER_DID);
+
+    let signed = find_revocations(&client, &resolver, &producer)
+        .await
+        .expect("discovery");
+    assert_eq!(
+        signed.len(),
+        1,
+        "only the producer-signed revocation: {signed:?}"
+    );
+    assert!(signed
+        .iter()
+        .all(|r| r.trust_class == RevocationTrustClass::ProducerSigned && r.publisher == producer));
+
+    let attested = find_registry_attested_revocations(&client, &resolver, &producer)
+        .await
+        .expect("discovery");
+    assert_eq!(attested.len(), 1);
+    assert_eq!(
+        attested[0].trust_class,
         RevocationTrustClass::RegistryAttested
     );
 }
@@ -5042,6 +5086,7 @@ async fn discovery_harness_serves_all_six_routes_and_satisfies_receipt_require()
         revoked_key_controller: AgentDid::new(producer_did.as_str()),
         publisher: AgentDid::new(producer_did.as_str()),
         trust_class: RevocationTrustClass::ProducerSigned,
+        ctx_id: None,
     };
     let pre = VerificationPolicy {
         receipts: ReceiptPolicy::VerifyIfPresent,
@@ -5069,7 +5114,7 @@ async fn discovery_harness_serves_all_six_routes_and_satisfies_receipt_require()
     let err = VerifiedContext::fetch_with_policy(&client, &h.resolver, &resp.ctx_id, &post)
         .await
         .expect_err("inside the compromise window must fail closed");
-    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+    assert!(matches!(err, AcdpError::KeyRevoked(_)), "got {err:?}");
 }
 
 /// AC2: a named route can be made to return an explicit error status —
@@ -5484,7 +5529,7 @@ async fn phase4_ac2_discovery_only_revocation_flips_success_to_key_not_authorize
     )
     .await
     .expect_err("a revocation reachable only by discovery must now fail verification");
-    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+    assert!(matches!(err, AcdpError::KeyRevoked(_)), "got {err:?}");
     assert!(rig.h.hits("search") > 0, "discovery must have searched");
 }
 
@@ -5522,7 +5567,7 @@ async fn phase4_ac3_fetch_with_policy_honors_discover() {
     )
     .await
     .expect_err("fetch_with_policy must honor discover");
-    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+    assert!(matches!(err, AcdpError::KeyRevoked(_)), "got {err:?}");
 }
 
 #[tokio::test]
@@ -5545,7 +5590,7 @@ async fn phase4_ac3_fetch_current_with_policy_honors_discover() {
     )
     .await
     .expect_err("fetch_current_with_policy must honor discover");
-    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+    assert!(matches!(err, AcdpError::KeyRevoked(_)), "got {err:?}");
 }
 
 #[tokio::test]
@@ -5564,7 +5609,7 @@ async fn phase4_ac3_fetch_report_honors_discover() {
         VerifiedContext::fetch_report(&rig.client, &rig.h.resolver, &rig.target_ctx_id, &policy)
             .await
             .expect_err("fetch_report must honor discover");
-    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+    assert!(matches!(err, AcdpError::KeyRevoked(_)), "got {err:?}");
 }
 
 #[tokio::test]
@@ -5589,7 +5634,7 @@ async fn phase4_ac3_fetch_report_with_fetcher_honors_discover() {
     )
     .await
     .expect_err("fetch_report_with_fetcher must honor discover");
-    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+    assert!(matches!(err, AcdpError::KeyRevoked(_)), "got {err:?}");
 }
 
 #[tokio::test]
@@ -5617,17 +5662,14 @@ async fn phase4_ac3_fetch_report_diagnose_honors_discover() {
         "the handle must be withheld when the policy phase fails"
     );
     assert!(
-        matches!(
-            report.policy_phase_error,
-            Some(AcdpError::KeyNotAuthorized(_))
-        ),
+        matches!(report.policy_phase_error, Some(AcdpError::KeyRevoked(_))),
         "got {:?}",
         report.policy_phase_error
     );
 }
 
 /// AC4: under `FailClosed`, a 503 from `/contexts/search` yields
-/// `Err(RevocationDiscoveryFailed)` from the four `Err`-propagating entry
+/// `Err(RevocationUnknown)` from the four `Err`-propagating entry
 /// points, and `VerificationReport::policy_phase_error` from
 /// `fetch_report_diagnose`. The harness maps every injected status to
 /// wire code `internal_error` → `AcdpError::RegistryInternal`, which is
@@ -5652,7 +5694,7 @@ async fn phase4_ac4_fail_closed_503_propagates_as_revocation_discovery_failed() 
     .await
     .expect_err("FailClosed must propagate a discovery failure");
     assert!(
-        matches!(err, AcdpError::RevocationDiscoveryFailed { .. }),
+        matches!(err, AcdpError::RevocationUnknown { .. }),
         "got {err:?}"
     );
     assert!(err.is_transient(), "got {err:?}");
@@ -5665,14 +5707,14 @@ async fn phase4_ac4_fail_closed_503_propagates_as_revocation_discovery_failed() 
     )
     .await
     .expect_err("fetch_current_with_policy must also propagate");
-    assert!(matches!(err, AcdpError::RevocationDiscoveryFailed { .. }));
+    assert!(matches!(err, AcdpError::RevocationUnknown { .. }));
     assert!(err.is_transient());
 
     let err =
         VerifiedContext::fetch_report(&rig.client, &rig.h.resolver, &rig.target_ctx_id, &policy)
             .await
             .expect_err("fetch_report must also propagate");
-    assert!(matches!(err, AcdpError::RevocationDiscoveryFailed { .. }));
+    assert!(matches!(err, AcdpError::RevocationUnknown { .. }));
     assert!(err.is_transient());
 
     let fetcher = HttpsDataRefFetcher::new();
@@ -5685,7 +5727,7 @@ async fn phase4_ac4_fail_closed_503_propagates_as_revocation_discovery_failed() 
     )
     .await
     .expect_err("fetch_report_with_fetcher must also propagate");
-    assert!(matches!(err, AcdpError::RevocationDiscoveryFailed { .. }));
+    assert!(matches!(err, AcdpError::RevocationUnknown { .. }));
     assert!(err.is_transient());
 
     let (verified, report) = VerifiedContext::fetch_report_diagnose(
@@ -5698,8 +5740,8 @@ async fn phase4_ac4_fail_closed_503_propagates_as_revocation_discovery_failed() 
     .expect("fetch_report_diagnose never returns Err");
     assert!(verified.is_none());
     match &report.policy_phase_error {
-        Some(e @ AcdpError::RevocationDiscoveryFailed { .. }) => assert!(e.is_transient()),
-        other => panic!("expected Some(RevocationDiscoveryFailed), got {other:?}"),
+        Some(e @ AcdpError::RevocationUnknown { .. }) => assert!(e.is_transient()),
+        other => panic!("expected Some(RevocationUnknown), got {other:?}"),
     }
 
     rig.h.clear_error("search");
@@ -5741,8 +5783,8 @@ async fn phase4_ac5_proceed_with_known_surfaces_failure_without_erroring() {
             .expect("ProceedWithKnown must let fetch_report succeed too");
     assert!(verified2.revocation_discovery_failure().is_some());
     match &report.revocation_discovery {
-        Some(Err(e)) => assert!(matches!(e, AcdpError::RevocationDiscoveryFailed { .. })),
-        other => panic!("expected Some(Err(RevocationDiscoveryFailed)), got {other:?}"),
+        Some(Err(e)) => assert!(matches!(e, AcdpError::RevocationUnknown { .. })),
+        other => panic!("expected Some(Err(RevocationUnknown)), got {other:?}"),
     }
 
     rig.h.clear_error("search");
@@ -5773,6 +5815,7 @@ async fn phase4_ac6_union_of_known_and_discovered_is_merged_before_classificatio
         revoked_key_controller: rig.agent_id(),
         publisher: rig.agent_id(),
         trust_class: RevocationTrustClass::ProducerSigned,
+        ctx_id: None,
     };
 
     // Baseline: `known = [R1]` alone, no discovery — R1's fingerprint
@@ -5853,6 +5896,7 @@ async fn phase4_ac6_union_of_known_and_discovered_is_merged_before_classificatio
         revoked_key_controller: rig.agent_id(),
         publisher: rig.agent_id(),
         trust_class: RevocationTrustClass::ProducerSigned,
+        ctx_id: None,
     };
     let union_with_relevant_known_policy = VerificationPolicy {
         revocations: RevocationPolicy::new(vec![r3])
@@ -5871,13 +5915,13 @@ async fn phase4_ac6_union_of_known_and_discovered_is_merged_before_classificatio
          later, individually-safe revocation — proves the merge is a union, not a \
          replacement",
     );
-    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+    assert!(matches!(err, AcdpError::KeyRevoked(_)), "got {err:?}");
 }
 
 /// AC7: `total_timeout` proven two-sided against a `/contexts/search`
 /// route sleeping 30s with a 2s `total_timeout`: (i) elapsed >= 2s, (ii)
 /// elapsed < 10s — which fails if the per-request `RegistryClient` cap
-/// (30s) fired instead — and (iii) the error is `RevocationDiscoveryFailed`
+/// (30s) fired instead — and (iii) the error is `RevocationUnknown`
 /// whose source names the timeout, not a transport error.
 #[tokio::test]
 async fn phase4_ac7_total_timeout_bounds_wall_clock_and_names_the_timeout() {
@@ -5912,7 +5956,7 @@ async fn phase4_ac7_total_timeout_bounds_wall_clock_and_names_the_timeout() {
          a value near 30s means that cap fired instead of total_timeout"
     );
     match &err {
-        AcdpError::RevocationDiscoveryFailed { source } => {
+        AcdpError::RevocationUnknown { source, .. } => {
             let msg = source.to_string();
             assert!(
                 matches!(**source, AcdpError::CrossRegistryResolutionFailed(_))
@@ -5920,7 +5964,7 @@ async fn phase4_ac7_total_timeout_bounds_wall_clock_and_names_the_timeout() {
                 "source must name the timeout, not a transport error; got {source:?}"
             );
         }
-        other => panic!("expected RevocationDiscoveryFailed, got {other:?}"),
+        other => panic!("expected RevocationUnknown, got {other:?}"),
     }
 
     rig.h.clear_delay("search");
@@ -6056,7 +6100,7 @@ async fn budget_ac3_combined_ceiling_not_doubled_by_include_registry_attested() 
     .await
     .expect_err("max_requests: Some(4) must exhaust before the natural 6 searches complete");
     assert!(
-        matches!(err, AcdpError::RevocationDiscoveryFailed { .. }),
+        matches!(err, AcdpError::RevocationUnknown { .. }),
         "got {err:?}"
     );
     let single_total = rig.h.hits("search") - before_search;
@@ -6082,7 +6126,7 @@ async fn budget_ac3_combined_ceiling_not_doubled_by_include_registry_attested() 
     )
     .await
     .expect_err("max_requests: Some(4) must exhaust before the natural 13 requests complete");
-    assert!(matches!(err2, AcdpError::RevocationDiscoveryFailed { .. }));
+    assert!(matches!(err2, AcdpError::RevocationUnknown { .. }));
     let dual_total =
         (rig2.h.hits("search") - before_search2) + (rig2.h.hits("acdp_json") - before_caps2);
     assert!(
@@ -6170,14 +6214,14 @@ async fn budget_max_bytes_alone_exhausts_before_second_request() {
     .await
     .expect_err("max_bytes: Some(1) must exhaust after the first response is read");
     match &err {
-        AcdpError::RevocationDiscoveryFailed { source } => {
+        AcdpError::RevocationUnknown { source, .. } => {
             assert!(
                 matches!(**source, AcdpError::RevocationDiscoveryBudgetExceeded(_)),
                 "got {source:?}"
             );
             assert!(source.to_string().contains("max_bytes"), "got {source}");
         }
-        other => panic!("expected RevocationDiscoveryFailed, got {other:?}"),
+        other => panic!("expected RevocationUnknown, got {other:?}"),
     }
     assert_eq!(
         rig.h.hits("search") - before_search,
@@ -6187,7 +6231,7 @@ async fn budget_max_bytes_alone_exhausts_before_second_request() {
 }
 
 /// AC4 + AC6: exhaustion under `FailClosed` returns
-/// `Err(RevocationDiscoveryFailed { source })` where `source` is
+/// `Err(RevocationUnknown { source, .. })` where `source` is
 /// `AcdpError::RevocationDiscoveryBudgetExceeded`, from all four
 /// `Err`-propagating entry points, `VerificationReport::policy_phase_error`
 /// from `fetch_report_diagnose`, and the error (both the wrapper and the
@@ -6205,13 +6249,13 @@ async fn budget_ac4_ac6_fail_closed_propagates_and_is_not_transient() {
 
     fn assert_budget_failure(err: &AcdpError) {
         match err {
-            AcdpError::RevocationDiscoveryFailed { source } => {
+            AcdpError::RevocationUnknown { source, .. } => {
                 assert!(
                     matches!(**source, AcdpError::RevocationDiscoveryBudgetExceeded(_)),
                     "got {source:?}"
                 );
             }
-            other => panic!("expected RevocationDiscoveryFailed, got {other:?}"),
+            other => panic!("expected RevocationUnknown, got {other:?}"),
         }
         assert!(
             !err.is_transient(),
@@ -6267,8 +6311,8 @@ async fn budget_ac4_ac6_fail_closed_propagates_and_is_not_transient() {
     .expect("fetch_report_diagnose never returns Err");
     assert!(verified.is_none());
     match &report.policy_phase_error {
-        Some(e @ AcdpError::RevocationDiscoveryFailed { .. }) => assert_budget_failure(e),
-        other => panic!("expected Some(RevocationDiscoveryFailed), got {other:?}"),
+        Some(e @ AcdpError::RevocationUnknown { .. }) => assert_budget_failure(e),
+        other => panic!("expected Some(RevocationUnknown), got {other:?}"),
     }
 }
 
@@ -6300,13 +6344,13 @@ async fn budget_ac5_proceed_with_known_surfaces_failure_without_erroring() {
         .revocation_discovery_failure()
         .expect("the swallowed budget failure must still be observable");
     match failure {
-        AcdpError::RevocationDiscoveryFailed { source } => {
+        AcdpError::RevocationUnknown { source, .. } => {
             assert!(matches!(
                 **source,
                 AcdpError::RevocationDiscoveryBudgetExceeded(_)
             ));
         }
-        other => panic!("expected RevocationDiscoveryFailed, got {other:?}"),
+        other => panic!("expected RevocationUnknown, got {other:?}"),
     }
 
     let (verified2, report) =
@@ -6316,15 +6360,15 @@ async fn budget_ac5_proceed_with_known_surfaces_failure_without_erroring() {
     assert!(verified2.revocation_discovery_failure().is_some());
     match &report.revocation_discovery {
         Some(Err(e)) => match e {
-            AcdpError::RevocationDiscoveryFailed { source } => {
+            AcdpError::RevocationUnknown { source, .. } => {
                 assert!(matches!(
                     **source,
                     AcdpError::RevocationDiscoveryBudgetExceeded(_)
                 ));
             }
-            other => panic!("expected RevocationDiscoveryFailed, got {other:?}"),
+            other => panic!("expected RevocationUnknown, got {other:?}"),
         },
-        other => panic!("expected Some(Err(RevocationDiscoveryFailed)), got {other:?}"),
+        other => panic!("expected Some(Err(RevocationUnknown)), got {other:?}"),
     }
 }
 
@@ -6416,13 +6460,13 @@ async fn budget_m1_seeded_revocation_bounds_retrieve_and_lineage() {
          the 6 searches and the one matching candidate's retrieve already went through",
     );
     match &err {
-        AcdpError::RevocationDiscoveryFailed { source } => {
+        AcdpError::RevocationUnknown { source, .. } => {
             assert!(
                 matches!(**source, AcdpError::RevocationDiscoveryBudgetExceeded(_)),
                 "got {source:?}"
             );
         }
-        other => panic!("expected RevocationDiscoveryFailed, got {other:?}"),
+        other => panic!("expected RevocationUnknown, got {other:?}"),
     }
 
     assert_eq!(
@@ -6525,7 +6569,7 @@ async fn budget_n2_max_bytes_combines_across_both_lookups() {
     assert!(
         matches!(
             &err2,
-            AcdpError::RevocationDiscoveryFailed { source }
+            AcdpError::RevocationUnknown { source, .. }
                 if matches!(**source, AcdpError::RevocationDiscoveryBudgetExceeded(_))
         ),
         "got {err2:?}"
@@ -6579,7 +6623,7 @@ async fn budget_n2_both_knobs_set_byte_exhaustion_does_not_consume_request_slot(
          first response, well before max_requests: Some(6) would ever bind",
     );
     match &err {
-        AcdpError::RevocationDiscoveryFailed { source } => {
+        AcdpError::RevocationUnknown { source, .. } => {
             assert!(
                 matches!(**source, AcdpError::RevocationDiscoveryBudgetExceeded(_)),
                 "got {source:?}"
@@ -6589,7 +6633,7 @@ async fn budget_n2_both_knobs_set_byte_exhaustion_does_not_consume_request_slot(
                 "the byte check must be the one that fires, not max_requests; got {source}"
             );
         }
-        other => panic!("expected RevocationDiscoveryFailed, got {other:?}"),
+        other => panic!("expected RevocationUnknown, got {other:?}"),
     }
     assert_eq!(
         rig.h.hits("search") - before_search,
@@ -6771,7 +6815,8 @@ async fn cache_ac1_fact_survives_a_registry_that_stops_serving_it() {
     h1.seed_revocations(&id.revoker, &id.target_fp, &[boundary])
         .await;
     let client1 = h1.client().with_revocation_cache(cache.clone());
-    let discovery = RevocationDiscovery::producer_signed_only();
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.freshness = std::time::Duration::ZERO; // every call must genuinely re-discover
     let policy = VerificationPolicy {
         revocations: RevocationPolicy::default().with_discovery(discovery),
         ..Default::default()
@@ -6782,7 +6827,7 @@ async fn cache_ac1_fact_survives_a_registry_that_stops_serving_it() {
         .expect_err(
             "warm-up: R must be found via discovery and fail closed (§7 step 4 — no receipt)",
         );
-    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+    assert!(matches!(err, AcdpError::KeyRevoked(_)), "got {err:?}");
 
     // A second, entirely separate real harness — same identity, no
     // revocation ever seeded. `hits("search")` below proves this call
@@ -6800,10 +6845,7 @@ async fn cache_ac1_fact_survives_a_registry_that_stops_serving_it() {
             "the cached fact R must still fail-close verification even though h2's own \
              discovery genuinely found nothing",
         );
-    assert!(
-        matches!(err2, AcdpError::KeyNotAuthorized(_)),
-        "got {err2:?}"
-    );
+    assert!(matches!(err2, AcdpError::KeyRevoked(_)), "got {err2:?}");
     assert!(
         h2.hits("search") > 0,
         "sanity: h2's discovery must have genuinely run (not been skipped) and found nothing"
@@ -6833,7 +6875,7 @@ async fn cache_ac2_facts_survive_induced_503_under_proceed_with_known() {
         VerifiedContext::fetch_with_policy(&client, &rig.h.resolver, &rig.target_ctx_id, &policy)
             .await
             .expect_err("warm-up discovery must find R and fail closed");
-    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+    assert!(matches!(err, AcdpError::KeyRevoked(_)), "got {err:?}");
 
     rig.h
         .set_error("search", axum::http::StatusCode::SERVICE_UNAVAILABLE);
@@ -6850,10 +6892,7 @@ async fn cache_ac2_facts_survive_induced_503_under_proceed_with_known() {
                 "the cached fact R must still fail-close verification even though this \
          call's discovery attempt failed (503)",
             );
-    assert!(
-        matches!(err2, AcdpError::KeyNotAuthorized(_)),
-        "got {err2:?}"
-    );
+    assert!(matches!(err2, AcdpError::KeyRevoked(_)), "got {err2:?}");
 }
 
 /// AC2 (continued): facts survive an induced `SearchTruncated`. Genuine
@@ -6886,7 +6925,7 @@ async fn cache_ac2_facts_survive_induced_search_truncated_under_proceed_with_kno
     let err = VerifiedContext::fetch_with_policy(&client1, &h1.resolver, &t1, &policy)
         .await
         .expect_err("warm-up: R must be found via discovery and fail closed");
-    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+    assert!(matches!(err, AcdpError::KeyRevoked(_)), "got {err:?}");
 
     // Minimal mock: DID doc + one target context + a search route that
     // always truncates. No `/lineages/{id}` route is needed — a search
@@ -6947,10 +6986,7 @@ async fn cache_ac2_facts_survive_induced_search_truncated_under_proceed_with_kno
             "the cached fact R must still fail-close verification even though this \
              call's discovery attempt hit SearchTruncated",
         );
-    assert!(
-        matches!(err2, AcdpError::KeyNotAuthorized(_)),
-        "got {err2:?}"
-    );
+    assert!(matches!(err2, AcdpError::KeyRevoked(_)), "got {err2:?}");
 }
 
 /// AC2 (continued): facts survive an induced Phase 1 (#258) budget
@@ -6973,7 +7009,7 @@ async fn cache_ac2_facts_survive_induced_budget_exhaustion_under_proceed_with_kn
         VerifiedContext::fetch_with_policy(&client, &rig.h.resolver, &rig.target_ctx_id, &policy)
             .await
             .expect_err("warm-up discovery must find R and fail closed");
-    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+    assert!(matches!(err, AcdpError::KeyRevoked(_)), "got {err:?}");
 
     let mut discovery2 = RevocationDiscovery::producer_signed_only();
     discovery2.max_requests = Some(NonZeroUsize::new(1).unwrap());
@@ -6989,21 +7025,19 @@ async fn cache_ac2_facts_survive_induced_budget_exhaustion_under_proceed_with_kn
                 "the cached fact R must still fail-close verification even though this \
          call's discovery attempt hit the request budget",
             );
-    assert!(
-        matches!(err2, AcdpError::KeyNotAuthorized(_)),
-        "got {err2:?}"
-    );
+    assert!(matches!(err2, AcdpError::KeyRevoked(_)), "got {err2:?}");
 }
 
-/// AC3: with a cache attached and `freshness: ZERO` (the default), a
-/// second identical verify searches EXACTLY as much as the first — the
-/// cache saves zero requests by default.
+/// AC3: with a cache attached and an explicit `freshness: ZERO` (the
+/// default through 0.14; 300 s since 0.15.0), a second identical verify
+/// searches EXACTLY as much as the first — no marker ever skips a lookup.
 #[tokio::test]
-async fn cache_ac3_default_freshness_zero_saves_no_requests() {
+async fn cache_ac3_explicit_zero_freshness_saves_no_requests() {
     let rig = discovery_rig(0xE3).await;
     let cache = RevocationCache::new();
     let client = rig.client.with_revocation_cache(cache);
-    let discovery = RevocationDiscovery::producer_signed_only();
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.freshness = std::time::Duration::ZERO;
     let policy = VerificationPolicy {
         revocations: RevocationPolicy::default().with_discovery(discovery),
         ..Default::default()
@@ -7023,9 +7057,61 @@ async fn cache_ac3_default_freshness_zero_saves_no_requests() {
     let delta2 = rig.h.hits("search") - after_call1;
     assert_eq!(
         delta2, delta1,
-        "with freshness: ZERO (the default), attaching a cache must save exactly zero \
-         requests — the second call must search exactly as much as the first"
+        "with freshness: ZERO, attaching a cache must save exactly zero requests — the \
+         second call must search exactly as much as the first"
     );
+}
+
+/// RFC-ACDP-0014 §8 "Caching" (0.5.0): the constructors' default
+/// 300 s negative freshness suppresses a repeat lookup out of the box, and
+/// the verdict reports when the cached absence was observed.
+#[tokio::test]
+async fn cache_ac3_default_freshness_suppresses_repeat_lookup_and_reports_age() {
+    let rig = discovery_rig(0xE4).await;
+    let client = rig.client.with_revocation_cache(RevocationCache::new());
+    let policy = VerificationPolicy {
+        revocations: RevocationPolicy::default()
+            .with_discovery(RevocationDiscovery::producer_signed_only()),
+        ..Default::default()
+    };
+
+    let before = rig.h.hits("search");
+    let first =
+        VerifiedContext::fetch_with_policy(&client, &rig.h.resolver, &rig.target_ctx_id, &policy)
+            .await
+            .expect("no revocation seeded; must verify cleanly");
+    assert!(
+        matches!(
+            first.revocation_verdict(),
+            acdp::client::RevocationVerdict::NotRevoked {
+                complete: true,
+                observed_at: None,
+                ..
+            }
+        ),
+        "a live lookup reports no cached age: {:?}",
+        first.revocation_verdict()
+    );
+    let after_call1 = rig.h.hits("search");
+    assert!(after_call1 > before, "the first call must actually search");
+
+    let second =
+        VerifiedContext::fetch_with_policy(&client, &rig.h.resolver, &rig.target_ctx_id, &policy)
+            .await
+            .expect("must verify cleanly again");
+    assert_eq!(
+        rig.h.hits("search"),
+        after_call1,
+        "a fresh cached complete absence must suppress the repeat lookup"
+    );
+    match second.revocation_verdict() {
+        acdp::client::RevocationVerdict::NotRevoked {
+            complete: true,
+            observed_at: Some(at),
+            ..
+        } => assert!(*at <= std::time::SystemTime::now()),
+        other => panic!("expected a cached complete NotRevoked with observed_at, got {other:?}"),
+    }
 }
 
 /// AC5a: with a generous `freshness` window, a marker minted by a clean
@@ -7124,7 +7210,7 @@ async fn cache_ac5b_freshness_expiry_reveals_new_revocation() {
             .expect_err(
                 "after the freshness window elapses, R2 must be discovered and fail closed",
             );
-    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+    assert!(matches!(err, AcdpError::KeyRevoked(_)), "got {err:?}");
     assert!(
         rig.h.hits("search") > after_warm,
         "discovery must have genuinely re-run after the freshness window elapsed"
@@ -7389,7 +7475,7 @@ async fn cache_ac7b_producer_signed_only_ignores_a_cached_registry_attested_fact
     )
     .await
     .expect_err("the registry-attested revocation must be found and fail closed");
-    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+    assert!(matches!(err, AcdpError::KeyRevoked(_)), "got {err:?}");
 
     let only = RevocationDiscovery::producer_signed_only();
     let policy_only = VerificationPolicy {
@@ -7543,7 +7629,8 @@ async fn cache_ac9_marker_precedes_capabilities_fetch() {
 /// AC11 (partial — the rest is `cargo semver-checks` plus a lockfile diff,
 /// run as part of verification, not expressible as a unit test):
 /// `RevocationDiscovery` still derives `Copy` with the new `freshness`
-/// field, and both named constructors still default it to `Duration::ZERO`.
+/// field, and both named constructors default it to the RFC-ACDP-0014 §8
+/// RECOMMENDED 300 s (`Duration::ZERO` before 0.15.0).
 #[test]
 fn cache_ac11_revocation_discovery_still_copy_with_freshness_field() {
     fn assert_copy<T: Copy>() {}
@@ -7551,7 +7638,14 @@ fn cache_ac11_revocation_discovery_still_copy_with_freshness_field() {
     let discovery = RevocationDiscovery::producer_signed_only();
     let _copy1 = discovery;
     let _copy2 = discovery;
-    assert_eq!(discovery.freshness, std::time::Duration::ZERO);
+    assert_eq!(
+        discovery.freshness,
+        acdp::client::RECOMMENDED_NEGATIVE_FRESHNESS
+    );
+    assert_eq!(
+        acdp::client::RECOMMENDED_NEGATIVE_FRESHNESS,
+        std::time::Duration::from_secs(300)
+    );
 }
 
 // ── Phase-2 verification-pass gap closures (fresh-Opus review of
@@ -7647,7 +7741,7 @@ async fn cache_blocker1_registry_attested_fact_does_not_cross_vantage() {
                 "vantage A: live discovery must find and apply the registry-attested revocation, \
          warming the cache with origin = A",
             );
-    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+    assert!(matches!(err, AcdpError::KeyRevoked(_)), "got {err:?}");
 
     let alt_base = format!("https://localhost:{}", rig.h.tls.addr.port());
     let client_b =
@@ -7690,7 +7784,8 @@ async fn cache_material2_dedup_holds_across_independent_real_discoveries() {
     h.seed_revocations(&id.revoker, &id.target_fp, &[boundary])
         .await;
     let client = h.client().with_revocation_cache(cache.clone());
-    let discovery = RevocationDiscovery::producer_signed_only(); // freshness: ZERO
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.freshness = std::time::Duration::ZERO;
     let policy = VerificationPolicy {
         revocations: RevocationPolicy::default().with_discovery(discovery),
         ..Default::default()
@@ -7701,7 +7796,7 @@ async fn cache_material2_dedup_holds_across_independent_real_discoveries() {
         let err = VerifiedContext::fetch_with_policy(&client, &h.resolver, &t, &policy)
             .await
             .expect_err(&format!("call {i}: R must still be found and fail closed"));
-        assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+        assert!(matches!(err, AcdpError::KeyRevoked(_)), "got {err:?}");
     }
     assert!(
         h.hits("search") > 6,
@@ -7747,7 +7842,7 @@ async fn cache_material3_seeds_producer_signed_fact_even_with_discover_none() {
     let err = VerifiedContext::fetch_with_policy(&client, &h.resolver, &t, &policy_discover)
         .await
         .expect_err("warm-up: discovery must find R and fail closed");
-    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+    assert!(matches!(err, AcdpError::KeyRevoked(_)), "got {err:?}");
 
     let searches_before = h.hits("search");
     let policy_no_discover = VerificationPolicy {
@@ -7761,10 +7856,7 @@ async fn cache_material3_seeds_producer_signed_fact_even_with_discover_none() {
              (MATERIAL-3) — this is what extends anti-rollback to fetch/fetch_current, which \
              can never set `discover` at all",
         );
-    assert!(
-        matches!(err2, AcdpError::KeyNotAuthorized(_)),
-        "got {err2:?}"
-    );
+    assert!(matches!(err2, AcdpError::KeyRevoked(_)), "got {err2:?}");
     assert_eq!(
         h.hits("search"),
         searches_before,
@@ -7841,7 +7933,7 @@ async fn resolver_ac1_walk_scoped_cache_suppresses_repeat_discovery_by_default()
     let discovery = RevocationDiscovery::producer_signed_only();
     assert_eq!(
         discovery.freshness,
-        std::time::Duration::ZERO,
+        acdp::client::RECOMMENDED_NEGATIVE_FRESHNESS,
         "sanity: genuine defaults — producer_signed_only()'s freshness is untouched"
     );
     let policy = RevocationPolicy::default().with_discovery(discovery);
@@ -7878,8 +7970,8 @@ async fn resolver_ac1_walk_scoped_cache_suppresses_repeat_discovery_by_default()
 
 /// AC2: the honest counterpart to AC1. An EXPLICITLY caller-supplied cache
 /// (`with_revocation_cache`, bypassing the resolver's own walk-scoped
-/// default) with `freshness` left at its type default (`Duration::ZERO`)
-/// suppresses NOTHING — discovery still runs once per node. Proves the
+/// default) with `freshness` explicitly `Duration::ZERO` (the default is
+/// 300 s since 0.15.0) suppresses NOTHING — discovery still runs once per node. Proves the
 /// cost claim is falsifiable in both directions: merely sharing a cache
 /// object is not what suppresses discovery; a nonzero `freshness` is what
 /// does, exactly as in Phase 2's direct (non-resolver) model.
@@ -7905,12 +7997,8 @@ async fn resolver_ac2_explicit_cache_with_zero_freshness_suppresses_nothing() {
         .expect("found")
         .body;
 
-    let discovery = RevocationDiscovery::producer_signed_only();
-    assert_eq!(
-        discovery.freshness,
-        std::time::Duration::ZERO,
-        "sanity: producer_signed_only()'s freshness defaults to ZERO"
-    );
+    let mut discovery = RevocationDiscovery::producer_signed_only();
+    discovery.freshness = std::time::Duration::ZERO;
     let policy = RevocationPolicy::default().with_discovery(discovery);
 
     let resolver = CrossRegistryResolver::new()
@@ -8015,7 +8103,7 @@ async fn resolver_ac4b_seeded_client_with_its_own_cache_is_preserved() {
             .await
             .expect_err("warm-up: discovery must find the seeded revocation and fail closed");
     assert!(
-        matches!(warm_err, AcdpError::KeyNotAuthorized(_)),
+        matches!(warm_err, AcdpError::KeyRevoked(_)),
         "got {warm_err:?}"
     );
 
@@ -8032,7 +8120,7 @@ async fn resolver_ac4b_seeded_client_with_its_own_cache_is_preserved() {
          overwritten by the resolver's own (empty) cache — its already-recorded fact must \
          still fail closed",
     );
-    assert!(matches!(err, AcdpError::KeyNotAuthorized(_)), "got {err:?}");
+    assert!(matches!(err, AcdpError::KeyRevoked(_)), "got {err:?}");
 }
 
 /// AC5: **vantage binding is pinned, not merely structural.** A freshness

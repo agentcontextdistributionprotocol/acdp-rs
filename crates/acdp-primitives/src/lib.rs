@@ -13,6 +13,7 @@
 pub mod error;
 pub mod limits;
 pub mod primitives;
+pub mod revocation;
 pub mod serde_helpers;
 pub mod time;
 // The `WireError` envelope is *defined* here (down in `acdp-primitives`
@@ -28,6 +29,10 @@ pub mod wire_error;
 pub use error::{AcdpError, SupersessionReason};
 pub use primitives::{AgentDid, ContentHash, ContextType, CtxId, LineageId, Status, Visibility};
 #[doc(hidden)]
+pub use revocation::{
+    RevocationEffect, RevocationRefusal, RevocationSource, RevocationTrustClass, SourcedRevocation,
+    UnknownReason,
+};
 pub use wire_error::{WireError, WireErrorBody};
 
 // ── Protocol version ──────────────────────────────────────────────────────────

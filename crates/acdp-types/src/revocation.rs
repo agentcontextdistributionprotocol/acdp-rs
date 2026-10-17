@@ -18,7 +18,10 @@
 use crate::body::Body;
 use crate::publish::PublishRequest;
 use acdp_primitives::error::AcdpError;
-use acdp_primitives::primitives::{AgentDid, ContextType, Visibility};
+use acdp_primitives::primitives::{AgentDid, ContextType, CtxId, Visibility};
+pub use acdp_primitives::revocation::{
+    RevocationEffect, RevocationRefusal, RevocationSource, SourcedRevocation, UnknownReason,
+};
 use acdp_primitives::time::fmt_rfc3339_ms;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -26,24 +29,7 @@ use serde::{Deserialize, Serialize};
 /// Maximum length of `metadata.reason` (RFC-ACDP-0014 §4).
 pub const MAX_REASON_CHARS: usize = 1024;
 
-/// The two trust classes of RFC-ACDP-0014 §5–§6. They carry different
-/// authority and MUST be reported distinguishably — never collapsed
-/// (§6).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RevocationTrustClass {
-    /// Signed by the producer's own current, non-revoked key (§5): the
-    /// stronger class, backed by the same trust anchor as every ACDP
-    /// body. Consumers act on it without further judgment (§7).
-    ProducerSigned,
-    /// Published under the registry's identity on the producer's
-    /// behalf after an out-of-band identity check (§6): the weaker,
-    /// lost-everything fallback. It imports registry trust — a hostile
-    /// or deceived registry can fabricate one. Strict-profile default:
-    /// apply §7 only for contexts served by or receipted by that same
-    /// registry; seek corroboration before applying it globally.
-    RegistryAttested,
-}
+pub use acdp_primitives::revocation::RevocationTrustClass;
 
 /// Typed, shape-validated view of a `key-revocation` context body
 /// (RFC-ACDP-0014 §4).
@@ -92,6 +78,13 @@ pub struct KeyRevocation {
     /// of a registry it talks to — see
     /// [`Self::cross_check_registry_binding`].
     pub trust_class: RevocationTrustClass,
+    /// The revocation context's `ctx_id` (0.15.0, RFC-ACDP-0014 §7
+    /// "Attribution"): `Some` when parsed from a [`Body`], `None` from a
+    /// [`PublishRequest`] (not yet assigned). Registry-assigned and outside
+    /// the signature: it identifies the revocation in reports, it does not
+    /// authenticate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ctx_id: Option<CtxId>,
 }
 
 impl KeyRevocation {
@@ -122,12 +115,29 @@ impl KeyRevocation {
     /// This does NOT verify the body's hash or signature — a parsed
     /// revocation is untrusted until the strict §5.11 pipeline passes.
     pub fn from_body(body: &Body) -> Result<Self, AcdpError> {
-        Self::from_parts(
+        let mut revocation = Self::from_parts(
             &body.context_type,
             &body.visibility,
             body.metadata.as_ref(),
             &body.agent_id,
             &body.signature.key_id,
+        )?;
+        revocation.ctx_id = Some(body.ctx_id.clone());
+        Ok(revocation)
+    }
+
+    /// Attribute this revocation (RFC-ACDP-0014 §7 "Attribution", 0.5.0)
+    /// with where the consumer obtained it.
+    #[must_use]
+    pub fn sourced(&self, source: RevocationSource) -> SourcedRevocation {
+        SourcedRevocation::new(
+            self.revoked_key_fingerprint.clone(),
+            self.compromised_since,
+            self.ctx_id.clone(),
+            self.publisher.clone(),
+            self.revoked_key_controller.clone(),
+            self.trust_class,
+            source,
         )
     }
 
@@ -243,6 +253,7 @@ impl KeyRevocation {
             revoked_key_controller,
             publisher: agent_id.clone(),
             trust_class,
+            ctx_id: None,
         };
 
         // §5 step 2, pure sub-case: a did:key signer's fingerprint is
@@ -633,10 +644,13 @@ mod tests {
         let req = publish_request_with_metadata(metadata.clone());
         let body = body_from_pr_request(&req);
 
-        assert_eq!(
-            KeyRevocation::from_publish_request(&req).unwrap(),
-            KeyRevocation::from_body(&body).unwrap()
-        );
+        let from_body = KeyRevocation::from_body(&body).unwrap();
+        // Only a stored body has a registry-assigned ctx_id.
+        assert_eq!(from_body.ctx_id.as_ref(), Some(&body.ctx_id));
+        let mut from_request = KeyRevocation::from_publish_request(&req).unwrap();
+        assert_eq!(from_request.ctx_id, None);
+        from_request.ctx_id = Some(body.ctx_id.clone());
+        assert_eq!(from_request, from_body);
     }
 
     /// Builds the `Body` a registry would derive from `req`, mirroring
@@ -823,6 +837,7 @@ mod tests {
             revoked_key_controller: AgentDid::new("did:web:agents.example.com:producer"),
             publisher: AgentDid::new(publisher),
             trust_class: RevocationTrustClass::RegistryAttested,
+            ctx_id: None,
         }
     }
 
@@ -928,6 +943,7 @@ mod tests {
             revoked_key_controller: AgentDid::new("did:web:agents.example.com:p"),
             publisher: AgentDid::new("did:web:agents.example.com:p"),
             trust_class: RevocationTrustClass::ProducerSigned,
+            ctx_id: None,
         }
     }
 

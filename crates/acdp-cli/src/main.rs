@@ -168,6 +168,9 @@ fn classify(e: &AcdpError) -> &'static str {
         AcdpError::NotFound(_) => "not_found",
         AcdpError::NotAuthorized(_) => "not_authorized",
         AcdpError::KeyNotAuthorized(_) => "key_not_authorized",
+        AcdpError::KeyRevoked(_) => "key_not_authorized",
+        // Not a wire code: discovery could not establish revocation status.
+        AcdpError::RevocationUnknown { .. } => "revocation_unknown",
         AcdpError::KeyResolution(_) => "key_resolution_failed",
         AcdpError::KeyResolutionUnreachable(_) => "key_resolution_unreachable",
         AcdpError::CrossRegistryResolutionFailed(_) => "cross_registry_resolution_failed",
@@ -776,6 +779,16 @@ mod tests {
             (
                 AcdpError::KeyNotAuthorized("x".into()),
                 "key_not_authorized",
+            ),
+            // 0.15.0: an unfinished revocation discovery is not a wire code
+            // and is never reported as an internal error.
+            (
+                AcdpError::RevocationUnknown {
+                    reason: acdp::types::revocation::UnknownReason::Transient,
+                    source: Box::new(AcdpError::KeyResolutionUnreachable("x".into())),
+                    detail: "x".into(),
+                },
+                "revocation_unknown",
             ),
             (
                 AcdpError::KeyResolution("x".into()),

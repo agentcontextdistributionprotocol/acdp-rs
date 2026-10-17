@@ -160,3 +160,52 @@ fn prove_publish_identity_future_is_send() {
 
     assert_send(server.prove_publish_identity(&req, &resolver));
 }
+
+/// 0.15.0 (Seam): the typed revocation-verdict surface is `Send + Sync`,
+/// and the `find_revocations_verdict` re-check future is `Send`.
+#[test]
+fn revocation_verdict_surface_is_send() {
+    use acdp::client::{
+        find_revocations_verdict, CrossRegistryResolver, RegistryClient, RevocationAssessment,
+        RevocationCache, RevocationPolicy, RevocationVerdict, SourcedRevocation, VerifiedContext,
+    };
+    use acdp::did::WebResolver;
+    use acdp::error::AcdpError;
+    use acdp::types::AgentDid;
+
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<RevocationVerdict>();
+    assert_send_sync::<RevocationAssessment>();
+    assert_send_sync::<SourcedRevocation>();
+    assert_send_sync::<AcdpError>();
+    assert_send_sync::<RevocationCache>();
+    assert_send_sync::<VerifiedContext>();
+    assert_send_sync::<RegistryClient>();
+    assert_send_sync::<CrossRegistryResolver>();
+
+    let client = RegistryClient::new("https://registry.example.com").unwrap();
+    let resolver = WebResolver::new();
+    let agent_id = AgentDid::new("did:web:agents.example.com:test");
+    let policy = RevocationPolicy::default();
+    assert_send(find_revocations_verdict(
+        &client,
+        &resolver,
+        &agent_id,
+        "sha256:00",
+        None,
+        &policy,
+    ));
+
+    // `recheck_revocation` is reachable only from a `VerifiedContext`; a
+    // hand-built one is impossible, so assert on the method's future type
+    // through a function pointer-shaped helper instead of a live value.
+    fn recheck_is_send<'a>(
+        v: &'a VerifiedContext,
+        client: &'a RegistryClient,
+        resolver: &'a WebResolver,
+        policy: &'a RevocationPolicy,
+    ) -> impl std::future::Future + Send + 'a {
+        v.recheck_revocation(client, resolver, policy)
+    }
+    let _ = recheck_is_send;
+}

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-types-v0.14.5...acdp-types-v0.15.0) - 2026-10-17
+
+### Added
+
+- *(client)* read auth, DNS-hook resolver clients, log/witness verification policy
+- *(client)* [**breaking**] typed, attributable revocation verdicts (RFC-ACDP-0014 §7/§8, 0.5.0)
+- [**breaking**] receipt-key status, VerifyAndReport, and lineage/origin binding
+
+### Fixed
+
+- [**breaking**] raw-JSON content_hash, transient DID non-2xx, Accept header, v0.1.0 did:web
+
 ## [0.14.2](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-types-v0.14.1...acdp-types-v0.14.2) - 2026-09-25
 
 ### Fixed

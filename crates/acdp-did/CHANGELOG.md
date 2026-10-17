@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-did-v0.14.5...acdp-did-v0.15.0) - 2026-10-17
+
+### Added
+
+- *(client)* read auth, DNS-hook resolver clients, log/witness verification policy
+- [**breaking**] forced DID refresh and historical receipt arm for revocation discovery
+
+### Fixed
+
+- [**breaking**] raw-JSON content_hash, transient DID non-2xx, Accept header, v0.1.0 did:web
+
 ## [0.14.4](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-did-v0.14.3...acdp-did-v0.14.4) - 2026-10-04
 
 ### Fixed

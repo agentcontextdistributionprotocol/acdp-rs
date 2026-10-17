@@ -709,15 +709,21 @@ let policy = VerificationPolicy {
 |---|---|
 | `Ignore` (default) | The proof is preserved verbatim and not evaluated. |
 | `VerifyIfPresent` | A present proof is verified and the verdict reported. A failure never fails verification. |
-| `Require` | Fails with `invalid_log_proof` unless the proof is present and verifies. A registry with the profile MAY still leave a proof off a response (§10), so use this only with registries known to serve it. |
+| `Require` | Fails unless the proof is present and verifies: `invalid_log_proof` when it is absent or fails, `invalid_receipt` when it is cannot-verify. A registry with the profile MAY still leave a proof off a response (§10), so use this only with registries known to serve it. |
 
 How the proof is verified (§9.1 step 1):
 - **The leaf is rebuilt from verified material only.** The consumer
   reconstructs it from the body, the recomputed `content_hash`, the
   receipt's verified producer-key fingerprint, and the receipt's
   preimage hash. It never uses a leaf the registry supplies.
-- **A verified receipt is required.** Without one the verdict is an
-  error, and under `Require` verification fails.
+- **A verified receipt is required.** Without one, the proof cannot be
+  checked, and the verdict is `LogInclusionVerdict::CannotVerify` with a
+  `CannotVerifyReason`: `ReceiptAbsent`, `ReceiptInvalid` (the failure is
+  in `receipt_verdict()`, under `ReceiptPolicy::VerifyAndReport`) or
+  `ReceiptNotVerified` (`ReceiptPolicy::Ignore`). Cannot-verify is not
+  "logged" and not `invalid_log_proof`: the log has not been shown to
+  misbehave. A `leaf` member echoed by the registry never stands in for
+  the receipt, even when it matches.
 - **The checkpoint is bound to the registry.** It must be signed by the
   registry's receipt key and its `log_id` must name the serving authority
   and `capabilities.registry_did`. That costs one capabilities fetch when
@@ -734,7 +740,9 @@ How the witness quorum works:
   `with_document`.
 - **Checkpoint.** Setting `witness_quorum` verifies the checkpoint even
   under `LogInclusionPolicy::Ignore`. A cosignature only means something
-  over a checkpoint you verified yourself.
+  over a checkpoint you verified yourself. The checkpoint is verified on
+  its own, so a cannot-verify inclusion still gets a quorum verdict over
+  a checkpoint that verifies.
 
 | `WitnessEnforcement` | Effect |
 |---|---|
@@ -746,9 +754,9 @@ The verdicts:
 
 | Accessor / report field | Meaning |
 |---|---|
-| `log_inclusion_verdict()` / `log_inclusion_verdict` | `None` means not evaluated (policy `Ignore` with no witness policy, or no proof served). `Some(Ok(()))` means the proof verified. `Some(Err(_))` means it failed (`invalid_log_proof`). |
+| `log_inclusion_verdict()` / `log_inclusion_verdict` | A `LogInclusionVerdict`, or `None` when not evaluated (policy `Ignore` with no witness policy, or no proof served). `Included` means the proof verified; `CannotVerify(reason)` means there was no verified receipt to check it against; `Invalid(err)` means it was checked and failed (`invalid_log_proof`). `as_str()` gives the report token: `included`, `cannot_verify`, `invalid_log_proof`, or `error` for a transport failure. |
 | `verified_log_inclusion()` | The verified proof and signed checkpoint. Keep the checkpoint to check consistency with later ones (§9.2). |
-| `witness_quorum()` / `witness_quorum` | `None` when no witness policy was set. `Some(Err(_))` when there was no verified checkpoint to corroborate. `Some(Ok(WitnessQuorumReport))` otherwise: `meets_quorum`, `meets_fresh_quorum`, the verified `witnesses`, and per-cosignature `failures`. |
+| `witness_quorum()` / `witness_quorum` | `None` when no witness policy was set. `Some(Err(_))` (`invalid_log_proof`) when there was no verified checkpoint to corroborate. `Some(Ok(WitnessQuorumReport))` otherwise: `meets_quorum`, `meets_fresh_quorum`, the verified `witnesses`, and per-cosignature `failures`. |
 
 ### Diagnostics: fetch_report
 

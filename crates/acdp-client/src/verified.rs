@@ -9,7 +9,10 @@ use acdp_verify::Verifier;
 use std::time::Duration;
 
 use super::revocation_verdict::{RevocationAssessment, RevocationVerdict, SourcedRevocation};
-use super::transparency::{LogInclusionPolicy, TransparencyVerdicts, WitnessQuorumPolicy};
+use super::transparency::{
+    CannotVerifyReason, LogInclusionPolicy, LogInclusionVerdict, TransparencyVerdicts,
+    WitnessQuorumPolicy,
+};
 use super::witness::WitnessQuorumReport;
 
 /// Consumer-tunable strictness for [`VerifiedContext::fetch_with_policy`],
@@ -979,7 +982,7 @@ impl Retrieved {
         report.revocation_discovery = self.revocation.discovery.clone();
         report.revocation_verdict = Some(self.revocation.verdict.clone());
         report.revocation_hints = self.revocation.hints.clone();
-        report.log_inclusion_verdict = self.transparency.log_verdict();
+        report.log_inclusion_verdict = self.transparency.log.clone();
         report.witness_quorum = self.transparency.witness.clone();
     }
 
@@ -1395,12 +1398,16 @@ impl VerifiedContext {
         // above (recomputed content_hash, verified receipt). Its verdicts
         // are independent of the ones above (§9.3), and under the default
         // policies they never fail verification.
-        let material = match (&verified_receipt, &ctx.registry_receipt) {
-            (Some(receipt), Some(receipt_value)) => Some(super::transparency::LeafMaterial {
+        // Without a verified receipt the inclusion is cannot-verify (spec
+        // #78 L1), attributed to the receipt state.
+        let material = match (&verified_receipt, &ctx.registry_receipt, &receipt_verdict) {
+            (Some(receipt), Some(receipt_value), _) => Ok(super::transparency::LeafMaterial {
                 receipt,
                 receipt_value,
             }),
-            _ => None,
+            (_, None, _) => Err(CannotVerifyReason::ReceiptAbsent),
+            (_, Some(_), Some(Err(_))) => Err(CannotVerifyReason::ReceiptInvalid),
+            (_, Some(_), _) => Err(CannotVerifyReason::ReceiptNotVerified),
         };
         let transparency = super::transparency::evaluate(
             client,
@@ -1844,32 +1851,39 @@ impl VerifiedContext {
     /// - `None`: not evaluated. Either the policy is
     ///   [`LogInclusionPolicy::Ignore`] with no witness policy, or the
     ///   response carried no `log_inclusion`.
-    /// - `Some(Ok(()))`: the proof verified. The context is included in
-    ///   the log the registry committed to; see
+    /// - [`LogInclusionVerdict::Included`]: the proof verified. The
+    ///   context is included in the log the registry committed to; see
     ///   [`Self::verified_log_inclusion`].
-    /// - `Some(Err(_))`: the proof was present and failed (wire code
-    ///   `invalid_log_proof`). Under the default policy the context still
-    ///   verified.
+    /// - [`LogInclusionVerdict::CannotVerify`]: no verified receipt to
+    ///   rebuild the leaf from. Not logged, and not a log failure.
+    /// - [`LogInclusionVerdict::Invalid`]: the proof was checked and
+    ///   failed (`invalid_log_proof`).
+    ///
+    /// Under the default policy, no verdict fails verification.
     #[must_use]
-    pub fn log_inclusion_verdict(&self) -> Option<Result<(), AcdpError>> {
-        self.transparency.log_verdict()
+    pub fn log_inclusion_verdict(&self) -> Option<&LogInclusionVerdict> {
+        self.transparency.log.as_ref()
     }
 
     /// The verified inclusion proof, including the signed checkpoint, when
-    /// [`Self::log_inclusion_verdict`] is `Some(Ok(()))`. Keep the
-    /// checkpoint to check consistency with later ones (RFC-ACDP-0012 §9.2).
+    /// [`Self::log_inclusion_verdict`] is
+    /// [`LogInclusionVerdict::Included`]. Keep the checkpoint to check
+    /// consistency with later ones (RFC-ACDP-0012 §9.2).
     #[must_use]
     pub fn verified_log_inclusion(&self) -> Option<&acdp_types::log::LogInclusion> {
-        match &self.transparency.log {
-            Some(Ok(inclusion)) => Some(inclusion),
-            _ => None,
-        }
+        self.transparency
+            .log
+            .as_ref()
+            .and_then(LogInclusionVerdict::inclusion)
     }
 
     /// The RFC-ACDP-0015 §8 witness-quorum verdict over the verified
     /// checkpoint.
     /// - `None`: [`VerificationPolicy::witness_quorum`] was unset.
-    /// - `Some(Err(_))`: there was no verified checkpoint to corroborate.
+    /// - `Some(Err(_))`: there was no verified checkpoint to corroborate
+    ///   (`invalid_log_proof`). The checkpoint is verified on its own, so
+    ///   a cannot-verify inclusion still has a quorum when its checkpoint
+    ///   verifies.
     /// - `Some(Ok(report))`: the quorum was evaluated.
     ///
     /// Read the quorum from the report:
@@ -2111,7 +2125,7 @@ pub struct VerificationReport {
     /// separately from every verdict above; see
     /// [`VerifiedContext::log_inclusion_verdict`]. `None` when not
     /// evaluated or when the authorization phases were not reached.
-    pub log_inclusion_verdict: Option<Result<(), AcdpError>>,
+    pub log_inclusion_verdict: Option<LogInclusionVerdict>,
     /// The RFC-ACDP-0015 §8 witness-quorum verdict (0.4.0); see
     /// [`VerifiedContext::witness_quorum`]. `None` when
     /// [`VerificationPolicy::witness_quorum`] is unset or when the

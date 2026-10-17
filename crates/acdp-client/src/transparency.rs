@@ -15,10 +15,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use acdp_did::web::WebResolver;
 use acdp_primitives::error::AcdpError;
 use acdp_types::body::FullContext;
-use acdp_types::log::{LogInclusion, LogLeaf};
+use acdp_types::log::{LogCheckpoint, LogInclusion, LogLeaf};
 use acdp_types::receipt::RegistryReceipt;
 
-use crate::log::verify_log_inclusion_value;
+use crate::log::verify_log_checkpoint_value;
 use crate::witness::{evaluate_witness_quorum, WitnessPolicy, WitnessQuorumReport};
 
 /// RFC-ACDP-0012 §9.3 step 4 forward clock-skew allowance applied to the
@@ -42,10 +42,12 @@ pub enum LogInclusionPolicy {
     /// report the verdict. A failure is reported and never fails
     /// verification (§9.3).
     VerifyIfPresent,
-    /// Fail verification with `invalid_log_proof` unless `log_inclusion`
-    /// is present and verifies. Inclusion needs the RFC-ACDP-0010 receipt
-    /// to rebuild the leaf (§9.1 step 1), so a context without a verified
-    /// receipt fails too. A registry that advertises
+    /// Fail verification unless `log_inclusion` is present and verifies.
+    /// An absent or failing proof fails with `invalid_log_proof`.
+    /// Inclusion needs the RFC-ACDP-0010 receipt to rebuild the leaf
+    /// (§9.1 step 1), so a [`LogInclusionVerdict::CannotVerify`] fails
+    /// too, with `invalid_receipt`: the receipt is at fault, not the log
+    /// (spec #78 L1). A registry that advertises
     /// `acdp-registry-transparency-log` MAY still leave the proof off a
     /// response (§10). Use this only with registries known to serve it.
     Require,
@@ -149,21 +151,124 @@ impl WitnessQuorumPolicy {
     }
 }
 
+/// Why a served inclusion proof could not be checked (spec #78 L1,
+/// RFC-ACDP-0012 §9.1 step 1). Each names the receipt state, which is
+/// reported in full by the receipt verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CannotVerifyReason {
+    /// The response carried no `registry_receipt`.
+    ReceiptAbsent,
+    /// A `registry_receipt` was served and failed RFC-ACDP-0010 §8
+    /// verification. The failure itself is
+    /// [`VerifiedContext::receipt_verdict`](crate::VerifiedContext::receipt_verdict).
+    ReceiptInvalid,
+    /// A `registry_receipt` was served but not verified, because
+    /// [`VerificationPolicy::receipts`](crate::VerificationPolicy::receipts)
+    /// is [`ReceiptPolicy::Ignore`](crate::ReceiptPolicy::Ignore).
+    ReceiptNotVerified,
+}
+
+impl CannotVerifyReason {
+    /// A stable snake_case name for logs and reports.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReceiptAbsent => "receipt_absent",
+            Self::ReceiptInvalid => "receipt_invalid",
+            Self::ReceiptNotVerified => "receipt_not_verified",
+        }
+    }
+}
+
+impl std::fmt::Display for CannotVerifyReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The RFC-ACDP-0012 §9 log-inclusion verdict, reported separately from
+/// the body, receipt and revocation verdicts (§9.3).
+///
+/// Three outcomes, never conflated:
+/// - [`Self::Included`]: the proof verified against a leaf rebuilt from
+///   verified material. Only this one means "logged".
+/// - [`Self::CannotVerify`]: the proof could not be checked, because no
+///   verified receipt was available to rebuild the leaf from (spec #78
+///   L1). It is neither logged nor `invalid_log_proof`, and it is not
+///   evidence of a log violation. An echoed `leaf` member is never used
+///   instead.
+/// - [`Self::Invalid`]: the proof was checked and failed
+///   (`invalid_log_proof`).
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum LogInclusionVerdict {
+    /// The proof verified. Keep the checkpoint to check consistency with
+    /// later ones (RFC-ACDP-0012 §9.2).
+    Included(Box<LogInclusion>),
+    /// The proof could not be checked.
+    CannotVerify(CannotVerifyReason),
+    /// The proof was checked and failed ([`AcdpError::InvalidLogProof`],
+    /// or a transport error while resolving the registry key).
+    Invalid(AcdpError),
+}
+
+impl LogInclusionVerdict {
+    /// `true` only for [`Self::Included`].
+    #[must_use]
+    pub fn is_included(&self) -> bool {
+        matches!(self, Self::Included(_))
+    }
+
+    /// The verified proof, for [`Self::Included`].
+    #[must_use]
+    pub fn inclusion(&self) -> Option<&LogInclusion> {
+        match self {
+            Self::Included(inclusion) => Some(inclusion),
+            _ => None,
+        }
+    }
+
+    /// The reason, for [`Self::CannotVerify`].
+    #[must_use]
+    pub fn cannot_verify_reason(&self) -> Option<CannotVerifyReason> {
+        match self {
+            Self::CannotVerify(reason) => Some(*reason),
+            _ => None,
+        }
+    }
+
+    /// The failure, for [`Self::Invalid`].
+    #[must_use]
+    pub fn error(&self) -> Option<&AcdpError> {
+        match self {
+            Self::Invalid(e) => Some(e),
+            _ => None,
+        }
+    }
+
+    /// The report token: `included`, `cannot_verify`,
+    /// `invalid_log_proof`, or `error` for an [`Self::Invalid`] that is not
+    /// a proof failure (for example an unreachable registry DID document;
+    /// see [`AcdpError::is_transient`]).
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Included(_) => "included",
+            Self::CannotVerify(_) => "cannot_verify",
+            Self::Invalid(AcdpError::InvalidLogProof(_)) => "invalid_log_proof",
+            Self::Invalid(_) => "error",
+        }
+    }
+}
+
 /// The two transparency verdicts of one verification.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TransparencyVerdicts {
     /// `None` when not evaluated.
-    pub(crate) log: Option<Result<LogInclusion, AcdpError>>,
+    pub(crate) log: Option<LogInclusionVerdict>,
     /// `None` when no witness policy was set.
     pub(crate) witness: Option<Result<WitnessQuorumReport, AcdpError>>,
-}
-
-impl TransparencyVerdicts {
-    pub(crate) fn log_verdict(&self) -> Option<Result<(), AcdpError>> {
-        self.log
-            .as_ref()
-            .map(|r| r.as_ref().map(|_| ()).map_err(Clone::clone))
-    }
 }
 
 /// The verified material the leaf is rebuilt from (§9.1 step 1).
@@ -176,11 +281,12 @@ pub(crate) struct LeafMaterial<'a> {
 /// policy.
 ///
 /// The caller passes a `ctx` whose `body.content_hash` is the recomputed
-/// value. `material` is `None` when no receipt was verified.
+/// value. `material` is the reason the leaf cannot be rebuilt when no
+/// receipt was verified.
 pub(crate) async fn evaluate(
     client: &crate::RegistryClient,
     ctx: &FullContext,
-    material: Option<LeafMaterial<'_>>,
+    material: Result<LeafMaterial<'_>, CannotVerifyReason>,
     serving_authority: &str,
     log_policy: LogInclusionPolicy,
     witness_policy: Option<&WitnessQuorumPolicy>,
@@ -191,12 +297,25 @@ pub(crate) async fn evaluate(
         LogInclusionPolicy::VerifyIfPresent | LogInclusionPolicy::Require => true,
     };
     let mut out = TransparencyVerdicts::default();
+    // The §9.3-verified checkpoint, for the witness quorum (spec #78 L2).
+    let mut checkpoint: Option<Result<LogCheckpoint, AcdpError>> = None;
 
     if evaluate_log {
         out.log = match &ctx.log_inclusion {
-            Some(value) => Some(
-                verify_inclusion(client, ctx, value, material, serving_authority, resolver).await,
-            ),
+            Some(value) => {
+                let (verdict, cp) = verify_inclusion(
+                    client,
+                    ctx,
+                    value,
+                    material,
+                    serving_authority,
+                    witness_policy.is_some(),
+                    resolver,
+                )
+                .await;
+                checkpoint = cp;
+                Some(verdict)
+            }
             None if log_policy == LogInclusionPolicy::Require => {
                 return Err(AcdpError::InvalidLogProof(
                     "policy requires a transparency-log inclusion proof but the response \
@@ -207,15 +326,25 @@ pub(crate) async fn evaluate(
             None => None,
         };
         if log_policy == LogInclusionPolicy::Require {
-            if let Some(Err(e)) = &out.log {
-                return Err(e.clone());
+            match &out.log {
+                Some(LogInclusionVerdict::Invalid(e)) => return Err(e.clone()),
+                // Fail closed on the receipt, never on the log (spec #78
+                // L1): the log has not been shown to misbehave.
+                Some(LogInclusionVerdict::CannotVerify(reason)) => {
+                    return Err(AcdpError::InvalidReceipt(format!(
+                        "policy requires a verified transparency-log inclusion proof, but \
+                         it cannot be verified without a verified registry receipt \
+                         ({reason}; RFC-ACDP-0012 §9.1 step 1)"
+                    )));
+                }
+                _ => {}
             }
         }
     }
 
     if let Some(policy) = witness_policy {
-        let verdict = match &out.log {
-            Some(Ok(inclusion)) => Ok(evaluate_witnesses(ctx, inclusion, policy, resolver).await),
+        let verdict = match checkpoint {
+            Some(Ok(cp)) => Ok(evaluate_witnesses(ctx, &cp, policy, resolver).await),
             Some(Err(e)) => Err(AcdpError::InvalidLogProof(format!(
                 "witness quorum not evaluated: the checkpoint did not verify ({e})"
             ))),
@@ -231,37 +360,61 @@ pub(crate) async fn evaluate(
     Ok(out)
 }
 
+/// Verify a served `log_inclusion`. Returns the log verdict and, when it
+/// was checked, the §9.3 checkpoint verdict.
+///
+/// The checkpoint is verified on its own first (§9.3 needs no leaf), so a
+/// witness quorum can be counted over it even when the inclusion is
+/// cannot-verify. Without a witness policy and without a verified receipt
+/// nothing is fetched.
 async fn verify_inclusion(
     client: &crate::RegistryClient,
     ctx: &FullContext,
     value: &serde_json::Value,
-    material: Option<LeafMaterial<'_>>,
+    material: Result<LeafMaterial<'_>, CannotVerifyReason>,
+    serving_authority: &str,
+    need_checkpoint: bool,
+    resolver: &WebResolver,
+) -> (
+    LogInclusionVerdict,
+    Option<Result<LogCheckpoint, AcdpError>>,
+) {
+    if let Err(reason) = &material {
+        if !need_checkpoint {
+            return (LogInclusionVerdict::CannotVerify(*reason), None);
+        }
+    }
+    let checkpoint = verify_checkpoint(client, value, serving_authority, resolver).await;
+    let material = match material {
+        Ok(material) => material,
+        Err(reason) => return (LogInclusionVerdict::CannotVerify(reason), Some(checkpoint)),
+    };
+    let verdict = match &checkpoint {
+        Err(e) => LogInclusionVerdict::Invalid(e.clone()),
+        Ok(_) => match check_leaf(ctx, value, &material) {
+            Ok(inclusion) => LogInclusionVerdict::Included(Box::new(inclusion)),
+            Err(e) => LogInclusionVerdict::Invalid(e),
+        },
+    };
+    (verdict, Some(checkpoint))
+}
+
+/// §9.3 over the proof's embedded checkpoint, bound to
+/// `capabilities.registry_did` fetched from the serving authority.
+async fn verify_checkpoint(
+    client: &crate::RegistryClient,
+    value: &serde_json::Value,
     serving_authority: &str,
     resolver: &WebResolver,
-) -> Result<LogInclusion, AcdpError> {
-    let material = material.ok_or_else(|| {
-        AcdpError::InvalidLogProof(
-            "log_inclusion cannot be verified without a verified registry receipt: the \
-             leaf binds the receipt hash and producer-key fingerprint (RFC-ACDP-0012 §9.1 \
-             step 1)"
-                .into(),
-        )
+) -> Result<LogCheckpoint, AcdpError> {
+    // Closed parse of the whole proof first, as §9.1 does.
+    LogInclusion::from_value(value)?;
+    let checkpoint_value = value.get("log_checkpoint").ok_or_else(|| {
+        AcdpError::InvalidLogProof("log_inclusion has no log_checkpoint member".into())
     })?;
-    // The receipt's key_fingerprint was cross-checked against the
-    // resolved producer key by RFC-ACDP-0010 §8, so it is verified
-    // material.
-    let leaf = LogLeaf::for_publish(
-        &ctx.body,
-        &ctx.body.content_hash,
-        &material.receipt.key_fingerprint,
-        material.receipt_value,
-    )?;
-    // §9.3 step 1 binds the checkpoint to `capabilities.registry_did`,
-    // fetched from the authority that served the context.
     let caps = client.capabilities().await?;
-    verify_log_inclusion_value(
-        value,
-        &leaf,
+    verify_log_checkpoint_value(
+        checkpoint_value,
         serving_authority,
         &caps.registry_did,
         chrono::Duration::seconds(i64::from(DEFAULT_LOG_MAX_CLOCK_SKEW_SECONDS)),
@@ -270,9 +423,29 @@ async fn verify_inclusion(
     .await
 }
 
+/// §9.1 steps 1–2 and 4–6 against a checkpoint already verified.
+fn check_leaf(
+    ctx: &FullContext,
+    value: &serde_json::Value,
+    material: &LeafMaterial<'_>,
+) -> Result<LogInclusion, AcdpError> {
+    // The receipt's key_fingerprint was cross-checked against the
+    // resolved producer key by RFC-ACDP-0010 §8, so it is verified
+    // material. Any echoed `leaf` member is ignored.
+    let leaf = LogLeaf::for_publish(
+        &ctx.body,
+        &ctx.body.content_hash,
+        &material.receipt.key_fingerprint,
+        material.receipt_value,
+    )?;
+    let inclusion = LogInclusion::from_value(value)?;
+    inclusion.verify_reconstructed_leaf(&leaf)?;
+    Ok(inclusion)
+}
+
 async fn evaluate_witnesses(
     ctx: &FullContext,
-    inclusion: &LogInclusion,
+    checkpoint: &LogCheckpoint,
     policy: &WitnessQuorumPolicy,
     resolver: &WebResolver,
 ) -> WitnessQuorumReport {
@@ -307,7 +480,7 @@ async fn evaluate_witnesses(
         &cosignatures,
         &docs,
         &trusted,
-        &inclusion.log_checkpoint,
+        checkpoint,
         &policy.witness,
         None,
     );

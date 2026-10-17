@@ -42,7 +42,8 @@ pub use revocation_verdict::{
     RECOMMENDED_NEGATIVE_FRESHNESS,
 };
 pub use transparency::{
-    LogInclusionPolicy, WitnessEnforcement, WitnessQuorumPolicy, DEFAULT_LOG_MAX_CLOCK_SKEW_SECONDS,
+    CannotVerifyReason, LogInclusionPolicy, LogInclusionVerdict, WitnessEnforcement,
+    WitnessQuorumPolicy, DEFAULT_LOG_MAX_CLOCK_SKEW_SECONDS,
 };
 pub use verified::{
     DiscoveryFailurePolicy, DiscoveryOutcome, HistoricalKeyPolicy, KeyAuthorization,

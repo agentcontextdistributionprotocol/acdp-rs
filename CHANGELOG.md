@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `.mmmZ` timestamps require upgrading registries together.
 - New: `AuthProvider` read auth, DNS-hook resolver clients, and opt-in
   transparency-log and witness verification.
+- A log proof without a verified receipt is `LogInclusionVerdict::CannotVerify`,
+  never `invalid_log_proof` (spec #78 L1).
 
 ## [0.14.5](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.14.4...acdp-v0.14.5) - 2026-10-06
 

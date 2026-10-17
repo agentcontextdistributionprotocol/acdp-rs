@@ -11,8 +11,8 @@ mod world;
 use std::sync::atomic::Ordering;
 
 use acdp::client::{
-    LogInclusionPolicy, VerificationPolicy, VerifiedContext, WitnessEnforcement,
-    WitnessQuorumPolicy,
+    CannotVerifyReason, LogInclusionPolicy, LogInclusionVerdict, ReceiptPolicy, VerificationPolicy,
+    VerifiedContext, WitnessEnforcement, WitnessQuorumPolicy,
 };
 use acdp::crypto::SigningKey;
 use acdp::did::{did_key_from_ed25519, did_key_url};
@@ -164,7 +164,8 @@ async fn valid_inclusion_is_reported_and_ignored_by_default() {
     ] {
         let v = fetch(&w, &ctx, &with_log(policy)).await;
         assert!(
-            matches!(v.log_inclusion_verdict(), Some(Ok(()))),
+            v.log_inclusion_verdict()
+                .is_some_and(LogInclusionVerdict::is_included),
             "{policy:?}"
         );
         let inclusion = v.verified_log_inclusion().expect("verified");
@@ -191,8 +192,9 @@ async fn failing_proof_is_reported_not_fatal_unless_required() {
     let v = fetch(&w, &ctx, &with_log(LogInclusionPolicy::VerifyIfPresent)).await;
     assert!(
         matches!(
-            v.log_inclusion_verdict(),
-            Some(Err(AcdpError::InvalidLogProof(_)))
+            v.log_inclusion_verdict()
+                .and_then(LogInclusionVerdict::error),
+            Some(AcdpError::InvalidLogProof(_))
         ),
         "{:?}",
         v.log_inclusion_verdict()
@@ -227,8 +229,9 @@ async fn checkpoint_from_another_registry_is_rejected() {
     });
     let v = fetch(&w, &ctx, &with_log(LogInclusionPolicy::VerifyIfPresent)).await;
     assert!(matches!(
-        v.log_inclusion_verdict(),
-        Some(Err(AcdpError::InvalidLogProof(_)))
+        v.log_inclusion_verdict()
+            .and_then(LogInclusionVerdict::error),
+        Some(AcdpError::InvalidLogProof(_))
     ));
 }
 
@@ -257,32 +260,159 @@ async fn require_fails_on_an_absent_proof() {
     );
 }
 
-/// §9.1 step 1: the leaf binds the receipt, so without a verified receipt
-/// the proof cannot be checked. That is an error verdict, and fatal under
-/// `Require`.
+fn with_log_and_receipts(log_inclusion: LogInclusionPolicy) -> VerificationPolicy {
+    VerificationPolicy {
+        log_inclusion,
+        receipts: ReceiptPolicy::VerifyAndReport,
+        ..VerificationPolicy::default()
+    }
+}
+
+/// Assert the log verdict is cannot-verify for `reason` under
+/// `VerifyIfPresent`, and that `Require` fails closed without indicting
+/// the log (spec #78 L1).
+async fn assert_cannot_verify(w: &World, ctx: &FullContext, reason: CannotVerifyReason) {
+    let v = fetch(
+        w,
+        ctx,
+        &with_log_and_receipts(LogInclusionPolicy::VerifyIfPresent),
+    )
+    .await;
+    let verdict = v.log_inclusion_verdict().expect("evaluated");
+    assert_eq!(verdict.cannot_verify_reason(), Some(reason), "{verdict:?}");
+    assert_eq!(verdict.as_str(), "cannot_verify");
+    assert!(!verdict.is_included() && verdict.error().is_none());
+    assert!(
+        v.verified_log_inclusion().is_none(),
+        "never reported logged"
+    );
+
+    let (_, report) = VerifiedContext::fetch_report(
+        &w.client(),
+        &w.resolver(),
+        &ctx.body.ctx_id,
+        &with_log_and_receipts(LogInclusionPolicy::VerifyIfPresent),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        report
+            .log_inclusion_verdict
+            .as_ref()
+            .and_then(LogInclusionVerdict::cannot_verify_reason),
+        Some(reason)
+    );
+
+    let err = VerifiedContext::fetch_with_policy(
+        &w.client(),
+        &w.resolver(),
+        &ctx.body.ctx_id,
+        &with_log_and_receipts(LogInclusionPolicy::Require),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(err, AcdpError::InvalidReceipt(ref m) if m.contains("cannot be verified")),
+        "{err:?}"
+    );
+}
+
+/// log-005 A (spec #78 L1): with no receipt, the leaf cannot be rebuilt
+/// from verified material, so the proof is cannot-verify — not logged,
+/// and not `invalid_log_proof`.
 #[tokio::test]
-async fn proof_without_a_receipt_cannot_be_verified() {
+async fn log_005_a_proof_without_a_receipt_cannot_be_verified() {
     let w = World::start(one_key()).await;
     let other = others(&w).await;
     let ctx = w.publish("key-1", K1, ContextType::Analysis, None).await;
     serve_inclusion(&w, &ctx, &other);
     w.strip_receipts.store(true, Ordering::SeqCst);
+    assert_cannot_verify(&w, &ctx, CannotVerifyReason::ReceiptAbsent).await;
+}
 
-    let v = fetch(&w, &ctx, &with_log(LogInclusionPolicy::VerifyIfPresent)).await;
-    assert!(
-        matches!(v.log_inclusion_verdict(), Some(Err(AcdpError::InvalidLogProof(ref m))) if m.contains("receipt")),
-        "{:?}",
-        v.log_inclusion_verdict()
-    );
-    let err = VerifiedContext::fetch_with_policy(
-        &w.client(),
-        &w.resolver(),
-        &ctx.body.ctx_id,
-        &with_log(LogInclusionPolicy::Require),
+/// log-005 B: a tampered receipt is reported in its own verdict
+/// (`invalid_receipt`); the log verdict is cannot-verify, as in A.
+#[tokio::test]
+async fn log_005_b_tampered_receipt_is_cannot_verify_and_reported_separately() {
+    let w = World::start(one_key()).await;
+    let other = others(&w).await;
+    let ctx = w.publish("key-1", K1, ContextType::Analysis, None).await;
+    serve_inclusion(&w, &ctx, &other);
+    w.tamper(ctx.body.ctx_id.as_str(), |v| {
+        v["registry_receipt"]["created_at"] = json!("2020-01-01T00:00:00.000Z");
+    });
+    let v = fetch(
+        &w,
+        &ctx,
+        &with_log_and_receipts(LogInclusionPolicy::VerifyIfPresent),
     )
-    .await
-    .unwrap_err();
-    assert!(matches!(err, AcdpError::InvalidLogProof(_)), "{err:?}");
+    .await;
+    assert!(
+        matches!(v.receipt_verdict(), Some(Err(AcdpError::InvalidReceipt(_)))),
+        "{:?}",
+        v.receipt_verdict()
+    );
+    assert_cannot_verify(&w, &ctx, CannotVerifyReason::ReceiptInvalid).await;
+}
+
+/// log-005 C: a served `leaf` that matches the true leaf does not make an
+/// unreceipted proof verifiable — the echo is never trusted.
+#[tokio::test]
+async fn log_005_c_echoed_leaf_is_never_trusted() {
+    let w = World::start(one_key()).await;
+    let other = others(&w).await;
+    let ctx = w.publish("key-1", K1, ContextType::Analysis, None).await;
+    serve_inclusion(&w, &ctx, &other);
+    let leaf = serde_json::to_value(leaf_of(&w, &ctx)).unwrap();
+    w.tamper(ctx.body.ctx_id.as_str(), |v| {
+        v["log_inclusion"]["leaf"] = leaf.clone();
+    });
+    w.strip_receipts.store(true, Ordering::SeqCst);
+    assert_cannot_verify(&w, &ctx, CannotVerifyReason::ReceiptAbsent).await;
+}
+
+/// L1 + L2: without a receipt the inclusion is cannot-verify, but the
+/// checkpoint itself still verifies (§9.3 needs no leaf), so a witness
+/// quorum is counted over it. A tampered checkpoint is not witnessed and
+/// fails via `invalid_log_proof`, while the log verdict stays
+/// cannot-verify.
+#[tokio::test]
+async fn witness_quorum_without_a_receipt_uses_the_verified_checkpoint() {
+    let w = World::start(one_key()).await;
+    let other = others(&w).await;
+    let ctx = w.publish("key-1", K1, ContextType::Analysis, None).await;
+    let cp = serve_inclusion(&w, &ctx, &other);
+    let w1 = did_key_witness(W1);
+    serve_cosignatures(&w, &ctx, vec![cosign(&w1, &cp)]);
+    w.strip_receipts.store(true, Ordering::SeqCst);
+    let policy = VerificationPolicy {
+        witness_quorum: Some(WitnessQuorumPolicy::new([w1.witness_id()])),
+        ..VerificationPolicy::default()
+    };
+    let v = fetch(&w, &ctx, &policy).await;
+    assert_eq!(
+        v.log_inclusion_verdict()
+            .and_then(LogInclusionVerdict::cannot_verify_reason),
+        Some(CannotVerifyReason::ReceiptAbsent)
+    );
+    assert!(v.witness_quorum().unwrap().as_ref().unwrap().meets_quorum);
+
+    // Scenario X shape: the root is altered after signing.
+    w.tamper(ctx.body.ctx_id.as_str(), |v| {
+        v["log_inclusion"]["log_checkpoint"]["root_hash"] =
+            json!(format!("sha256:{}", "0".repeat(64)));
+    });
+    let v = fetch(&w, &ctx, &policy).await;
+    assert!(
+        matches!(v.witness_quorum(), Some(Err(AcdpError::InvalidLogProof(_)))),
+        "{:?}",
+        v.witness_quorum()
+    );
+    assert_eq!(
+        v.log_inclusion_verdict()
+            .and_then(LogInclusionVerdict::cannot_verify_reason),
+        Some(CannotVerifyReason::ReceiptAbsent)
+    );
 }
 
 /// RFC-ACDP-0015 §8: trusted cosignatures over the verified checkpoint
@@ -312,7 +442,9 @@ async fn witness_quorum_is_reported_over_the_verified_checkpoint() {
         ..VerificationPolicy::default()
     };
     let v = fetch(&w, &ctx, &policy).await;
-    assert!(matches!(v.log_inclusion_verdict(), Some(Ok(()))));
+    assert!(v
+        .log_inclusion_verdict()
+        .is_some_and(LogInclusionVerdict::is_included));
     let report = v.witness_quorum().unwrap().as_ref().unwrap();
     assert_eq!(report.witnessed_count, 2, "{report:?}");
     assert!(report.meets_quorum && report.meets_fresh_quorum);
@@ -426,7 +558,10 @@ async fn report_carries_log_and_witness_verdicts() {
         VerifiedContext::fetch_report(&w.client(), &w.resolver(), &ctx.body.ctx_id, &policy)
             .await
             .unwrap();
-    assert!(matches!(report.log_inclusion_verdict, Some(Ok(()))));
+    assert!(report
+        .log_inclusion_verdict
+        .as_ref()
+        .is_some_and(LogInclusionVerdict::is_included));
     assert!(report.witness_quorum.unwrap().unwrap().meets_quorum);
 
     let (verified, report) = VerifiedContext::fetch_report_diagnose(
@@ -438,5 +573,8 @@ async fn report_carries_log_and_witness_verdicts() {
     .await
     .unwrap();
     assert!(verified.is_some());
-    assert!(matches!(report.log_inclusion_verdict, Some(Ok(()))));
+    assert!(report
+        .log_inclusion_verdict
+        .as_ref()
+        .is_some_and(LogInclusionVerdict::is_included));
 }

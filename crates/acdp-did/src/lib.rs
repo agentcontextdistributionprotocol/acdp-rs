@@ -16,4 +16,4 @@ pub use key::{
 pub use web::{authority_to_did_web, did_web_to_authority, did_web_to_url};
 
 #[cfg(feature = "client")]
-pub use web::WebResolver;
+pub use web::{FreshResolution, ResolvedDidDocument, WebResolver, DEFAULT_FORCED_REFRESH_INTERVAL};

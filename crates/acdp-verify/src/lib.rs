@@ -26,15 +26,45 @@ pub use raw_hash::{
 };
 
 /// Stateless verifier.  Requires a DID resolver to fetch producer keys.
+///
+/// **DID-cache refresh (RFC-ACDP-0001 §5.11 "Caching", 0.5.0).** When
+/// the signing key is missing from a *cached* DID document (step 4) or
+/// is not in its `assertionMethod` (step 5), the verifier re-fetches the
+/// document once, bypassing the cache, and re-runs steps 4–7 against
+/// it. The fresh verdict is final. Forced re-fetches are rate-limited
+/// per DID by the [`WebResolver`]
+/// ([`WebResolver::with_forced_refresh_interval`]); when the limit
+/// refuses one, a key *absent* from the stale copy is reported as
+/// [`AcdpError::KeyResolutionUnreachable`] (transient — absence was not
+/// proven), while a key present but outside `assertionMethod` keeps the
+/// [`AcdpError::KeyNotAuthorized`] verdict.
 #[cfg(feature = "client")]
 pub struct Verifier<'a> {
     resolver: &'a WebResolver,
+    since: Option<std::time::Instant>,
 }
 
 #[cfg(feature = "client")]
 impl<'a> Verifier<'a> {
     pub fn new(resolver: &'a WebResolver) -> Self {
-        Self { resolver }
+        Self {
+            resolver,
+            since: None,
+        }
+    }
+
+    /// Treat every DID document fetched at or after `since` as fresh for
+    /// this verifier's calls, so a forced re-fetch already performed by
+    /// an earlier step of the same operation (for example, an earlier
+    /// candidate in one revocation-discovery run) is not repeated.
+    /// Without it, each call uses its own start time.
+    pub fn fresh_since(mut self, since: std::time::Instant) -> Self {
+        self.since = Some(since);
+        self
+    }
+
+    fn since(&self) -> std::time::Instant {
+        self.since.unwrap_or_else(std::time::Instant::now)
     }
 
     /// Full end-to-end verification per RFC-ACDP-0001 §5.11.
@@ -135,8 +165,15 @@ impl<'a> Verifier<'a> {
             &body.signature,
             &body.content_hash,
             self.resolver,
+            self.since(),
         )
         .await
+    }
+
+    /// [`verify_body_signature_historical`] with this verifier's
+    /// freshness scope.
+    pub async fn verify_body_signature_historical(&self, body: &Body) -> Result<(), AcdpError> {
+        verify_body_signature_historical_since(body, self.resolver, self.since()).await
     }
 }
 
@@ -166,7 +203,14 @@ pub async fn verify_publish_request_signature(
     req: &PublishRequest,
     resolver: &WebResolver,
 ) -> Result<(), AcdpError> {
-    verify_signature_envelope(&req.agent_id, &req.signature, &req.content_hash, resolver).await
+    verify_signature_envelope(
+        &req.agent_id,
+        &req.signature,
+        &req.content_hash,
+        resolver,
+        std::time::Instant::now(),
+    )
+    .await
 }
 
 /// Steps 1–7 of RFC-ACDP-0001 §5.11 — the part of body verification that
@@ -179,6 +223,7 @@ async fn verify_signature_envelope(
     signature: &Signature,
     content_hash: &ContentHash,
     resolver: &WebResolver,
+    since: std::time::Instant,
 ) -> Result<(), AcdpError> {
     // Step 1: parse key_id — must contain a non-empty '#' fragment
     // (RFC-ACDP-0001 §5.11 step 1). An empty fragment (`did:web:x#`) is
@@ -213,15 +258,33 @@ async fn verify_signature_envelope(
         )));
     }
 
-    // Step 3: resolve DID document
-    let doc = resolver.resolve(did_part).await?;
+    // Step 3: resolve DID document. A cached copy that fails step 4 or
+    // step 5 is re-fetched once (RFC-ACDP-0001 §5.11 "Caching", 0.5.0;
+    // rot-002) and steps 4–7 run against the fresh copy.
+    let res = resolver
+        .resolve_until(did_part, since, |doc| {
+            doc.find_by_fragment(fragment)
+                .is_some_and(|m| doc.is_assertion_method(&m.id))
+        })
+        .await?;
+    let doc = res.document;
 
     // Step 4: find verification method by fragment
-    let method = doc.find_by_fragment(fragment).ok_or_else(|| {
-        AcdpError::KeyResolution(format!(
-            "no verification method with fragment '#{fragment}'"
-        ))
-    })?;
+    let method = match doc.find_by_fragment(fragment) {
+        Some(m) => m,
+        None if res.fresh => {
+            return Err(AcdpError::KeyResolution(format!(
+                "no verification method with fragment '#{fragment}'"
+            )))
+        }
+        None => {
+            return Err(AcdpError::KeyResolutionUnreachable(format!(
+                "no verification method with fragment '#{fragment}' in the cached DID \
+                 document for {did_part}, and the forced re-fetch was refused by the \
+                 per-DID rate limit — absence is not proven"
+            )))
+        }
+    };
 
     // Step 5: assertionMethod authorization
     if !doc.is_assertion_method(&method.id) {
@@ -406,6 +469,19 @@ pub async fn verify_body_signature_historical(
     body: &Body,
     resolver: &WebResolver,
 ) -> Result<(), AcdpError> {
+    verify_body_signature_historical_since(body, resolver, std::time::Instant::now()).await
+}
+
+/// [`verify_body_signature_historical`] with an explicit freshness
+/// scope: a DID document fetched at or after `since` is fresh; an older
+/// cached copy that lacks the key is re-fetched once (RFC-ACDP-0001
+/// §5.11 "Caching").
+#[cfg(feature = "client")]
+pub async fn verify_body_signature_historical_since(
+    body: &Body,
+    resolver: &WebResolver,
+    since: std::time::Instant,
+) -> Result<(), AcdpError> {
     let key_id = &body.signature.key_id;
     let (did_part, fragment) = key_id.split_once('#').ok_or_else(|| {
         AcdpError::KeyResolution(format!("signature.key_id '{key_id}' has no '#fragment'"))
@@ -421,17 +497,24 @@ pub async fn verify_body_signature_historical(
             "historical-key verification applies to did:web only; got '{did_part}'"
         )));
     }
-    let doc = resolver.resolve(did_part).await?;
     // Key fully removed from the DID document → fail closed. The
     // producer's obligation is to RETAIN rotated keys in
     // verificationMethod (RFC-ACDP-0010); a deleted key is
-    // unverifiable by design.
-    let method = doc.find_by_fragment(fragment).ok_or_else(|| {
-        AcdpError::KeyResolution(format!(
-            "no verification method with fragment '#{fragment}' — the key was \
-             removed from the DID document, not just rotated out of assertionMethod"
-        ))
-    })?;
+    // unverifiable by design. Absence is only final against a fresh
+    // document (`resolve_with_fragment`).
+    let doc = resolver
+        .resolve_with_fragment(did_part, fragment, since)
+        .await
+        .map_err(|e| match e {
+            AcdpError::KeyResolution(_) => AcdpError::KeyResolution(format!(
+                "no verification method with fragment '#{fragment}' — the key was \
+                 removed from the DID document, not just rotated out of assertionMethod"
+            )),
+            other => other,
+        })?;
+    let method = doc
+        .find_by_fragment(fragment)
+        .expect("resolve_with_fragment guarantees the fragment");
     if let Some(declared) = method.declared_algorithm() {
         if declared != body.signature.algorithm {
             return Err(AcdpError::InvalidSignature(format!(
@@ -587,7 +670,14 @@ pub async fn verify_lifecycle_event(
     // assertionMethod + algorithm binding, and verifies over the ASCII
     // bytes of the event hash — identical framing to a body signature.
     let signature = event.actor_bound_signature()?.clone();
-    verify_signature_envelope(&event.actor, &signature, &hash, resolver).await?;
+    verify_signature_envelope(
+        &event.actor,
+        &signature,
+        &hash,
+        resolver,
+        std::time::Instant::now(),
+    )
+    .await?;
     Ok(event)
 }
 

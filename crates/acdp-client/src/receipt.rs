@@ -11,6 +11,26 @@ use acdp_primitives::error::AcdpError;
 use acdp_types::primitives::{ContentHash, CtxId, LineageId};
 use acdp_types::receipt::{LineageHeadReceipt, RegistryReceipt};
 
+/// Resolve the registry DID document holding receipt key `#fragment`,
+/// re-fetching a stale cached copy once (RFC-ACDP-0001 §5.11 "Caching").
+async fn resolve_receipt_key_doc(
+    did: &str,
+    fragment: &str,
+    resolver: &WebResolver,
+    since: std::time::Instant,
+) -> Result<acdp_did::DidDocument, AcdpError> {
+    resolver
+        .resolve_with_fragment(did, fragment, since)
+        .await
+        .map_err(|e| match e {
+            AcdpError::KeyResolution(_) => AcdpError::InvalidReceipt(format!(
+                "registry DID document has no verification method '#{fragment}' — \
+                 receipt keys (including retired ones) must remain in verificationMethod"
+            )),
+            other => other,
+        })
+}
+
 /// Verify a `registry_receipt` value end-to-end:
 ///
 /// 1. Parse. The receipt schema is CLOSED (RFC-ACDP-0010 §4): an
@@ -39,6 +59,38 @@ pub async fn verify_receipt_value(
     producer_key_fingerprint: &str,
     serving_authority: &str,
     resolver: &WebResolver,
+) -> Result<RegistryReceipt, AcdpError> {
+    verify_receipt_value_since(
+        value,
+        expected_ctx_id,
+        body,
+        recomputed_body_hash,
+        producer_key_fingerprint,
+        serving_authority,
+        resolver,
+        std::time::Instant::now(),
+    )
+    .await
+}
+
+/// [`verify_receipt_value`] with an explicit DID-document freshness
+/// scope (RFC-ACDP-0001 §5.11 "Caching"): a registry DID document fetched
+/// at or after `since` is fresh for this check; an older cached copy that
+/// lacks the receipt key is re-fetched once before the receipt is
+/// rejected. A key still absent after that re-fetch is
+/// [`AcdpError::InvalidReceipt`]; a key absent from a stale copy whose
+/// re-fetch was rate-limited is [`AcdpError::KeyResolutionUnreachable`]
+/// (transient).
+#[allow(clippy::too_many_arguments)]
+pub async fn verify_receipt_value_since(
+    value: &serde_json::Value,
+    expected_ctx_id: &CtxId,
+    body: &acdp_types::body::Body,
+    recomputed_body_hash: &ContentHash,
+    producer_key_fingerprint: &str,
+    serving_authority: &str,
+    resolver: &WebResolver,
+    since: std::time::Instant,
 ) -> Result<RegistryReceipt, AcdpError> {
     let receipt = RegistryReceipt::from_value(value)?;
 
@@ -78,13 +130,10 @@ pub async fn verify_receipt_value(
             receipt.registry_did
         )));
     }
-    let doc = resolver.resolve(did_part).await?;
-    let method = doc.find_by_fragment(fragment).ok_or_else(|| {
-        AcdpError::InvalidReceipt(format!(
-            "registry DID document has no verification method '#{fragment}' — \
-             receipt keys (including retired ones) must remain in verificationMethod"
-        ))
-    })?;
+    let doc = resolve_receipt_key_doc(did_part, fragment, resolver, since).await?;
+    let method = doc
+        .find_by_fragment(fragment)
+        .expect("resolve_receipt_key_doc guarantees the fragment");
 
     // §5 / RFC-ACDP-0001 §6 raw-JSON rule: hash the receipt exactly as
     // received — re-serializing the parsed struct could normalize byte
@@ -187,13 +236,11 @@ pub async fn verify_lineage_head_receipt_value(
             "lineage_head_receipt signature.key_id '{key_id}' has no fragment"
         ))
     })?;
-    let doc = resolver.resolve(did_part).await?;
-    let method = doc.find_by_fragment(fragment).ok_or_else(|| {
-        AcdpError::InvalidReceipt(format!(
-            "registry DID document has no verification method '#{fragment}' — \
-             receipt keys (including retired ones) must remain in verificationMethod"
-        ))
-    })?;
+    let doc =
+        resolve_receipt_key_doc(did_part, fragment, resolver, std::time::Instant::now()).await?;
+    let method = doc
+        .find_by_fragment(fragment)
+        .expect("resolve_receipt_key_doc guarantees the fragment");
     let raw_hash = LineageHeadReceipt::preimage_hash_of_value(value)?;
     match receipt.signature.algorithm.as_str() {
         "ed25519" => {

@@ -298,6 +298,40 @@ Two honesty caveats:
 Without a `RevocationCache` attached, every call still re-discovers from
 scratch, budgeted or not — see the next section for the opt-in cache.
 
+**Candidate outcome classes (0.15.0, RFC-ACDP-0014 §8).** Every
+revocation candidate discovery finds is classified as exactly one of:
+
+| Class | When | Effect on discovery |
+|---|---|---|
+| verified | strict verification passes, or the **historical arm** passes (below) | counted |
+| permanently invalid | hash/schema failure, bad signature, §4 shape, self-signed, foreign `key_id`, or signing key absent from a **freshly fetched** `verificationMethod` | dropped (logged with `tracing`) |
+| unverifiable | signing key rotated out of `assertionMethod` and no `registry_receipt` (or one that fails) can place it | `AcdpError::RevocationCandidateUnverifiable` → discovery fails (*unknown*) |
+| undecided | transient lookup failure (DID host non-2xx/timeout, registry 5xx), or a budget refusal while checking it | discovery fails (*unknown*) |
+
+The **historical arm** covers a producer that rotated after revoking: the
+candidate's signing key is still in `verificationMethod` but no longer in
+`assertionMethod`. Discovery verifies the candidate's `registry_receipt`
+under the RFC-ACDP-0010 §10 rule and then the signature against the
+retained key. A lineage-walk member served without a receipt is
+re-retrieved by `ctx_id` (full-retrieval endpoint, charged to the
+discovery budget). `verify_revocation_candidate` exposes this
+classification directly.
+
+**DID-cache refresh (RFC-ACDP-0001 §5.11 "Caching").** Before reporting
+"key not in `verificationMethod`" or `key_not_authorized` against a
+*cached* DID document, the verifier re-fetches it once, bypassing the
+cache, and re-runs the check (rot-002). A whole operation — one
+`fetch`, one discovery run — shares one freshness scope, so the same DID
+is force-fetched at most once per operation. Forced re-fetches are also
+rate-limited per DID, at most once per
+`acdp::did::DEFAULT_FORCED_REFRESH_INTERVAL` (one hour); tune it with
+`WebResolver::with_forced_refresh_interval`. When the limit refuses a
+re-fetch, a key **absent** from the stale copy is reported as the
+transient `KeyResolutionUnreachable`, never as the permanent
+`KeyResolution`. Otherwise an attacker could spend the refresh slot with
+bogus-fragment bodies just before a producer adds a new key and revokes
+an old one, and so make discovery silently drop that revocation.
+
 ### Caching discovered revocations
 
 `RegistryClient::with_revocation_cache` attaches a `RevocationCache` —

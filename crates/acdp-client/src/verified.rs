@@ -1108,7 +1108,12 @@ impl VerifiedContext {
         // Hash recomputation first: from here on `ctx.body.content_hash`
         // IS the independently recomputed value, which the receipt
         // cross-check below relies on.
-        let verifier = Verifier::new(resolver);
+        // One DID-freshness scope for every lookup this verification makes
+        // (RFC-ACDP-0001 §5.11 "Caching"): a document fetched at or after
+        // `since` is fresh, so a forced re-fetch done for the receipt key
+        // also serves the signature phase.
+        let since = std::time::Instant::now();
+        let verifier = Verifier::new(resolver).fresh_since(since);
         verifier.verify_context_hash(ctx)?;
 
         // ── Receipt phase (RFC-ACDP-0010) ───────────────────────────
@@ -1128,14 +1133,15 @@ impl VerifiedContext {
                 ));
             }
             (_, Some(value)) => {
-                let fingerprint = acdp_crypto::fingerprint::fingerprint_for_key_id(
+                let fingerprint = acdp_crypto::fingerprint::fingerprint_for_key_id_since(
                     &ctx.body.signature.key_id,
                     &ctx.body.signature.algorithm,
                     resolver,
+                    since,
                 )
                 .await?;
                 Some(
-                    super::receipt::verify_receipt_value(
+                    super::receipt::verify_receipt_value_since(
                         value,
                         expected_ctx_id,
                         &ctx.body,
@@ -1143,6 +1149,7 @@ impl VerifiedContext {
                         &fingerprint,
                         &serving_authority,
                         resolver,
+                        since,
                     )
                     .await?,
                 )
@@ -1357,10 +1364,11 @@ impl VerifiedContext {
         let revocation_verdict = if effective.is_empty() {
             None
         } else {
-            let fingerprint = acdp_crypto::fingerprint::fingerprint_for_key_id(
+            let fingerprint = acdp_crypto::fingerprint::fingerprint_for_key_id_since(
                 &ctx.body.signature.key_id,
                 &ctx.body.signature.algorithm,
                 resolver,
+                since,
             )
             .await?;
             super::revocation::classify_under_revocation(
@@ -1387,7 +1395,7 @@ impl VerifiedContext {
                 if ctx.body.agent_id.as_str().starts_with("did:key:") {
                     verifier.verify_body_signature(&ctx.body).await?;
                 } else {
-                    acdp_verify::verify_body_signature_historical(&ctx.body, resolver).await?;
+                    verifier.verify_body_signature_historical(&ctx.body).await?;
                 }
                 pre_compromise
             }
@@ -1397,7 +1405,7 @@ impl VerifiedContext {
                     if policy.historical_keys == HistoricalKeyPolicy::AcceptWithReceipt
                         && verified_receipt.is_some() =>
                 {
-                    acdp_verify::verify_body_signature_historical(&ctx.body, resolver).await?;
+                    verifier.verify_body_signature_historical(&ctx.body).await?;
                     KeyAuthorization::HistoricallyAuthorized
                 }
                 Err(e) => return Err(e),

@@ -177,6 +177,25 @@ pub enum AcdpError {
     #[error("revocation discovery budget exceeded: {0}")]
     RevocationDiscoveryBudgetExceeded(String),
 
+    /// Locally detected (RFC-ACDP-0014 §8, 0.5.0 "Discovery outcome
+    /// classes"): a revocation candidate found during auto-discovery
+    /// could be neither verified nor proven invalid. The canonical case is
+    /// the mandatory *historical arm*: the candidate's signing key is in
+    /// the producer's `verificationMethod` but no longer in
+    /// `assertionMethod` (the producer rotated after publishing it), and
+    /// the candidate carries no `registry_receipt` — or one that does not
+    /// verify — so the RFC-ACDP-0010 §10 historical-key rule cannot place
+    /// the signature (rev-005 B).
+    ///
+    /// Not a wire code (RFC-ACDP-0014 §10). Not transient — retrying the
+    /// same discovery will see the same candidate — but **discovery-
+    /// fatal**: the spec forbids folding an unverifiable candidate into
+    /// "not revoked", so discovery surfaces it (wrapped in
+    /// [`AcdpError::RevocationDiscoveryFailed`]) exactly like a transient
+    /// lookup failure, and the overall outcome is *unknown*.
+    #[error("revocation candidate unverifiable: {0}")]
+    RevocationCandidateUnverifiable(String),
+
     /// Locally detected: RFC-ACDP-0014 §8 revocation auto-discovery
     /// (`RevocationPolicy::discover` in `acdp-client`) failed under
     /// `DiscoveryFailurePolicy::FailClosed`. Not a wire code — the same
@@ -956,6 +975,7 @@ mod tests {
         // `SearchTruncated` above — never transient, and deliberately NOT
         // added to the `matches!` list in `is_transient`.
         assert!(!AcdpError::RevocationDiscoveryBudgetExceeded("x".into()).is_transient());
+        assert!(!AcdpError::RevocationCandidateUnverifiable("x".into()).is_transient());
     }
 
     /// A wrapper error with an optional source, standing in for the

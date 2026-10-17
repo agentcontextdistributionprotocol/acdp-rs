@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.14.5...acdp-v0.15.0) - 2026-10-17
+
+### Added
+
+- *(client)* [**breaking**] typed log-inclusion verdict; a proof without a verified receipt is cannot-verify
+- *(client)* read auth, DNS-hook resolver clients, log/witness verification policy
+- *(client)* [**breaking**] typed, attributable revocation verdicts (RFC-ACDP-0014 §7/§8, 0.5.0)
+- [**breaking**] receipt-key status, VerifyAndReport, and lineage/origin binding
+- [**breaking**] forced DID refresh and historical receipt arm for revocation discovery
+
+### Fixed
+
+- *(deps)* bump rustls to 0.23.46 for RUSTSEC-2026-0346..0349
+- [**breaking**] raw-JSON content_hash, transient DID non-2xx, Accept header, v0.1.0 did:web
+
+### Other
+
+- 0.15.0 migration guide and changelog migration notes
+- refresh guides against code v0.14.5 and current spec; link, don't duplicate ([#384](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/384))
+- *(supply-chain)* certify zeroize 1.9.1 and drop its exemption ([#341](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/341)) ([#380](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/380))
+- *(supply-chain)* retire #322-pending guard marker; reconcile remaining #322/#339 assumptions ([#376](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/376))
+- *(deps)* bump the minor-and-patch group across 1 directory with 2 updates ([#373](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/373))
+
 ### Migration
 
 0.15.0 is breaking. It is the single release for the Seam-driven work

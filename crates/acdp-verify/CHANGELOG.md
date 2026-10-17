@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-verify-v0.14.5...acdp-verify-v0.15.0) - 2026-10-17
+
+### Added
+
+- [**breaking**] receipt-key status, VerifyAndReport, and lineage/origin binding
+- [**breaking**] forced DID refresh and historical receipt arm for revocation discovery
+
+### Fixed
+
+- [**breaking**] raw-JSON content_hash, transient DID non-2xx, Accept header, v0.1.0 did:web
+
+### Other
+
+- refresh guides against code v0.14.5 and current spec; link, don't duplicate ([#384](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/384))
+
 ## [0.14.2](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-verify-v0.14.1...acdp-verify-v0.14.2) - 2026-09-25
 
 ### Other

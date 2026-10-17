@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-producer-v0.14.5...acdp-producer-v0.15.0) - 2026-10-17
+
+### Fixed
+
+- [**breaking**] raw-JSON content_hash, transient DID non-2xx, Accept header, v0.1.0 did:web
+
 ## [0.14.2](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-producer-v0.14.1...acdp-producer-v0.14.2) - 2026-09-25
 
 ### Other

@@ -337,7 +337,8 @@ async fn ret_003_c_v2_lineage_binding_reported() {
 }
 
 /// D: a later version whose receipt fails RFC-ACDP-0010 §8 is treated as
-/// receipt-less — accepted with `lineage_id` unbound, never attested.
+/// receipt-less — accepted with `lineage_id` unbound, never attested
+/// (under `VerifyAndReport`).
 #[tokio::test]
 async fn ret_003_d_v2_failed_receipt_is_unbound() {
     let w = World::start(both_keys()).await;
@@ -354,6 +355,13 @@ async fn ret_003_d_v2_failed_receipt_is_unbound() {
     assert!(matches!(
         v.receipt_verdict(),
         Some(Err(AcdpError::InvalidReceipt(_)))
+    ));
+
+    // The fixture's alternative outcome: the default receipt-requiring
+    // policy fails closed with `invalid_receipt`.
+    assert!(matches!(
+        fetch(&w, &v2, &VerificationPolicy::default()).await,
+        Err(AcdpError::InvalidReceipt(_))
     ));
 }
 

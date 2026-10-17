@@ -88,7 +88,13 @@ pub struct PublishRequest {
         skip_serializing_if = "Option::is_none"
     )]
     pub domain: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Canonical emission (RFC-ACDP-0001 §5.3): a whole-second instant
+    /// serializes as `…:SS.000Z`, never chrono's default `…:SSZ`.
+    #[serde(
+        default,
+        with = "acdp_primitives::time::canonical_rfc3339_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub expires_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data_period: Option<DataPeriod>,
@@ -132,6 +138,7 @@ pub struct PublishResponse {
     /// Version of the published context (1 for first-version, prior+1 otherwise).
     pub version: u32,
     /// Registry's acceptance timestamp (millisecond precision).
+    #[serde(with = "acdp_primitives::time::canonical_rfc3339")]
     pub created_at: DateTime<Utc>,
     /// Lifecycle status. MUST be `Active` on a successful first-publish.
     pub status: Status,

@@ -24,6 +24,9 @@ pub(crate) fn map_acdp_err(e: AcdpError) -> Error<String> {
         AcdpError::InvalidReceipt(_) => "invalid_receipt",
         AcdpError::InvalidSignature(_) => "invalid_signature",
         AcdpError::KeyNotAuthorized(_) => "key_not_authorized",
+        AcdpError::KeyRevoked(_) => "key_not_authorized",
+        // Not a wire code: discovery could not establish revocation status.
+        AcdpError::RevocationUnknown { .. } => "revocation_unknown",
         AcdpError::KeyResolution(_) => "key_resolution",
         AcdpError::UnsupportedAlgorithm(_) => "unsupported_algorithm",
         AcdpError::SchemaViolation(_) => "schema_violation",

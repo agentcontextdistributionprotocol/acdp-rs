@@ -70,6 +70,22 @@ pub async fn fingerprint_for_key_id(
     algorithm: &str,
     resolver: &acdp_did::web::WebResolver,
 ) -> Result<String, AcdpError> {
+    fingerprint_for_key_id_since(key_id, algorithm, resolver, std::time::Instant::now()).await
+}
+
+/// [`fingerprint_for_key_id`] with an explicit DID-document freshness
+/// scope: a did:web key absent from a cached document older than `since`
+/// triggers one forced re-fetch (RFC-ACDP-0001 §5.11 "Caching") before
+/// the permanent [`AcdpError::KeyResolution`]; when the per-DID rate
+/// limit refuses that re-fetch the error is the transient
+/// [`AcdpError::KeyResolutionUnreachable`].
+#[cfg(feature = "client")]
+pub async fn fingerprint_for_key_id_since(
+    key_id: &str,
+    algorithm: &str,
+    resolver: &acdp_did::web::WebResolver,
+    since: std::time::Instant,
+) -> Result<String, AcdpError> {
     let (did_part, fragment) = key_id
         .split_once('#')
         .ok_or_else(|| AcdpError::KeyResolution(format!("key_id '{key_id}' has no '#fragment'")))?;
@@ -82,12 +98,12 @@ pub async fn fingerprint_for_key_id(
         let material = acdp_did::key::resolve_did_key_url(key_id)?;
         return fingerprint_did_key_material(&material);
     }
-    let doc = resolver.resolve(did_part).await?;
-    let method = doc.find_by_fragment(fragment).ok_or_else(|| {
-        AcdpError::KeyResolution(format!(
-            "no verification method with fragment '#{fragment}'"
-        ))
-    })?;
+    let doc = resolver
+        .resolve_with_fragment(did_part, fragment, since)
+        .await?;
+    let method = doc
+        .find_by_fragment(fragment)
+        .expect("resolve_with_fragment guarantees the fragment");
     fingerprint_verification_method(method, algorithm)
 }
 

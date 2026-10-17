@@ -194,8 +194,8 @@ impl Default for WitnessPolicy {
 
 /// The outcome of [`evaluate_witness_quorum`]: the RFC-ACDP-0015 §8
 /// *N-witnessed* verdict over one checkpoint, plus a §8.1 freshness
-/// split. Move-only ([`AcdpError`] is not `Clone`).
-#[derive(Debug)]
+/// split.
+#[derive(Debug, Clone)]
 pub struct WitnessQuorumReport {
     /// *N* — the number of DISTINCT trusted `witness_id` values whose
     /// cosignatures passed §8 steps 1–5 over the evaluated checkpoint's

@@ -27,7 +27,7 @@
 //! (RFC-ACDP-0006 §4.1 step 7).
 
 use acdp::crypto::{
-    canonical_preimage, explain_hash_mismatch, fingerprint_ed25519, verify_body_offline,
+    canonical_preimage, explain_hash_mismatch, fingerprint_ed25519, verify_body_value_offline,
     verify_content_hash, verify_ecdsa_p256, verify_ed25519,
     verify_publish_request_signature_offline,
 };
@@ -184,10 +184,14 @@ pub fn verify_signature_p256(
 /// verdict (a non-`did:key` producer fails — `did:web` needs host-side
 /// resolution).
 pub fn verify_body_offline_json(body_json: &str) -> Result<String, String> {
-    let body: Body =
+    // Raw wire value, not a typed re-serialization: the hash is
+    // recomputed over the bytes the producer signed (RFC-ACDP-0001 §5.7).
+    let raw: serde_json::Value =
         serde_json::from_str(body_json).map_err(|e| format!("invalid body JSON: {e}"))?;
-    Ok(match verify_body_offline(&body) {
-        Ok(()) => verdict_ok(),
+    let _: Body =
+        serde_json::from_value(raw.clone()).map_err(|e| format!("invalid body JSON: {e}"))?;
+    Ok(match verify_body_value_offline(&raw) {
+        Ok(_) => verdict_ok(),
         Err(e) => verdict_fail(e),
     })
 }

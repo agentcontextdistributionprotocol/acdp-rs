@@ -21,10 +21,50 @@ const CACHE_MAX: Duration = Duration::from_secs(24 * 3600); // 24 hours
 #[cfg(feature = "client")]
 const DEFAULT_CACHE_CAPACITY: usize = 1000;
 
+/// Default minimum interval between two *forced* (cache-bypassing)
+/// re-fetches of the same DID document — one hour.
+///
+/// RFC-ACDP-0001 §5.11 "Caching" *(0.5.0)* requires a verifier holding a
+/// cached document to re-fetch it once before reporting "no
+/// `verificationMethod` matches" (step 4) or `key_not_authorized`
+/// (step 5), and lets it rate-limit those forced re-fetches per DID.
+/// The bound stops a stream of bodies naming unknown fragments from
+/// turning the verifier into a request amplifier against a DID host.
+/// Override with [`WebResolver::with_forced_refresh_interval`].
+#[cfg(feature = "client")]
+pub const DEFAULT_FORCED_REFRESH_INTERVAL: Duration = Duration::from_secs(3600);
+
 #[cfg(feature = "client")]
 struct CacheEntry {
     doc: DidDocument,
     cached_at: Instant,
+}
+
+/// A resolved DID document together with when it was fetched from the
+/// network (a cache hit reports the original fetch time).
+#[cfg(feature = "client")]
+#[derive(Debug, Clone)]
+pub struct ResolvedDidDocument {
+    /// The document.
+    pub document: DidDocument,
+    /// When this document was fetched over HTTPS.
+    pub fetched_at: Instant,
+}
+
+/// Result of [`WebResolver::resolve_until`]: the best document the
+/// resolver could obtain, and whether it is *fresh* for the operation
+/// (fetched from the network at or after the operation's start).
+#[cfg(feature = "client")]
+#[derive(Debug, Clone)]
+pub struct FreshResolution {
+    /// The document the caller should evaluate.
+    pub document: DidDocument,
+    /// `true` when `document` was fetched at or after the caller's
+    /// `since` instant — i.e. a verdict against it is final per
+    /// RFC-ACDP-0001 §5.11 "Caching". `false` only when the document is
+    /// an older cached copy that the caller's predicate rejected and a
+    /// forced re-fetch was refused by the per-DID rate limit.
+    pub fresh: bool,
 }
 
 /// Resolves `did:web:…` DIDs to DID documents via HTTPS.
@@ -44,6 +84,10 @@ struct CacheEntry {
 pub struct WebResolver {
     http: reqwest::Client,
     cache: Arc<Mutex<LruCache<String, CacheEntry>>>,
+    /// Last forced (cache-bypassing) fetch per DID — the §5.11 refresh
+    /// rate limit. Bounded like the document cache.
+    forced: Arc<Mutex<LruCache<String, Instant>>>,
+    forced_refresh_interval: Duration,
     ssrf_policy: SsrfPolicy,
     // Stored verbatim so [`Self::with_ssrf_policy`] can rebuild the
     // HTTP client (the DNS resolver is wired in at builder time, so a
@@ -138,6 +182,8 @@ impl WebResolver {
         Ok(Self {
             http,
             cache: Arc::new(Mutex::new(LruCache::new(cap))),
+            forced: Arc::new(Mutex::new(LruCache::new(cap))),
+            forced_refresh_interval: DEFAULT_FORCED_REFRESH_INTERVAL,
             ssrf_policy: policy,
             root_cert_pem: Some(pem.to_vec()),
         })
@@ -153,6 +199,8 @@ impl WebResolver {
         Ok(Self {
             http,
             cache: Arc::new(Mutex::new(LruCache::new(cap))),
+            forced: Arc::new(Mutex::new(LruCache::new(cap))),
+            forced_refresh_interval: DEFAULT_FORCED_REFRESH_INTERVAL,
             ssrf_policy,
             root_cert_pem,
         })
@@ -194,22 +242,182 @@ impl WebResolver {
         Ok(self)
     }
 
+    /// Set the minimum interval between two forced re-fetches of the
+    /// same DID (default [`DEFAULT_FORCED_REFRESH_INTERVAL`], one hour).
+    /// `Duration::ZERO` disables the rate limit.
+    pub fn with_forced_refresh_interval(mut self, interval: Duration) -> Self {
+        self.forced_refresh_interval = interval;
+        self
+    }
+
+    /// The configured forced-refresh interval.
+    pub fn forced_refresh_interval(&self) -> Duration {
+        self.forced_refresh_interval
+    }
+
     /// Resolve a `did:web:…` DID to a DID document.
     ///
-    /// Hits the cache on repeated calls for the same DID.  Refreshes
-    /// on any downstream verification failure if needed.
+    /// Hits the cache on repeated calls for the same DID. Verifiers that
+    /// need the RFC-ACDP-0001 §5.11 "refresh on plausible rotation"
+    /// behavior use [`Self::resolve_until`].
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(did = did)))]
     pub async fn resolve(&self, did: &str) -> Result<DidDocument, AcdpError> {
+        Ok(self.resolve_tracked(did).await?.document)
+    }
+
+    /// [`Self::resolve`], also reporting when the document was fetched.
+    pub async fn resolve_tracked(&self, did: &str) -> Result<ResolvedDidDocument, AcdpError> {
         // Check cache (mutates LRU recency on hit)
         {
             let mut cache = self.cache.lock().unwrap();
             if let Some(entry) = cache.get(did) {
                 if entry.cached_at.elapsed() < CACHE_MAX {
-                    return Ok(entry.doc.clone());
+                    return Ok(ResolvedDidDocument {
+                        document: entry.doc.clone(),
+                        fetched_at: entry.cached_at,
+                    });
                 }
             }
         }
+        self.fetch_and_store(did).await
+    }
 
+    /// Forced re-fetch: bypass the cache, fetch the document over HTTPS
+    /// and repopulate the cache (RFC-ACDP-0001 §5.11 "Caching").
+    ///
+    /// Rate-limited per DID to one forced fetch per
+    /// [`Self::forced_refresh_interval`]. A refused forced fetch returns
+    /// [`AcdpError::KeyResolutionUnreachable`] (transient): the caller
+    /// could not obtain a fresh document, which is not evidence about
+    /// the key.
+    pub async fn resolve_fresh(&self, did: &str) -> Result<DidDocument, AcdpError> {
+        if !self.try_claim_forced(did) {
+            return Err(AcdpError::KeyResolutionUnreachable(format!(
+                "forced re-fetch of {did} refused by the per-DID rate limit ({:?})",
+                self.forced_refresh_interval
+            )));
+        }
+        Ok(self.fetch_and_store(did).await?.document)
+    }
+
+    /// Resolve `did` for an operation that started at `since`, accepting
+    /// the first document for which `accept` returns `true`.
+    ///
+    /// This is the RFC-ACDP-0001 §5.11 "Caching" *(0.5.0)* rule made
+    /// mechanical:
+    ///
+    /// 1. Resolve normally (cache allowed). If `accept` passes, done.
+    /// 2. If the document was fetched at or after `since`, it is already
+    ///    fresh for this operation: return it, `fresh = true` (the
+    ///    verdict against it is final).
+    /// 3. If another task re-fetched the document after `since`, use
+    ///    that copy (`fresh = true`) — concurrent verifications share one
+    ///    forced fetch.
+    /// 4. Otherwise force one re-fetch, subject to the per-DID rate
+    ///    limit, and return the fresh document (`fresh = true`). When the
+    ///    rate limit refuses, the cached copy is returned with
+    ///    `fresh = false`; the caller decides whether that is final
+    ///    (for example, a key present but not in `assertionMethod`) or
+    ///    must be reported as transient (a key absent from the cached
+    ///    document).
+    pub async fn resolve_until<F>(
+        &self,
+        did: &str,
+        since: Instant,
+        accept: F,
+    ) -> Result<FreshResolution, AcdpError>
+    where
+        F: Fn(&DidDocument) -> bool,
+    {
+        let first = self.resolve_tracked(did).await?;
+        if accept(&first.document) || first.fetched_at >= since {
+            return Ok(FreshResolution {
+                document: first.document,
+                fresh: first.fetched_at >= since,
+            });
+        }
+        // Someone else already refreshed after `since`?
+        {
+            let mut cache = self.cache.lock().unwrap();
+            if let Some(entry) = cache.get(did) {
+                if entry.cached_at >= since && entry.cached_at > first.fetched_at {
+                    return Ok(FreshResolution {
+                        document: entry.doc.clone(),
+                        fresh: true,
+                    });
+                }
+            }
+        }
+        if !self.try_claim_forced(did) {
+            #[cfg(feature = "tracing")]
+            tracing::debug!(
+                did,
+                "forced DID re-fetch refused by rate limit; evaluating cached copy"
+            );
+            return Ok(FreshResolution {
+                document: first.document,
+                fresh: false,
+            });
+        }
+        let fresh = self.fetch_and_store(did).await?;
+        Ok(FreshResolution {
+            document: fresh.document,
+            fresh: true,
+        })
+    }
+
+    /// Resolve `did` and return a document that contains a
+    /// `verificationMethod` with `#fragment`, re-fetching once (per
+    /// [`Self::resolve_until`]) when the cached copy lacks it.
+    ///
+    /// Errors when the key is still absent:
+    ///
+    /// - [`AcdpError::KeyResolution`] (permanent) — absent from a
+    ///   document fetched at or after `since`: the RFC-ACDP-0001 §5.11
+    ///   step 4 verdict, final per "Caching".
+    /// - [`AcdpError::KeyResolutionUnreachable`] (transient) — absent
+    ///   from an older cached copy whose forced re-fetch the rate limit
+    ///   refused. No fresh document was seen, so absence is not proven.
+    pub async fn resolve_with_fragment(
+        &self,
+        did: &str,
+        fragment: &str,
+        since: Instant,
+    ) -> Result<DidDocument, AcdpError> {
+        let res = self
+            .resolve_until(did, since, |doc| doc.find_by_fragment(fragment).is_some())
+            .await?;
+        if res.document.find_by_fragment(fragment).is_some() {
+            return Ok(res.document);
+        }
+        if res.fresh {
+            Err(AcdpError::KeyResolution(format!(
+                "no verification method with fragment '#{fragment}' in {did} \
+                 (checked against a freshly fetched DID document)"
+            )))
+        } else {
+            Err(AcdpError::KeyResolutionUnreachable(format!(
+                "no verification method with fragment '#{fragment}' in the cached DID \
+                 document for {did}, and the forced re-fetch was refused by the per-DID \
+                 rate limit — absence is not proven"
+            )))
+        }
+    }
+
+    /// Record a forced fetch for `did` if the rate limit allows one now.
+    fn try_claim_forced(&self, did: &str) -> bool {
+        let mut forced = self.forced.lock().unwrap();
+        let now = Instant::now();
+        if let Some(last) = forced.get(did) {
+            if now.duration_since(*last) < self.forced_refresh_interval {
+                return false;
+            }
+        }
+        forced.put(did.to_string(), now);
+        true
+    }
+
+    async fn fetch_and_store(&self, did: &str) -> Result<ResolvedDidDocument, AcdpError> {
         let url = did_web_to_url(did)?;
 
         // RFC-ACDP-0008 §4.8: a producer-controlled did:web authority is
@@ -231,8 +439,14 @@ impl WebResolver {
             .await
             .map_err(|e| classify_reqwest_error(&e))?;
 
+        // RFC-ACDP-0001 §5.11 step 3 (did-001 A): ANY non-2xx DID-document
+        // response — 404 and 410 included — is `key_resolution_unreachable`
+        // (transient). A briefly-misconfigured or unavailable DID host is not
+        // evidence that the key does not exist, and a permanent verdict here
+        // is exactly what lets revocation discovery drop a real revocation
+        // candidate (RFC-ACDP-0014 §8, 0.5.0 discovery outcome classes).
         if !resp.status().is_success() {
-            return Err(AcdpError::KeyResolution(format!(
+            return Err(AcdpError::KeyResolutionUnreachable(format!(
                 "DID document fetch returned HTTP {}",
                 resp.status()
             )));
@@ -263,18 +477,22 @@ impl WebResolver {
             .map_err(|e| AcdpError::KeyResolution(format!("DID document parse: {e}")))?;
 
         // Store in cache (evicts LRU on overflow)
+        let fetched_at = Instant::now();
         {
             let mut cache = self.cache.lock().unwrap();
             cache.put(
                 did.to_string(),
                 CacheEntry {
                     doc: doc.clone(),
-                    cached_at: Instant::now(),
+                    cached_at: fetched_at,
                 },
             );
         }
 
-        Ok(doc)
+        Ok(ResolvedDidDocument {
+            document: doc,
+            fetched_at,
+        })
     }
 
     /// Invalidate a specific DID's cache entry, forcing a fresh fetch.

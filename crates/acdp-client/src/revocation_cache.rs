@@ -37,84 +37,126 @@
 //!   and which §8 explicitly warns about: "a malicious registry can hide a
 //!   revocation … absence of search results is not evidence of absence." So
 //!   a marker is TTL-bounded ([`crate::verified::RevocationDiscovery::freshness`],
-//!   default [`std::time::Duration::ZERO`] — i.e. off), per-vantage, and
-//!   read via `RevocationCache::marker_fresh` (crate-private) — the only
+//!   default 300 s — RFC-ACDP-0014 §8's RECOMMENDED bound), per-vantage,
+//!   per-trust-class, and read via `RevocationCache::fresh_marker`
+//!   (crate-private) — the only
 //!   method in this module that can cause a lookup to be skipped rather
 //!   than merely supplemented.
 //!
-//! Both objects live in the same per-producer `CacheEntry` (crate-private)
-//! so eviction is whole-entry: facts and markers for one producer always leave together,
-//! which makes "a fresh marker over an evicted (or fact-capped) set" —
-//! stale-absence-over-nothing — structurally unrepresentable rather than
-//! merely guarded against.
+//! **The two objects are stored separately and have different lifetimes**
+//! (0.15.0, RFC-ACDP-0014 §8 "Caching", 0.5.0):
+//!
+//! - Facts are **never evicted**. A fact can only leave the cache with the
+//!   cache itself. Admission is capped per producer
+//!   ([`MAX_FACTS_PER_CLASS`] per trust class, and per origin for the
+//!   registry-attested class); a fact refused at the cap still applies to
+//!   the call that found it, and the capped slot stops minting markers so
+//!   that lookup runs in full on every later call rather than claiming a
+//!   completeness the cache can no longer track.
+//! - Markers live in a bounded map ([`MAX_MARKERS`]). Losing a marker only
+//!   costs a re-discovery, so the oldest is evicted at capacity. Each one
+//!   records the wall-clock time the absence was observed, which the
+//!   verdict reports (`RevocationVerdict::NotRevoked::observed_at`).
+//!
+//! Only a complete, untruncated lookup mints a marker. Every `unknown`
+//! outcome (truncated, unanswerable, transient, unverifiable candidate)
+//! returns `Err` before `record_success` is reached, so `unknown` is never
+//! cached as not-revoked.
 //!
 //! **Never call anything here holding the lock across an `.await`** — every
 //! method in this module is synchronous and returns before its caller does
 //! any network I/O.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use acdp_types::revocation::{KeyRevocation, RevocationTrustClass};
 
-/// Capacity-triggered bound on the number of distinct producer/controller
-/// entries this cache holds. Deliberately **not** an LRU (no recency
-/// tracking) — per the wave plan (issue #257), eviction here can only ever
-/// lose caching, never safety (a missing entry just means discovery runs
-/// again), so plain capacity-triggered eviction of an arbitrary entry is
-/// sufficient.
-const MAX_CACHE_ENTRIES: usize = 1000;
+/// Bound on the number of freshness markers held. Markers are a pure
+/// optimization, so at capacity the oldest one is evicted.
+pub const MAX_MARKERS: usize = 4096;
 
-/// Per-entry cap on stored facts. Reached only by a producer with a
-/// genuinely large revocation history, or (defensively) a registry padding
-/// results — either way, once hit this entry stops accepting new facts and
-/// drops its markers, degrading to plain pass-through (full discovery,
-/// every call) rather than to false completeness. `KeyRevocation` is not
-/// `Hash` (`acdp_types::revocation`), so dedup on insert is a linear `Eq`
-/// scan — trivial at this bound.
-const MAX_FACTS_PER_ENTRY: usize = 256;
+/// Admission cap on stored facts per producer for the producer-signed
+/// class, and per `(producer, origin)` for the registry-attested class.
+/// Reached only by a producer with a genuinely large revocation history, or
+/// a registry padding results. Stored facts are never removed; a fact
+/// refused here still applies to the call that found it, and the slot stops
+/// minting markers.
+pub const MAX_FACTS_PER_CLASS: usize = 256;
 
 /// A cached, verified [`KeyRevocation`] plus the vantage that minted it.
 ///
-/// BLOCKER-1 (fresh-Opus review of the #257/#258/#260 wave): the origin is
-/// consulted only for [`RevocationTrustClass::RegistryAttested`] facts —
-/// `facts_for` filters those to `origin == current vantage`, per
-/// RFC-ACDP-0014 §6 ("apply it ... for contexts served by or receipted by
-/// that same registry"). A [`RevocationTrustClass::ProducerSigned`] fact is
-/// self-contained (§8) and is never filtered by origin regardless of what
-/// this field holds.
+/// The origin is consulted only for
+/// [`RevocationTrustClass::RegistryAttested`] facts — `facts_for` filters
+/// those to `origin == current vantage`, per RFC-ACDP-0014 §6 ("apply it
+/// ... for contexts served by or receipted by that same registry"). A
+/// [`RevocationTrustClass::ProducerSigned`] fact is self-contained (§8) and
+/// is never filtered by origin.
+#[derive(Clone)]
 struct StoredFact {
     rev: KeyRevocation,
-    /// [`crate::RegistryClient::authority`] at the moment [`RevocationCache::record_success`]
-    /// stored this fact. Both call sites (`crate::revocation::find_revocations`,
-    /// `crate::revocation::find_registry_attested_revocations`) gate the
-    /// call on a `Some(vantage)`, so this is always the vantage that
-    /// genuinely served/attested the fact, never a placeholder.
+    /// The [`crate::RegistryClient::authority`] whose complete discovery
+    /// stored this fact.
     origin: String,
 }
 
-/// One producer/controller's cached state: verified facts (both trust
-/// classes, filtered by class AND, for registry-attested facts, by origin
-/// on read) plus per-vantage freshness markers.
+/// One producer's verified facts. Never evicted.
 #[derive(Default)]
-struct CacheEntry {
+struct FactSet {
     facts: Vec<StoredFact>,
-    /// Keyed by `(authority, is_registry_attested)` — never by trust class
-    /// alone (a producer-signed and a registry-attested marker for the same
-    /// authority are independent) and never by the search identity used
-    /// internally by the registry-attested lookup (that would let one
-    /// marker suppress discovery for every producer at that registry — see
-    /// `crate::revocation::find_registry_attested_revocations`, which keys
-    /// its marker by the `controller` parameter, not by
-    /// `capabilities.registry_did`). Plain `bool` rather than
-    /// `RevocationTrustClass` because that type is not `Hash`.
-    markers: HashMap<(String, bool), Instant>,
-    /// Set once `facts.len()` has reached [`MAX_FACTS_PER_ENTRY`]; once
-    /// true, new facts are dropped and no further marker is ever minted for
-    /// this entry, so it degrades to pass-through rather than silently
-    /// claiming completeness it can no longer track.
-    at_cap: bool,
+    /// The producer-signed slot reached [`MAX_FACTS_PER_CLASS`].
+    producer_signed_full: bool,
+    /// Origins whose registry-attested slot reached [`MAX_FACTS_PER_CLASS`].
+    attested_full: HashSet<String>,
+}
+
+impl FactSet {
+    fn count(&self, class: RevocationTrustClass, origin: &str) -> usize {
+        self.facts
+            .iter()
+            .filter(|f| {
+                f.rev.trust_class == class
+                    && (class == RevocationTrustClass::ProducerSigned || f.origin == origin)
+            })
+            .count()
+    }
+
+    fn full(&self, class: RevocationTrustClass, origin: &str) -> bool {
+        match class {
+            RevocationTrustClass::ProducerSigned => self.producer_signed_full,
+            RevocationTrustClass::RegistryAttested => self.attested_full.contains(origin),
+        }
+    }
+
+    fn mark_full(&mut self, class: RevocationTrustClass, origin: &str) {
+        match class {
+            RevocationTrustClass::ProducerSigned => self.producer_signed_full = true,
+            RevocationTrustClass::RegistryAttested => {
+                self.attested_full.insert(origin.to_string());
+            }
+        }
+    }
+}
+
+/// `(agent_id, authority, is_registry_attested)`. Never keyed by the search
+/// identity the registry-attested lookup uses internally (that would let
+/// one marker suppress discovery for every producer at that registry).
+type MarkerKey = (String, String, bool);
+
+/// A cached complete absence: when it was observed, on both clocks.
+#[derive(Clone, Copy)]
+struct Marker {
+    /// Monotonic — drives the freshness comparison.
+    minted: Instant,
+    /// Wall clock — reported as the verdict's `observed_at`.
+    observed: SystemTime,
+}
+
+#[derive(Default)]
+struct Inner {
+    facts: HashMap<String, FactSet>,
+    markers: HashMap<MarkerKey, Marker>,
 }
 
 /// N5: an exhaustive `match`, not `matches!`, so a future third
@@ -131,25 +173,21 @@ fn class_key(class: RevocationTrustClass) -> bool {
 /// markers, injectable into a [`crate::RegistryClient`] via
 /// [`crate::RegistryClient::with_revocation_cache`].
 ///
-/// `Clone`, cheap (an `Arc` handle around a `Mutex<HashMap<..>>>`, following
-/// the same hand-rolled-bound pattern `CrossRegistryResolver` already uses
-/// for `client_cache`/`caps_cache` — see `crate::cross_registry`). Sharing
-/// one clone across multiple `RegistryClient`s (or multiple producers'
-/// verify calls) is the point: it is how a caller amortizes discovery
-/// across many `verify_retrieved` calls against the same producer, and how
-/// issue #260's cross-registry walk will later share one cache across the
-/// per-authority clients it builds.
+/// `Clone`, cheap (an `Arc` handle). Sharing one clone across multiple
+/// `RegistryClient`s (or a `CrossRegistryResolver`'s per-authority clients)
+/// is the point: it is how a caller amortizes discovery across many
+/// verifications of the same producer.
 ///
-/// Attaching a cache changes nothing observable by itself: with the default
-/// `freshness: Duration::ZERO` (both `RevocationDiscovery` named
-/// constructors), markers never suppress a lookup — see
-/// `marker_fresh`'s fast path (crate-private). The only behavioral change from
-/// attaching a cache at the default is anti-rollback (facts persisting
-/// across an induced discovery failure); saving requests is a *further*,
-/// opt-in step that requires setting `freshness` above zero.
+/// Facts (verified revocations) are held for the cache's lifetime and are
+/// always unioned into classification. Markers (complete absences) suppress
+/// a lookup only while younger than
+/// [`RevocationDiscovery::freshness`](crate::RevocationDiscovery::freshness)
+/// — 300 s from both named constructors
+/// ([`crate::RECOMMENDED_NEGATIVE_FRESHNESS`]), `Duration::ZERO` to never
+/// suppress.
 #[derive(Clone)]
 pub struct RevocationCache {
-    inner: Arc<Mutex<HashMap<String, CacheEntry>>>,
+    inner: Arc<Mutex<Inner>>,
 }
 
 impl RevocationCache {
@@ -157,127 +195,99 @@ impl RevocationCache {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            inner: Arc::new(Mutex::new(HashMap::new())),
+            inner: Arc::new(Mutex::new(Inner::default())),
         }
     }
 
-    /// Recover from a poisoned lock rather than propagate the panic. A
-    /// poisoned cache must degrade to *running discovery* (the safe
-    /// direction), never to silently skipping it — recovering the guard
-    /// and continuing achieves exactly that: the stale/possibly-torn data
-    /// underneath can, at worst, cause an unnecessary re-discovery (a
-    /// missed marker) or an unnecessary fact write, never a false skip of
-    /// a lookup that was never actually run.
-    fn lock(&self) -> MutexGuard<'_, HashMap<String, CacheEntry>> {
+    /// Recover from a poisoned lock rather than propagate the panic. Used
+    /// only by the fact read/write paths, where recovering can at worst
+    /// tighten a verdict or cost an extra write — never skip a lookup.
+    fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Read cached facts for `agent_id`, filtered to the trust classes the
-    /// CURRENT discovery configuration opted into — never all classes ever
-    /// cached. A `producer_signed_only()` caller must not have a
-    /// registry-attested fact (cached from some earlier `all_trust_classes()`
-    /// run against the same producer) silently applied to it; that would
-    /// apply a trust class this call explicitly declined, per RFC-ACDP-0014
-    /// §6.
-    ///
-    /// BLOCKER-1: a registry-attested fact is ADDITIONALLY filtered to
-    /// `origin == current_vantage` — a registry-attested claim is one
-    /// specific registry's claim (§6), so a fact minted while talking to
-    /// authority A must not apply while talking to a different authority
-    /// B, even under `all_trust_classes()`. `current_vantage: None` (no
-    /// resolvable authority on this call's client) excludes every
-    /// registry-attested fact, fail-closed toward "don't apply," never
-    /// toward "apply everywhere." A producer-signed fact is never filtered
-    /// by origin — it is self-contained (§8) and correct to cross vantages.
-    ///
-    /// Returns an empty `Vec` when no entry exists yet — a cache miss is
-    /// indistinguishable from "no facts found," which is correct: either
-    /// way discovery proceeds unseeded.
+    /// CURRENT discovery configuration opted into, with the vantage each
+    /// was first verified at. A registry-attested fact is additionally
+    /// filtered to `origin == current_vantage` (§6); `current_vantage:
+    /// None` excludes every registry-attested fact. A producer-signed fact
+    /// is never filtered by origin (§8).
     pub(crate) fn facts_for(
         &self,
         agent_id: &str,
         include_registry_attested: bool,
         current_vantage: Option<&str>,
-    ) -> Vec<KeyRevocation> {
-        let map = self.lock();
-        match map.get(agent_id) {
-            Some(entry) => entry
-                .facts
-                .iter()
-                .filter(|f| match f.rev.trust_class {
-                    RevocationTrustClass::ProducerSigned => true,
-                    RevocationTrustClass::RegistryAttested => {
-                        include_registry_attested && current_vantage.is_some_and(|v| v == f.origin)
-                    }
-                })
-                .map(|f| f.rev.clone())
-                .collect(),
-            None => Vec::new(),
-        }
+    ) -> Vec<(KeyRevocation, String)> {
+        let inner = self.lock();
+        let Some(set) = inner.facts.get(agent_id) else {
+            return Vec::new();
+        };
+        set.facts
+            .iter()
+            .filter(|f| match f.rev.trust_class {
+                RevocationTrustClass::ProducerSigned => true,
+                RevocationTrustClass::RegistryAttested => {
+                    include_registry_attested && current_vantage.is_some_and(|v| v == f.origin)
+                }
+            })
+            .map(|f| (f.rev.clone(), f.origin.clone()))
+            .collect()
     }
 
-    /// Check whether a marker minted for `(authority, agent_id, class)` is
-    /// still within `freshness` — the only method that can cause a lookup
-    /// to be skipped. `freshness == Duration::ZERO` (the default) always
-    /// returns `false` without even touching the lock: a zero TTL can
-    /// never be "still fresh," and this fast path is what keeps the
-    /// default behavior request-for-request identical to no cache at all
-    /// (issue #257 AC3).
+    /// When a marker for `(authority, agent_id, class)` is younger than
+    /// `freshness`, the wall-clock time its absence was observed; else
+    /// `None`. The only method that can cause a lookup to be skipped.
+    /// `freshness == Duration::ZERO` never touches the lock.
     ///
-    /// N4: matches the raw `lock()` result directly rather than recovering
-    /// via `poisoned.into_inner()` — a marker present at poison time must
-    /// not suppress discovery. A poisoned lock (`Err(_)`) returns `false`
-    /// unconditionally, degrading to "run discovery" (the safe direction),
-    /// never to a false skip. Recovering via `into_inner` is reserved for
-    /// `facts_for`/`record_success` below, where recovering can only ever
-    /// tighten a verdict or cost an extra future write, never cause a
-    /// false skip.
-    pub(crate) fn marker_fresh(
+    /// A poisoned lock returns `None` (run discovery) rather than recover
+    /// a marker present at poison time.
+    pub(crate) fn fresh_marker(
+        &self,
+        authority: &str,
+        agent_id: &str,
+        class: RevocationTrustClass,
+        freshness: Duration,
+    ) -> Option<SystemTime> {
+        if freshness.is_zero() {
+            return None;
+        }
+        let inner = self.inner.lock().ok()?;
+        let key = (
+            agent_id.to_string(),
+            authority.to_string(),
+            class_key(class),
+        );
+        inner
+            .markers
+            .get(&key)
+            .filter(|m| m.minted.elapsed() < freshness)
+            .map(|m| m.observed)
+    }
+
+    /// Whether a fresh marker exists — `fresh_marker(..).is_some()`.
+    #[cfg(test)]
+    fn marker_fresh(
         &self,
         authority: &str,
         agent_id: &str,
         class: RevocationTrustClass,
         freshness: Duration,
     ) -> bool {
-        if freshness.is_zero() {
-            return false;
-        }
-        let map = match self.inner.lock() {
-            Ok(guard) => guard,
-            Err(_poisoned) => return false,
-        };
-        match map
-            .get(agent_id)
-            .and_then(|e| e.markers.get(&(authority.to_string(), class_key(class))))
-        {
-            Some(minted_at) => minted_at.elapsed() < freshness,
-            None => false,
-        }
+        self.fresh_marker(authority, agent_id, class, freshness)
+            .is_some()
     }
 
-    /// Record a fully successful, untruncated discovery lookup: dedup-merge
-    /// `facts` into the entry (via `KeyRevocation`'s derived `Eq` — it is
-    /// not `Hash`) and, unless the per-entry fact cap has just been
-    /// reached, mint a fresh marker for `(authority, agent_id, class)`.
+    /// Record a complete, untruncated discovery lookup: admit new `facts`
+    /// (dedup via `KeyRevocation`'s `Eq`) and, unless this slot is at its
+    /// admission cap, mint a marker for `(authority, agent_id, class)`.
     ///
     /// Called ONLY from the tail of `find_revocations` /
     /// `find_registry_attested_revocations`, immediately before each
-    /// returns `Ok` — i.e. only on a call that neither errored nor hit
-    /// `AcdpError::SearchTruncated`, both of which return early via `?`
-    /// before ever reaching here. This is what makes "marker minted only on
-    /// full, untruncated success" structural rather than a discipline: a
-    /// truncated or failed call simply never calls this method, so it can
-    /// neither corrupt the fact set (facts are additive-only regardless)
-    /// nor mint a marker that would silently suppress the next attempt.
-    ///
-    /// At the per-entry fact cap, new facts are dropped (not merely this
-    /// call's — the entry is permanently past caching new information) and
-    /// existing markers for the entry are cleared, so it degrades to
-    /// pass-through: every future call re-discovers from scratch for this
-    /// producer, rather than risk a marker outliving a set that can no
-    /// longer track completeness.
+    /// returns `Ok` — a truncated, failed, or otherwise `unknown` lookup
+    /// returns early and never reaches here, so it can neither mint a
+    /// marker nor lose a fact.
     pub(crate) fn record_success(
         &self,
         authority: &str,
@@ -285,62 +295,60 @@ impl RevocationCache {
         class: RevocationTrustClass,
         facts: &[KeyRevocation],
     ) {
-        let mut map = self.lock();
-        if !map.contains_key(agent_id) && map.len() >= MAX_CACHE_ENTRIES {
-            // Capacity-triggered eviction of an arbitrary existing entry —
-            // no LRU recency tracking (see MAX_CACHE_ENTRIES doc). Losing
-            // an entry can only cost a future re-discovery, never safety.
-            if let Some(victim) = map.keys().next().cloned() {
-                map.remove(&victim);
+        let mut inner = self.lock();
+        let set = inner.facts.entry(agent_id.to_string()).or_default();
+        for f in facts {
+            // Dedup BEFORE the cap: re-finding a known fact must never trip
+            // the cap.
+            if set.facts.iter().any(|existing| existing.rev == *f) {
+                continue;
             }
-        }
-        let entry = map.entry(agent_id.to_string()).or_default();
-        if !entry.at_cap {
-            for f in facts {
-                // N6: check for a duplicate BEFORE consulting the cap. A
-                // re-discovery of facts already known must never itself
-                // trip `at_cap` (and clear this entry's markers) merely
-                // because the entry happens to sit exactly at the limit —
-                // only a genuinely NEW fact that would overflow the cap
-                // does that.
-                if entry.facts.iter().any(|existing| existing.rev == *f) {
-                    continue;
-                }
-                if entry.facts.len() >= MAX_FACTS_PER_ENTRY {
-                    entry.at_cap = true;
-                    break;
-                }
-                entry.facts.push(StoredFact {
-                    rev: f.clone(),
-                    origin: authority.to_string(),
-                });
+            let fact_origin = authority;
+            if set.count(f.trust_class, fact_origin) >= MAX_FACTS_PER_CLASS {
+                set.mark_full(f.trust_class, fact_origin);
+                continue;
             }
+            set.facts.push(StoredFact {
+                rev: f.clone(),
+                origin: fact_origin.to_string(),
+            });
         }
-        if entry.at_cap {
-            entry.markers.clear();
-        } else {
-            entry
+        let full = set.full(class, authority);
+        let key = (
+            agent_id.to_string(),
+            authority.to_string(),
+            class_key(class),
+        );
+        if full {
+            inner.markers.remove(&key);
+            return;
+        }
+        if !inner.markers.contains_key(&key) && inner.markers.len() >= MAX_MARKERS {
+            if let Some(oldest) = inner
                 .markers
-                .insert((authority.to_string(), class_key(class)), Instant::now());
+                .iter()
+                .min_by_key(|(_, m)| m.minted)
+                .map(|(k, _)| k.clone())
+            {
+                inner.markers.remove(&oldest);
+            }
         }
+        inner.markers.insert(
+            key,
+            Marker {
+                minted: Instant::now(),
+                observed: SystemTime::now(),
+            },
+        );
     }
 
-    /// Test-only introspection (MATERIAL-2, fresh-Opus review of Phase 2):
-    /// the number of facts currently stored for `agent_id`, unfiltered by
-    /// trust class or origin. Exists so an integration test can prove
-    /// dedup holds across independently-run, real discoveries — not just
-    /// across clones of one in-memory value, which is all the unit test
-    /// `record_success_dedups_identical_facts` below can show.
-    ///
-    /// `#[doc(hidden)]` and gated behind `test-transport`, the same
-    /// feature that already gates `RegistryClient::with_test_endpoint` for
-    /// exactly this reason: a tiny, harmless, read-only accessor that must
-    /// never be mistaken for part of the real public surface.
+    /// Test-only introspection: the number of facts stored for `agent_id`,
+    /// unfiltered by trust class or origin.
     #[doc(hidden)]
     #[cfg(feature = "test-transport")]
     #[must_use]
     pub fn fact_count(&self, agent_id: &str) -> usize {
-        self.lock().get(agent_id).map_or(0, |e| e.facts.len())
+        self.lock().facts.get(agent_id).map_or(0, |s| s.facts.len())
     }
 }
 
@@ -372,6 +380,7 @@ mod tests {
             ),
             publisher: acdp_types::primitives::AgentDid::new("did:web:agents.example.com:p"),
             trust_class: class,
+            ctx_id: None,
         }
     }
 
@@ -397,13 +406,14 @@ mod tests {
         );
     }
 
-    /// Per-entry fact cap: once reached, new distinct facts are dropped and
-    /// markers are cleared (never a fresh marker over a set that stopped
+    /// Admission cap: once a producer-signed slot is full, new distinct
+    /// facts are not admitted, already-stored ones stay, and the slot
+    /// stops minting markers (never a fresh marker over a set that stopped
     /// growing).
     #[test]
-    fn record_success_caps_facts_and_drops_markers_at_cap() {
+    fn record_success_caps_admission_and_drops_markers_at_cap() {
         let cache = RevocationCache::new();
-        for i in 0..(MAX_FACTS_PER_ENTRY + 5) {
+        for i in 0..(MAX_FACTS_PER_CLASS + 5) {
             let fp = format!("sha256:{i:064x}");
             let r = rev(&fp, RevocationTrustClass::ProducerSigned);
             cache.record_success(
@@ -417,7 +427,7 @@ mod tests {
             cache
                 .facts_for("did:web:p", true, Some("reg.example"))
                 .len(),
-            MAX_FACTS_PER_ENTRY
+            MAX_FACTS_PER_CLASS
         );
         assert!(!cache.marker_fresh(
             "reg.example",
@@ -425,6 +435,40 @@ mod tests {
             RevocationTrustClass::ProducerSigned,
             Duration::from_secs(3600)
         ));
+    }
+
+    /// A full registry-attested slot at one origin does not stop markers
+    /// for the producer-signed class or for another origin.
+    #[test]
+    fn attested_cap_is_per_origin() {
+        let cache = RevocationCache::new();
+        for i in 0..=MAX_FACTS_PER_CLASS {
+            let fp = format!("sha256:{i:064x}");
+            cache.record_success(
+                "a.example",
+                "did:web:p",
+                RevocationTrustClass::RegistryAttested,
+                &[rev(&fp, RevocationTrustClass::RegistryAttested)],
+            );
+        }
+        let fresh = |auth: &str, class| {
+            cache.marker_fresh(auth, "did:web:p", class, Duration::from_secs(3600))
+        };
+        assert!(!fresh("a.example", RevocationTrustClass::RegistryAttested));
+        cache.record_success(
+            "b.example",
+            "did:web:p",
+            RevocationTrustClass::RegistryAttested,
+            &[],
+        );
+        cache.record_success(
+            "a.example",
+            "did:web:p",
+            RevocationTrustClass::ProducerSigned,
+            &[],
+        );
+        assert!(fresh("b.example", RevocationTrustClass::RegistryAttested));
+        assert!(fresh("a.example", RevocationTrustClass::ProducerSigned));
     }
 
     /// `facts_for` filters registry-attested facts out for a
@@ -568,81 +612,91 @@ mod tests {
         ));
     }
 
-    /// AC10: eviction cannot desync — an evicted entry loses its fact and
-    /// its marker TOGETHER, never one without the other. Whole-entry
-    /// eviction (`record_success`'s capacity check keys on the outer
-    /// `agent_id` map, never on facts/markers separately) makes this
-    /// unrepresentable rather than merely guarded: insert one more
-    /// distinct producer than `MAX_CACHE_ENTRIES` allows and confirm
-    /// fact-presence and marker-presence agree for every surviving and
-    /// evicted entry alike.
+    /// RFC-ACDP-0014 §8 "Caching" (0.5.0): verified revocations are
+    /// retained for the cache's lifetime — marker pressure evicts markers
+    /// only, never a fact, and facts are stored separately from markers.
     #[test]
-    fn eviction_at_capacity_removes_facts_and_markers_together() {
+    fn facts_are_never_evicted_by_marker_pressure() {
         let cache = RevocationCache::new();
-        for i in 0..MAX_CACHE_ENTRIES {
-            let agent = format!("did:web:p{i}");
-            let fp = format!("sha256:{i:064x}");
-            cache.record_success(
-                "reg.example",
-                &agent,
-                RevocationTrustClass::ProducerSigned,
-                &[rev(&fp, RevocationTrustClass::ProducerSigned)],
-            );
-        }
-        for i in 0..MAX_CACHE_ENTRIES {
-            let agent = format!("did:web:p{i}");
-            assert_eq!(
-                cache.facts_for(&agent, true, Some("reg.example")).len(),
-                1,
-                "entry {i} must have its fact before eviction pressure"
-            );
-        }
-
-        // One more distinct entry forces capacity-triggered eviction of
-        // some existing entry.
-        let overflow_agent = "did:web:overflow";
+        let revoked = rev(
+            "sha256:aaaa000000000000000000000000000000000000000000000000000000000000",
+            RevocationTrustClass::ProducerSigned,
+        );
         cache.record_success(
             "reg.example",
-            overflow_agent,
+            "did:web:revoked",
             RevocationTrustClass::ProducerSigned,
-            &[rev(
-                "sha256:overff0000000000000000000000000000000000000000000000000000000",
-                RevocationTrustClass::ProducerSigned,
-            )],
+            std::slice::from_ref(&revoked),
         );
-
-        let mut evicted = 0;
-        for i in 0..MAX_CACHE_ENTRIES {
-            let agent = format!("did:web:p{i}");
-            let has_fact = !cache
-                .facts_for(&agent, true, Some("reg.example"))
-                .is_empty();
-            let has_marker = cache.marker_fresh(
+        // Far more distinct producers than the marker bound.
+        for i in 0..(MAX_MARKERS * 2) {
+            cache.record_success(
                 "reg.example",
-                &agent,
+                &format!("did:web:p{i}"),
+                RevocationTrustClass::ProducerSigned,
+                &[],
+            );
+        }
+        let facts = cache.facts_for("did:web:revoked", false, None);
+        assert_eq!(facts.len(), 1, "the verified revocation must survive");
+        assert_eq!(facts[0].0, revoked);
+        assert_eq!(facts[0].1, "reg.example");
+        // Its marker was the oldest, so it went — the absence is
+        // re-discovered, the fact is not forgotten.
+        assert!(!cache.marker_fresh(
+            "reg.example",
+            "did:web:revoked",
+            RevocationTrustClass::ProducerSigned,
+            Duration::from_secs(3600)
+        ));
+        assert!(cache.lock().markers.len() <= MAX_MARKERS);
+    }
+
+    /// Marker eviction removes the oldest marker.
+    #[test]
+    fn marker_eviction_removes_oldest() {
+        let cache = RevocationCache::new();
+        for i in 0..=MAX_MARKERS {
+            cache.record_success(
+                "reg.example",
+                &format!("did:web:p{i}"),
+                RevocationTrustClass::ProducerSigned,
+                &[],
+            );
+        }
+        let fresh = |agent: &str| {
+            cache.marker_fresh(
+                "reg.example",
+                agent,
                 RevocationTrustClass::ProducerSigned,
                 Duration::from_secs(3600),
-            );
-            assert_eq!(
-                has_fact, has_marker,
-                "entry {i}: fact presence ({has_fact}) and marker presence \
-                 ({has_marker}) must never disagree — eviction must remove both \
-                 together, never a fresh marker over an emptied fact set"
-            );
-            if !has_fact {
-                evicted += 1;
-            }
-        }
-        assert_eq!(
-            evicted, 1,
-            "capacity-triggered eviction must remove exactly one existing entry \
-             to make room for the new one"
+            )
+        };
+        assert!(!fresh("did:web:p0"));
+        assert!(fresh("did:web:p1"));
+        assert!(fresh(&format!("did:web:p{MAX_MARKERS}")));
+    }
+
+    /// The observed wall-clock time is reported with a fresh marker.
+    #[test]
+    fn fresh_marker_reports_observed_time() {
+        let cache = RevocationCache::new();
+        let before = SystemTime::now();
+        cache.record_success(
+            "a.example",
+            "did:web:p",
+            RevocationTrustClass::ProducerSigned,
+            &[],
         );
-        assert!(
-            !cache
-                .facts_for(overflow_agent, true, Some("reg.example"))
-                .is_empty(),
-            "the newly-inserted entry must itself survive"
-        );
+        let after = SystemTime::now();
+        let observed = cache
+            .fresh_marker(
+                "a.example",
+                "did:web:p",
+                RevocationTrustClass::ProducerSigned,
+                Duration::from_secs(60),
+            )
+            .expect("fresh");
+        assert!(observed >= before && observed <= after);
     }
 }

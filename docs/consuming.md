@@ -43,8 +43,8 @@ let client = RegistryClient::new("https://registry.example.com")?;   // HTTPS-on
 IP-literal rejection, DNS-time SSRF filtering, 1 MB body cap, 3-redirect
 same-authority limit, 5 s connect / 30 s total timeouts. For a non-default
 connection posture (a private root certificate, a custom `SsrfPolicy`, timeout
-overrides, or pin-once DNS resolution) use `RegistryClient::builder(base_url)`;
-its defaults are identical to `new`.
+overrides, pin-once DNS resolution, or a read-auth provider) use
+`RegistryClient::builder(base_url)`; its defaults are identical to `new`.
 
 | Method | Endpoint | Returns |
 |---|---|---|
@@ -59,6 +59,51 @@ its defaults are identical to `new`.
 Conditional and idempotent variants exist too: `retrieve_with_metadata`,
 `retrieve_if_none_match` (ETag), `capabilities_with_ttl`, `publish_idempotent`,
 and `publish_with_retry`. The client is `Clone` (cheap — an inner `Arc`).
+
+### Read authentication
+
+A registry that sets `anonymous_public_reads: false`, or serves non-public
+contexts, refuses an anonymous read with `not_authorized` (RFC-ACDP-0008
+§6.2). Revocation discovery against it then reports `unknown`
+(`unanswerable`), never not-revoked. Attach an `AuthProvider` to present a
+`bearer_jwt` token:
+
+```rust,no_run
+# #[cfg(feature = "client")]
+# fn build(client: acdp::client::RegistryClient, jwt: String) -> Result<acdp::client::RegistryClient, acdp::AcdpError> {
+use std::sync::Arc;
+use acdp::client::{BearerToken, StaticBearerToken};
+
+let client = client.with_auth_provider(Arc::new(StaticBearerToken::new(
+    "registry.example.com",
+    BearerToken::new(jwt)?,
+)));
+# Ok(client) }
+```
+
+| Type | Use |
+|---|---|
+| `StaticBearerToken` | One token for exactly one authority. |
+| `PerAuthorityTokens` | A token per authority, replaceable at runtime (`set` / `remove`). Clones share one table, so a background task can refresh tokens while readers use them. |
+| `impl AuthProvider` | Your own source. `bearer_token(authority)` returns the token (or `Ok(None)` to read anonymously). `token_rejected(authority)` is called after a 401/403 to a request that carried your token, so you can drop it and mint a new one. |
+
+The rules:
+- **Per authority.** The provider is asked by authority (host plus a
+  non-default port). One registry's token is never presented to another,
+  including on a cross-registry walk.
+- **Reads only.** Tokens go on `retrieve*`, `lineage`, `current` and
+  `search`. They never go on `publish*`, because a bearer token never
+  replaces a producer signature, and never on the public `capabilities()`
+  fetch.
+- **Over `https` only.**
+- **No retry.** A rejected read fails with `not_authorized` and is not
+  retried.
+- **No leaks.** `BearerToken` refuses anything that is not an RFC 6750
+  `b64token`, so a token cannot inject a header, and its `Debug` output is
+  redacted.
+
+Minting the token (the signed-challenge exchange) is deployment-defined, so
+it is the provider's job.
 
 ### Searching
 
@@ -113,10 +158,11 @@ The stages, in order (it returns on the **first** failure):
 | # | Stage | Failure error |
 |---|---|---|
 | 0 | **Identifier binding** — the served body's `ctx_id` must equal the one requested, per RFC-ACDP-0006 §4.1 step 7 (NORMATIVE); see RFC-ACDP-0008 §9.1 for the threat rationale | `ContextIdMismatch` |
+| 0b | **Registry-assigned bindings** (RFC-ACDP-0004 §2.1, 0.5.0) — a first version's (`supersedes: null`) `lineage_id` must be the offline derivation from its `ctx_id`, and `origin_registry` must equal the `ctx_id` authority, unconditionally (no receipt needed). Standalone: `acdp::verify::verify_registry_assigned_bindings` | `SchemaViolation` |
 | 1 | **Schema validation** (`validate_body`) — structural + embedded `data_ref` hashes | `SchemaViolation`, `DataRefHashMismatch` |
 | 2 | **`content_hash` recompute** — `sha256(JCS(ProducerContent))` vs declared | `HashMismatch` |
-| 3 | **Registry receipt** (RFC-ACDP-0010) per `policy.receipts` — verified by recomputing the ProducerContent hash, before the signature stage because the historical-key path depends on it | `InvalidReceipt` |
-| 4 | **Revocation** (RFC-ACDP-0014 §7/§8) — `policy.revocations.known`, plus discovered or cached revocations when configured | `KeyNotAuthorized`; `RevocationDiscoveryFailed { source }` under `on_failure: FailClosed` (the `source` may be `RevocationDiscoveryBudgetExceeded`) |
+| 3 | **Registry receipt** (RFC-ACDP-0010) per `policy.receipts` — verified by recomputing the ProducerContent hash, before the signature stage because the historical-key path depends on it. The receipt key's status (current = in `assertionMethod`, historical = `verificationMethod` only) is recorded; a stale "historical" answer triggers one rate-limited forced DID refresh first | `InvalidReceipt` (under `VerifyAndReport`: recorded, not returned) |
+| 4 | **Revocation** (RFC-ACDP-0014 §7/§8) — `policy.revocations.known`, plus discovered or cached revocations when configured. Strict profile: only a receipt under a *current* receipt key places a revoked-key context before its boundary | `KeyRevoked` (attributed `RevocationRefusal`; wire code `key_not_authorized`); `RevocationUnknown { reason, .. }` under `on_failure: FailClosed` |
 | 5 | **Key resolution and signature verification** — `did:web` via `WebResolver` or `did:key` offline; the algorithm must match the key; historical-key fallback per `policy.historical_keys` | `KeyResolution`, `KeyResolutionUnreachable`, `InvalidSignature`, `UnsupportedAlgorithm`, `KeyNotAuthorized` |
 | 6 | **Status check** per policy | `SchemaViolation` if `allow_unknown_status` is `false` |
 
@@ -147,6 +193,33 @@ pre-compromise), and `VerifiedContext::verified_receipt()` returns the
 registry receipt when one was present and the policy verified it (`None`
 under `ReceiptPolicy::Ignore` or when the registry minted none).
 
+0.15.0 adds three more verdicts, each reported separately from the body
+verdict (and mirrored as `VerificationReport` fields):
+
+| Accessor | Meaning |
+|---|---|
+| `receipt_key_status() -> Option<ReceiptKeyStatus>` | `Current` / `Historical` for the key that signed the verified receipt (RFC-ACDP-0010 §8 step 1); `None` exactly when `verified_receipt()` is. |
+| `receipt_verdict() -> Option<&Result<(), AcdpError>>` | `Some(Ok(()))` when the receipt verified; `Some(Err(_))` only under `ReceiptPolicy::VerifyAndReport`; `None` when no receipt was evaluated. `head_receipt_verdict()` is the `/current` twin. |
+| `lineage_binding() -> LineageBinding` | `Derived` (v1, checked offline), `ReceiptAttested` (v2+, the verified receipt binds `lineage_id`), or `Unbound` (v2+, registry-asserted only). |
+
+**Receipt-key status and revoked keys (RFC-ACDP-0014 §7 step 1).** A
+historical receipt key is not a currently-authorized registry attestation.
+Under the strict profile it cannot place a revoked-key context before the
+compromise boundary — such a context is unplaceable and fails closed with
+`KeyRevoked` (effect `Unplaceable`, detail "historical receipt key"). Plain rotation with no
+revocation is unaffected: the RFC-ACDP-0010 §10 historical-key rule
+still accepts a historical receipt key. A deployment that accepts the
+risk opts in with
+`RevocationPolicy::new(known).accept_historical_receipt_key_for_pre_t()`;
+that mode is **non-conformant with the strict profile**.
+
+**`ReceiptPolicy::VerifyAndReport`.** Verifies a present receipt but does
+not fail retrieval when it is invalid: the error lands in
+`receipt_verdict()` and the receipt is then treated as absent everywhere —
+no historical-key rule, revoked-key contexts are unplaceable (fail closed),
+`lineage_binding()` is `Unbound` for v2+, and `verified_receipt()` is
+`None`. `CrossRegistryResolver` still escalates to `Require`.
+
 ### Verification policy
 
 `VerificationPolicy` tunes the pipeline. `VerificationPolicy::default()` is
@@ -166,10 +239,13 @@ let policy = VerificationPolicy::default();
 |---|---|---|
 | `validate_body_schema` | `true` | Run stage 1. Set `false` only in diagnostics that want to attempt signature checks on a body known to fail structural checks. |
 | `allow_unknown_status` | `true` | Accept `Status::Other` and degrade to active (RFC-ACDP-0004 §4.1). `false` rejects unknown statuses. |
-| `receipts` | `ReceiptPolicy::VerifyIfPresent` | Registry-receipt handling (RFC-ACDP-0010). `Ignore` skips receipts; `Require` fails a context that has no valid receipt. |
+| `receipts` | `ReceiptPolicy::VerifyIfPresent` | Registry-receipt handling (RFC-ACDP-0010). `Ignore` skips receipts; `Require` fails a context that has no valid receipt; `VerifyAndReport` records an invalid receipt's verdict instead of failing (see above). The enum is `#[non_exhaustive]` since 0.15.0. |
 | `historical_keys` | `HistoricalKeyPolicy::AcceptWithReceipt` | Whether a signature by a key no longer in the DID document is accepted when a verified receipt places the publish while the key was authorized. `Reject` refuses it. |
 | `lineage_head` | `LineageHeadPolicy::default()` | Lineage-head receipt handling (RFC-ACDP-0011). Consulted only by `fetch_current_with_policy`. |
 | `revocations` | `RevocationPolicy::default()` (no known revocations, no discovery) | Key-revocation enforcement (RFC-ACDP-0014 §7): `known` revocations plus optional `discover`. See [below](#revocation-auto-discovery). |
+| `require_did_web_for_v0_1_0` | `true` | RFC-ACDP-0001 §5.11 v0.1.0 strict profile: a body without `acdp_version` (or `0.1.0`) must be signed under `did:web`. |
+| `log_inclusion` | `LogInclusionPolicy::Ignore` | Transparency-log inclusion (RFC-ACDP-0012 §9): `VerifyIfPresent` reports a verdict, `Require` fails without a valid proof. See [below](#transparency-log-and-witnesses). |
+| `witness_quorum` | `None` | Witness cosignature quorum over the log checkpoint (RFC-ACDP-0015 §8). See [below](#transparency-log-and-witnesses). |
 
 > There is no "relaxed `did:web`" or "skip-hash" mode. The strict profile is
 > the only one the `acdp-consumer` conformance suite covers. To
@@ -220,8 +296,10 @@ revocations matter less.
 itself fails — a transport error, the search-safety-cap error
 `AcdpError::SearchTruncated`, or the budget error
 `AcdpError::RevocationDiscoveryBudgetExceeded` covered below —
-`DiscoveryFailurePolicy::FailClosed` (the default) fails verification.
-`ProceedWithKnown` instead proceeds using `known` alone and records the
+`DiscoveryFailurePolicy::FailClosed` (the default) fails verification
+with `AcdpError::RevocationUnknown { reason, .. }`.
+`ProceedWithKnown` instead proceeds using `known` and cached facts alone,
+reports the verdict as `RevocationVerdict::Unknown`, and records the
 failure, retrievable via both
 `VerifiedContext::revocation_discovery_failure()` and
 `VerificationReport::revocation_discovery`. Choose `ProceedWithKnown`
@@ -274,9 +352,9 @@ class searches — enabling `include_registry_attested` does not double
 the ceiling — and are checked **before** each request is issued, so a
 request that would exceed the budget is never sent. Exhaustion raises
 `AcdpError::RevocationDiscoveryBudgetExceeded`, wrapped the same way a
-`SearchTruncated` failure is (`AcdpError::RevocationDiscoveryFailed`,
-dispatched through `on_failure` exactly like the case above) and is
-**never** transient.
+`SearchTruncated` failure is (`AcdpError::RevocationUnknown` with reason
+`truncated`, dispatched through `on_failure` exactly like the case
+above) and is **never** transient.
 
 Two honesty caveats:
 
@@ -297,6 +375,102 @@ Two honesty caveats:
 
 Without a `RevocationCache` attached, every call still re-discovers from
 scratch, budgeted or not — see the next section for the opt-in cache.
+
+**Candidate outcome classes (0.15.0, RFC-ACDP-0014 §8).** Every
+revocation candidate discovery finds is classified as exactly one of:
+
+| Class | When | Effect on discovery |
+|---|---|---|
+| verified | strict verification passes, or the **historical arm** passes (below) | counted |
+| permanently invalid | hash/schema failure, bad signature, §4 shape, self-signed, foreign `key_id`, or signing key absent from a **freshly fetched** `verificationMethod` | dropped (logged with `tracing`) |
+| unverifiable | signing key rotated out of `assertionMethod` and no `registry_receipt` (or one that fails) can place it | `AcdpError::RevocationCandidateUnverifiable` → discovery fails (*unknown*) |
+| undecided | transient lookup failure (DID host non-2xx/timeout, registry 5xx), or a budget refusal while checking it | discovery fails (*unknown*) |
+
+The **historical arm** covers a producer that rotated after revoking: the
+candidate's signing key is still in `verificationMethod` but no longer in
+`assertionMethod`. Discovery verifies the candidate's `registry_receipt`
+under the RFC-ACDP-0010 §10 rule and then the signature against the
+retained key. A lineage-walk member served without a receipt is
+re-retrieved by `ctx_id` (full-retrieval endpoint, charged to the
+discovery budget). `verify_revocation_candidate` exposes this
+classification directly.
+
+**DID-cache refresh (RFC-ACDP-0001 §5.11 "Caching").** Before reporting
+"key not in `verificationMethod`" or `key_not_authorized` against a
+*cached* DID document, the verifier re-fetches it once, bypassing the
+cache, and re-runs the check (rot-002). A whole operation — one
+`fetch`, one discovery run — shares one freshness scope, so the same DID
+is force-fetched at most once per operation. Forced re-fetches are also
+rate-limited per DID, at most once per
+`acdp::did::DEFAULT_FORCED_REFRESH_INTERVAL` (one hour); tune it with
+`WebResolver::with_forced_refresh_interval`. When the limit refuses a
+re-fetch, a key **absent** from the stale copy is reported as the
+transient `KeyResolutionUnreachable`, never as the permanent
+`KeyResolution`. Otherwise an attacker could spend the refresh slot with
+bogus-fragment bodies just before a producer adds a new key and revokes
+an old one, and so make discovery silently drop that revocation.
+
+### Revocation verdicts
+
+0.15.0 reports every revocation decision as a typed, attributable
+verdict (RFC-ACDP-0014 §7 "Attribution" and "Producer scope", §8
+"Discovery outcome classes"). It is available from
+`VerifiedContext::revocation_verdict()` and
+`VerificationReport::revocation_verdict`:
+
+| `RevocationVerdict` | Meaning | Verification |
+|---|---|---|
+| `Revoked { effect: PreCompromise, .. }` | a verified receipt places the context strictly before the boundary T (§7 step 2) | accepted under the historical-key rule |
+| `Revoked { effect: Revoked, .. }` | placed at or after T (§7 step 3) | `AcdpError::KeyRevoked` |
+| `Revoked { effect: Unplaceable, .. }` | no verified receipt, or (strict profile) one under a historical receipt key (§7 step 4) | `AcdpError::KeyRevoked` |
+| `NotRevoked { complete, registry_attested_checked, observed_at }` | no verified, in-scope revocation names the key; `complete` is `true` only when discovery ran and every configured lookup finished untruncated; `observed_at` is set when a cached absence answered | accepted |
+| `Unknown { reason, detail }` | discovery could not decide: `truncated`, `unanswerable` (`not_authorized`, `not_implemented`, malformed response), `transient`, or `unverifiable_candidate` | `RevocationUnknown` under `FailClosed`; accepted under `ProceedWithKnown` |
+
+Precedence is refusal, then `Unknown`, then pre-compromise, then
+not-revoked. A verified revocation therefore refuses the context even
+when another lookup in the same call failed. `Unknown` is never folded
+into not-revoked and never cached.
+
+Every `Revoked` verdict, and every `KeyRevoked` error (through
+`AcdpError::revocation_refusal()`), carries a `SourcedRevocation`: the
+revocation's `ctx_id`, `issuer`, `revoked_key_controller`,
+`trust_class`, boundary, and `source` (`Known`, `Discovered { authority }`,
+or `Cached { origin }`). The boundary is the earliest
+`compromised_since` across every in-scope revocation naming the key.
+
+**Producer scope.** A revocation changes a producer's verdict only if it
+speaks for that producer: a producer-signed revocation whose `issuer`
+is the producer, or a registry-attested one whose
+`revoked_key_controller` is the producer. Any other verified revocation
+naming the key is reported in `revocation_hints()` and never applied.
+
+**Re-checking a context you already hold.**
+`VerifiedContext::recheck_revocation(&client, &resolver, &policy)`
+re-assesses the context's signing key without refetching it. The free
+function `find_revocations_verdict(client, resolver, agent_id,
+signing_key_fingerprint, receipt_placement, policy)` does the same from
+raw inputs. Both return a `RevocationAssessment` and never fail on a
+verdict; call `.enforce()` to turn a refusal into `KeyRevoked` and a
+fail-closed `Unknown` into `RevocationUnknown`:
+
+```rust,no_run
+# #[cfg(feature = "client")]
+# async fn run(
+#     v: &acdp::client::VerifiedContext,
+#     client: &acdp::client::RegistryClient,
+#     resolver: &acdp::did::WebResolver,
+# ) -> Result<(), acdp::AcdpError> {
+use acdp::client::{RevocationDiscovery, RevocationPolicy, RevocationVerdict};
+
+let policy =
+    RevocationPolicy::default().with_discovery(RevocationDiscovery::producer_signed_only());
+let assessment = v.recheck_revocation(client, resolver, &policy).await?;
+if let RevocationVerdict::Unknown { reason, .. } = &assessment.verdict {
+    eprintln!("revocation status unknown: {reason}");
+}
+assessment.enforce()?;
+# Ok(()) }
+```
 
 ### Caching discovered revocations
 
@@ -343,13 +517,15 @@ reaching for the `freshness` knob:
   power to a hostile vantage: the marker is per-vantage already, and that
   vantage already controls what it serves.
 
-**`freshness` defaults to `Duration::ZERO` (off) from both
-`producer_signed_only()` and `all_trust_classes()`.** Attaching a cache at
-the default changes nothing observable except anti-rollback — **the
-default cache saves zero requests.** Set `freshness` above zero (a
-recommended ceiling: 3600 s, matching `RegistryClient`'s capabilities-cache
-TTL cap; `WebResolver` caches DID documents for up to 24 h) to additionally let a fresh marker skip a repeat lookup
-entirely:
+**`freshness` defaults to 300 s
+(`acdp::client::RECOMMENDED_NEGATIVE_FRESHNESS`, RFC-ACDP-0014 §8's
+RECOMMENDED bound) from both `producer_signed_only()` and
+`all_trust_classes()`** (0.15.0; it was `Duration::ZERO` through 0.14).
+Within that window a fresh marker skips a repeat lookup entirely, and the
+verdict says so: `RevocationVerdict::NotRevoked { observed_at: Some(t), .. }`
+reports when the cached absence was observed. Set `freshness` to
+`Duration::ZERO` to re-discover on every call, or lower it; raising it
+widens the window in which a newly published revocation goes unseen:
 
 ```rust,no_run
 # #[cfg(feature = "client")]
@@ -368,7 +544,7 @@ use acdp::client::RevocationDiscovery;
 use std::time::Duration;
 
 let mut discovery = RevocationDiscovery::producer_signed_only();
-discovery.freshness = Duration::from_secs(300); // opt in to skipping repeat lookups
+discovery.freshness = Duration::ZERO; // re-discover on every call
 # discovery
 # }
 ```
@@ -399,12 +575,17 @@ self-contained (RFC-ACDP-0014 §5/§8) and applies regardless of which
 registry served it — it is filtered by neither trust class (once opted
 into `known`/discovery at all) nor origin.
 
-Facts are deduplicated on insert and capped per producer; once the cap is
-reached an entry stops accepting new facts and drops its markers,
-degrading to plain pass-through rather than false completeness. The cache
-itself is capacity-bounded (oldest-is-not-tracked; a plain
-capacity-triggered eviction, since losing an entry can only cost a future
-re-discovery, never safety).
+**Facts and markers are stored separately and have different
+lifetimes** (0.15.0). Verified facts are **never evicted** — a fact
+leaves only with the cache itself. Admission is deduplicated and capped
+per producer (`MAX_FACTS_PER_CLASS` per trust class, and per origin for
+the registry-attested class); a fact refused at the cap still applies to
+the call that found it, and the capped slot stops minting markers, so
+that lookup runs in full every time instead of claiming a completeness
+the cache can no longer track. Markers live in a bounded map
+(`MAX_MARKERS`) that evicts its oldest entry at capacity, since losing a
+marker only costs a re-discovery. An `unknown` outcome never mints a
+marker.
 
 **Where discovery is, and is not, reachable.** All five
 policy-taking entry points — `fetch_with_policy`,
@@ -494,6 +675,89 @@ walk-wide ceiling becomes `max_requests` (or `max_bytes`) **times**
 `ResolverOptions::max_nodes`, since every node can independently spend up
 to its own budget before falling back to `known`.
 
+### Transparency log and witnesses
+
+A registry with the `acdp-registry-transparency-log` profile can serve a
+`log_inclusion` proof with a context (RFC-ACDP-0012). Witnesses can
+cosign the log checkpoint, served as `witness_signatures` (RFC-ACDP-0015).
+Both are corroboration: a failing proof "invalidates nothing else"
+(RFC-ACDP-0012 §9.3). Their verdicts are reported on their own, separate
+from the body, receipt and revocation verdicts. They fail verification
+only when you opt in.
+
+```rust
+# #[cfg(feature = "client")]
+# fn build() -> acdp::client::VerificationPolicy {
+use acdp::client::{
+    LogInclusionPolicy, VerificationPolicy, WitnessEnforcement, WitnessQuorumPolicy,
+};
+
+let policy = VerificationPolicy {
+    log_inclusion: LogInclusionPolicy::VerifyIfPresent,
+    witness_quorum: Some(
+        WitnessQuorumPolicy::new(["did:web:witness-a.example", "did:web:witness-b.example"])
+            .with_min_witnesses(2)
+            .enforce(WitnessEnforcement::RequireQuorum),
+    ),
+    ..VerificationPolicy::default()
+};
+# policy
+# }
+```
+
+| `LogInclusionPolicy` | Effect |
+|---|---|
+| `Ignore` (default) | The proof is preserved verbatim and not evaluated. |
+| `VerifyIfPresent` | A present proof is verified and the verdict reported. A failure never fails verification. |
+| `Require` | Fails unless the proof is present and verifies: `invalid_log_proof` when it is absent or fails, `invalid_receipt` when it is cannot-verify. A registry with the profile MAY still leave a proof off a response (§10), so use this only with registries known to serve it. |
+
+How the proof is verified (§9.1 step 1):
+- **The leaf is rebuilt from verified material only.** The consumer
+  reconstructs it from the body, the recomputed `content_hash`, the
+  receipt's verified producer-key fingerprint, and the receipt's
+  preimage hash. It never uses a leaf the registry supplies.
+- **A verified receipt is required.** Without one, the proof cannot be
+  checked, and the verdict is `LogInclusionVerdict::CannotVerify` with a
+  `CannotVerifyReason`: `ReceiptAbsent`, `ReceiptInvalid` (the failure is
+  in `receipt_verdict()`, under `ReceiptPolicy::VerifyAndReport`) or
+  `ReceiptNotVerified` (`ReceiptPolicy::Ignore`). Cannot-verify is not
+  "logged" and not `invalid_log_proof`: the log has not been shown to
+  misbehave. A `leaf` member echoed by the registry never stands in for
+  the receipt, even when it matches.
+- **The checkpoint is bound to the registry.** It must be signed by the
+  registry's receipt key and its `log_id` must name the serving authority
+  and `capabilities.registry_did`. That costs one capabilities fetch when
+  a proof is present.
+
+The leaf builder is public as `LogLeaf::for_publish`, so a registry can
+use it at append time and both sides hash the same bytes.
+
+How the witness quorum works:
+- **Trust.** Only the witnesses in `WitnessQuorumPolicy::new` count.
+- **Documents.** A `did:key` witness is resolved offline. A `did:web`
+  witness is resolved through the verification's `WebResolver`, with the
+  usual SSRF protections, unless you pin its document with
+  `with_document`.
+- **Checkpoint.** Setting `witness_quorum` verifies the checkpoint even
+  under `LogInclusionPolicy::Ignore`. A cosignature only means something
+  over a checkpoint you verified yourself. The checkpoint is verified on
+  its own, so a cannot-verify inclusion still gets a quorum verdict over
+  a checkpoint that verifies.
+
+| `WitnessEnforcement` | Effect |
+|---|---|
+| `Report` (default) | The quorum is reported and never fails verification. |
+| `RequireQuorum` | Fails with `invalid_witness_cosignature` unless `min_witnesses` distinct trusted witnesses cosigned. This is the split-view and anti-rewrite use, where a cosignature never expires. |
+| `RequireFreshQuorum` | As above, and the cosignatures must be within `max_age_seconds` (default 300 s). Use it for decisions that need a current checkpoint (§8.1). |
+
+The verdicts:
+
+| Accessor / report field | Meaning |
+|---|---|
+| `log_inclusion_verdict()` / `log_inclusion_verdict` | A `LogInclusionVerdict`, or `None` when not evaluated (policy `Ignore` with no witness policy, or no proof served). `Included` means the proof verified; `CannotVerify(reason)` means there was no verified receipt to check it against; `Invalid(err)` means it was checked and failed (`invalid_log_proof`). `as_str()` gives the report token: `included`, `cannot_verify`, `invalid_log_proof`, or `error` for a transport failure. |
+| `verified_log_inclusion()` | The verified proof and signed checkpoint. Keep the checkpoint to check consistency with later ones (§9.2). |
+| `witness_quorum()` / `witness_quorum` | `None` when no witness policy was set. `Some(Err(_))` (`invalid_log_proof`) when there was no verified checkpoint to corroborate. `Some(Ok(WitnessQuorumReport))` otherwise: `meets_quorum`, `meets_fresh_quorum`, the verified `witnesses`, and per-cosignature `failures`. |
+
 ### Diagnostics: fetch_report
 
 When you need to know *which* stage failed rather than just that it did, use
@@ -532,6 +796,9 @@ assert!(report.schema_ok && report.body_hash_ok && report.signature_ok);
 | `ctx_id_ok` | the served body's `ctx_id` matched the one requested (RFC-ACDP-0006 §4.1 step 7, NORMATIVE). |
 | `key_status` | the real `KeyAuthorization` verdict once the receipt/revocation/signature phases ran and passed; `None` if a top-level probe failed first (so those phases never ran) or one of them failed. |
 | `policy_phase_error` | which of the receipt/revocation/signature/unknown-status phases failed, if one did; `None` when every phase passed or none ran. |
+| `receipt_key_status`, `receipt_verdict`, `lineage_binding` | the receipt and lineage verdicts; see the accessor table [above](#verifiedcontext--the-verification-pipeline). |
+| `revocation_verdict`, `revocation_hints` | the typed revocation verdict and out-of-scope hints; see [Revocation verdicts](#revocation-verdicts). |
+| `log_inclusion_verdict`, `witness_quorum` | the transparency verdicts; see [above](#transparency-log-and-witnesses). |
 | `revocation_discovery` | What auto-discovery did, when `policy.revocations.discover` was `Some` and the policy phases were reached: `Some(Ok(DiscoveryOutcome))` on success; `Some(Err(_))` when `ProceedWithKnown` swallowed a discovery failure. `None` when discovery is off, when a top-level probe failed first, or when a `FailClosed` discovery failure ended verification (that one surfaces in `policy_phase_error`). `DiscoveryOutcome` counts *discovered* revocations only (`producer_signed`, and `registry_attested` or `None` if that class was not queried) — never `known`. See "Revocation auto-discovery" above. |
 
 `fetch_report_with_fetcher` additionally fetches and verifies external
@@ -623,6 +890,20 @@ including the walk-scoped cache default and the 30s/30s timeout caveat.
 `seed_client` is fill-if-absent for the cache too: a seeded client with no
 `RevocationCache` of its own is given the resolver's (or the current walk's);
 one that already carries its own keeps it.
+
+`.with_auth_provider(...)` presents [read credentials](#read-authentication)
+on every hop. The provider is asked per hop authority, so a
+`PerAuthorityTokens` table gives each registry only its own token. It is
+fill-if-absent like the cache: a seeded client that carries its own
+provider keeps it.
+
+**Per-authority clients.** The resolver builds one `RegistryClient` per
+foreign authority and reuses it. Each client filters DNS answers through
+the `SsrfPolicy` at resolution time, on every connection. It does not pin
+the first IP, so an authority whose addresses change is never stranded on
+a stale one, and a rebinding answer is refused at connect time. The cache
+holds at most `MAX_CACHED_CLIENTS` (256) built clients and evicts the
+oldest first. Clients passed to `seed_client` are never evicted.
 
 ## Publishing from the client
 

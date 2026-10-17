@@ -97,7 +97,7 @@ Which variant you get depends on the path:
 |---|---|---|
 | `WebResolver` (resolving a `did:web` document) | `AcdpError::KeyResolution` (wire `key_resolution_failed`, HTTP 400) | `false` |
 | `RegistryClient`, `HttpsDataRefFetcher`, and any other path through `From<reqwest::Error>` | `AcdpError::SchemaViolation("SSRF policy: …")`, the same shape as the URL-time `SsrfPolicy::check_url` refusal; test it with `AcdpError::is_ssrf_policy_refusal()` | `false` |
-| `CrossRegistryResolver` (any hop: pin-once DNS, capabilities, retrieval) | `AcdpError::CrossRegistryResolutionFailed` (wire `cross_registry_resolution_failed`, HTTP 502), as RFC-ACDP-0007 §5 and fixture `fed-007` require | `true` |
+| `CrossRegistryResolver` (any hop: DNS resolution, capabilities, retrieval) | `AcdpError::CrossRegistryResolutionFailed` (wire `cross_registry_resolution_failed`, HTTP 502), as RFC-ACDP-0007 §5 and fixture `fed-007` require | `true` |
 
 So `RegistryClient::publish_with_retry` returns an SSRF refusal on the first
 attempt. In every case the message carries the whole `source()` chain, so the
@@ -148,20 +148,39 @@ need to opt in explicitly. The intended seams:
 
 ## Read authentication
 
-The client side of read authentication is **not implemented**. `RegistryClient`
-reads anonymously: it sends no `Authorization` header on any request, so it
-sees only what a registry serves to anonymous callers. In particular the
-registered `bearer_jwt` method
+As of 0.15.0 the client **presents** `bearer_jwt` read credentials
 ([RFC-ACDP-0008 §6.2](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0008-security.md#62-read-authentication),
 [`registries/auth-methods.md`](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/registries/auth-methods.md))
-is **not implemented client-side**. What the crate does provide:
+through an `AuthProvider` attached to `RegistryClient` or
+`CrossRegistryResolver`. Without one, every read is anonymous and sends no
+`Authorization` header. See [Consuming § Read authentication](consuming.md#read-authentication)
+for the API.
 
-- `CapabilitiesDocument::read_authentication_methods` — the methods a
-  registry advertises, as opaque strings (no typed handling).
-- `SigningKey::sign_string` / `P256SigningKey::sign_string` — the producer's
-  half of a challenge-response flow (signing an arbitrary ASCII input with
-  the producer key). Obtaining the challenge, exchanging the signature for a
-  token, and presenting it are up to the host.
+The token-handling rules are defenses, not options:
+
+- **Audience scoping.** The provider is asked per authority (host plus a
+  non-default port). A token is never presented to another registry,
+  including across a cross-registry walk or a redirect: redirects are
+  same-authority only.
+- **Read-only.** Tokens go only on retrieval, lineage, current and search
+  requests. They never go on `publish*`, because a bearer token never
+  substitutes for a producer signature, and never on `capabilities()`, DID
+  documents or data-ref fetches.
+- **`https` only.** A client whose base URL is not `https://` never sends a
+  token. The client's default posture already forbids `http://`.
+- **No header injection, no leaks.** `BearerToken::new` accepts only an
+  RFC 6750 `b64token`. `Debug` on `BearerToken`, `StaticBearerToken` and
+  `PerAuthorityTokens` is redacted.
+- **Rejection is reported, not retried.** A 401/403 to a request that
+  carried a token calls `AuthProvider::token_rejected(authority)` and
+  returns `not_authorized`.
+
+Minting the token stays with the host. What the crate provides for that:
+- `CapabilitiesDocument::read_authentication_methods` lists the methods a
+  registry advertises, as opaque strings.
+- `SigningKey::sign_string` / `P256SigningKey::sign_string` are the
+  producer's half of a challenge-response flow (signing an arbitrary ASCII
+  input with the producer key).
 
 For the flow `acdp-registry-rs` runs, including the exact signing input, see
 its [challenge-response flow](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/AUTHENTICATION.md#challenge-response-flow)

@@ -26,6 +26,7 @@ normative protocol rules. For those, each page links to the relevant RFC.
 |---|---|
 | Install the crate and run your first publish/verify | [Getting Started](getting-started.md) |
 | Understand how the crate is layered (what gets hashed/signed/stored) | [Architecture](architecture.md) |
+| Upgrade from 0.14.x | [Migrating to 0.15.0](migrating-to-0.15.md) |
 
 ## Building blocks
 

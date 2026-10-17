@@ -4,7 +4,7 @@
 //! persistence occurs; DID resolution + signature verification (steps 6–7)
 //! are `acdp_verify::verify_publish_request_signature`.
 
-use acdp_crypto::hash::{compute_content_hash, derive_lineage_id};
+use acdp_crypto::hash::derive_lineage_id;
 use acdp_primitives::error::AcdpError;
 use acdp_types::{
     body::Body,
@@ -89,7 +89,35 @@ impl<'a> PublishValidator<'a> {
         // implementation regardless of whether the producer side ran
         // [`acdp_validation::validate_publish_request`] first.
         acdp_validation::validate_publish_request(req)?;
-        self.validate_registry_limits_and_crypto(req, raw_body_bytes)
+        self.validate_registry_limits_and_crypto(req, None, raw_body_bytes)
+    }
+
+    /// [`Self::validate_post_schema`] for a front-end that still holds the
+    /// request JSON as received: step 4 recomputes `content_hash` over
+    /// `raw` (RFC-ACDP-0001 §5.7 "Hash verification over raw JSON",
+    /// REQUIRED for registries too) rather than over a typed
+    /// re-serialization of `req`. `raw` MUST be the object `req` was
+    /// parsed from; if it no longer describes `req`, the typed path is
+    /// used instead (so a post-parse mutation is detected, not masked).
+    ///
+    /// **Storage obligation.** Accepting a request on the raw path is
+    /// only sound when the registry also persists and serves the
+    /// producer-controlled fields exactly as received. A store that
+    /// keeps the typed [`PublishRequest`] (as [`InMemoryStore`](super::InMemoryStore)
+    /// does) re-serializes timestamps in the §5.3 canonical form, so a
+    /// body accepted here under a non-canonical spelling (e.g. a
+    /// `+00:00` offset) would later be served with bytes that no longer
+    /// match its `content_hash`. Typed-store registries should use
+    /// [`Self::validate_post_schema`], which accepts exactly the
+    /// spellings the typed store reproduces.
+    pub fn validate_post_schema_raw(
+        &self,
+        req: &PublishRequest,
+        raw: &serde_json::Value,
+        raw_body_bytes: usize,
+    ) -> Result<ValidatedPublish, AcdpError> {
+        acdp_validation::validate_publish_request(req)?;
+        self.validate_registry_limits_and_crypto(req, Some(raw), raw_body_bytes)
     }
 
     /// Deprecated alias — now routes through [`Self::validate_post_schema`].
@@ -118,6 +146,7 @@ impl<'a> PublishValidator<'a> {
     fn validate_registry_limits_and_crypto(
         &self,
         req: &PublishRequest,
+        raw: Option<&serde_json::Value>,
         raw_body_bytes: usize,
     ) -> Result<ValidatedPublish, AcdpError> {
         // Step 2: payload size
@@ -146,14 +175,19 @@ impl<'a> PublishValidator<'a> {
             }
         }
 
-        // Step 4: hash recomputation over ProducerContent
-        let body_val = serde_json::to_value(req)?;
-        let recomputed = compute_content_hash(&body_val)?;
-        if recomputed != req.content_hash {
-            return Err(AcdpError::HashMismatch {
-                stored: req.content_hash.clone(),
-                recomputed: recomputed.clone(),
-            });
+        // Step 4: hash recomputation over ProducerContent — over the raw
+        // request when the front-end supplied it and it still describes
+        // `req`, else the typed path (canonical rendering, then the
+        // pre-0.15.0 whole-second rendering; see acdp_verify::raw_hash).
+        let raw = raw.filter(|v| {
+            serde_json::from_value::<PublishRequest>((*v).clone())
+                .ok()
+                .and_then(|r| serde_json::to_value(r).ok())
+                == serde_json::to_value(req).ok()
+        });
+        match raw {
+            Some(v) => acdp_crypto::verify_content_hash(v, &req.content_hash)?,
+            None => acdp_verify::verify_typed_publish_request_hash(req)?,
         }
 
         // Step 5: algorithm check
@@ -283,7 +317,7 @@ impl<'a> PublishValidator<'a> {
         // Steps 6–7 (key resolution + signature verification) require async
         // DID resolution; the caller should invoke verify_publish_request_signature for those.
         Ok(ValidatedPublish {
-            recomputed_hash: recomputed,
+            recomputed_hash: req.content_hash.clone(),
         })
     }
 
@@ -789,6 +823,80 @@ mod tests {
             .visibility(Visibility::Public)
             .build()
             .unwrap()
+    }
+
+    /// `test_request()` with `expires_at`, its timestamp re-spelled to
+    /// `spelling` and `content_hash` recomputed over the raw object (as
+    /// a third-party producer would). Returns `(raw, parsed)`.
+    fn respelled_request(spelling: &str) -> (serde_json::Value, PublishRequest) {
+        let key = SigningKey::from_bytes(&[0u8; 32]);
+        let req = Producer::new(
+            key,
+            AgentDid::new("did:web:agents.example.com:test-producer"),
+            "did:web:agents.example.com:test-producer#key-1",
+        )
+        .publish_request()
+        .title("Golden test vector — minimal first version")
+        .context_type(ContextType::DataSnapshot)
+        .visibility(Visibility::Public)
+        .expires_at(
+            chrono::DateTime::parse_from_rfc3339("2026-12-31T23:59:59Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+        )
+        .build()
+        .unwrap();
+        let mut raw = serde_json::to_value(&req).unwrap();
+        raw["expires_at"] = serde_json::json!(spelling);
+        let hash = acdp_crypto::compute_content_hash(&raw).unwrap();
+        raw["content_hash"] = serde_json::json!(hash.as_str());
+        let parsed = serde_json::from_value(raw.clone()).unwrap();
+        (raw, parsed)
+    }
+
+    /// RFC-ACDP-0001 §5.7: a front-end holding the raw request hashes
+    /// it as received, so any valid RFC 3339 spelling is accepted.
+    #[test]
+    fn raw_path_accepts_non_canonical_spelling_typed_path_does_not() {
+        let caps = test_caps();
+        let v = PublishValidator::new(&caps);
+        let (raw, req) = respelled_request("2026-12-31T23:59:59+00:00");
+        let len = serde_json::to_vec(&raw).unwrap().len();
+        v.validate_post_schema_raw(&req, &raw, len).unwrap();
+        assert!(matches!(
+            v.validate_post_schema(&req, len),
+            Err(AcdpError::HashMismatch { .. })
+        ));
+    }
+
+    /// Canonical `.000Z` (≥ 0.15.0 producers) and legacy whole-second
+    /// `Z` (≤ 0.14.5 producers) both pass the typed path.
+    #[test]
+    fn typed_path_accepts_canonical_and_legacy_whole_seconds() {
+        let caps = test_caps();
+        let v = PublishValidator::new(&caps);
+        for spelling in ["2026-12-31T23:59:59.000Z", "2026-12-31T23:59:59Z"] {
+            let (raw, req) = respelled_request(spelling);
+            let len = serde_json::to_vec(&raw).unwrap().len();
+            v.validate_post_schema(&req, len)
+                .unwrap_or_else(|e| panic!("{spelling}: {e:?}"));
+            v.validate_post_schema_raw(&req, &raw, len).unwrap();
+        }
+    }
+
+    /// A raw value that no longer describes the typed request (mutated
+    /// after parse) is ignored in favour of the typed path.
+    #[test]
+    fn raw_path_ignores_raw_that_does_not_describe_request() {
+        let caps = test_caps();
+        let v = PublishValidator::new(&caps);
+        let (raw, mut req) = respelled_request("2026-12-31T23:59:59+00:00");
+        req.title = "Tampered after parse".into();
+        let len = serde_json::to_vec(&raw).unwrap().len();
+        assert!(matches!(
+            v.validate_post_schema_raw(&req, &raw, len),
+            Err(AcdpError::HashMismatch { .. })
+        ));
     }
 
     #[test]

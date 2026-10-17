@@ -37,6 +37,6 @@ pub use lifecycle::{LifecycleEvent, LifecycleEventType};
 pub use log::{LogCheckpoint, LogConsistencyProof, LogInclusion, LogLeaf};
 pub use primitives::{AgentDid, ContentHash, ContextType, CtxId, LineageId, Status, Visibility};
 pub use publish::{PublishRequest, PublishResponse};
-pub use receipt::{ReceiptSigner, RegistryReceipt};
+pub use receipt::{ReceiptKeyStatus, ReceiptSigner, RegistryReceipt};
 pub use revocation::{KeyRevocation, RevocationTrustClass};
 pub use search::{SearchParams, SearchParamsBuilder, SearchResponse, SearchResult};

@@ -7,6 +7,9 @@
 //! variant.
 
 use crate::primitives::ContentHash;
+#[cfg(doc)]
+use crate::revocation::RevocationEffect;
+use crate::revocation::{RevocationRefusal, UnknownReason};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -26,7 +29,7 @@ use thiserror::Error;
 /// `VerificationReport::revocation_discovery` — so both surfaces stay
 /// non-silent from a single call. Every variant field (`String`,
 /// `&'static str`, `ContentHash`, `WireError`, `SupersessionReason`,
-/// and the recursive `Box<AcdpError>` in `RevocationDiscoveryFailed`)
+/// and the recursive `Box<AcdpError>` in `RevocationUnknown`)
 /// is already `Clone`, so this is a free addition with no wire-format
 /// or matching impact.
 ///
@@ -177,34 +180,67 @@ pub enum AcdpError {
     #[error("revocation discovery budget exceeded: {0}")]
     RevocationDiscoveryBudgetExceeded(String),
 
-    /// Locally detected: RFC-ACDP-0014 §8 revocation auto-discovery
-    /// (`RevocationPolicy::discover` in `acdp-client`) failed under
-    /// `DiscoveryFailurePolicy::FailClosed`. Not a wire code — the same
-    /// rationale as [`AcdpError::ContextIdMismatch`],
-    /// [`AcdpError::IncompleteLineage`], and [`AcdpError::SearchTruncated`]:
-    /// this is a client-local decision about how to react to a failure
-    /// the registry already reported some other way, so it wraps that
-    /// failure rather than inventing a new wire vocabulary entry for it.
-    /// `source` is boxed rather than inline: this variant recurses
-    /// (`AcdpError` containing `AcdpError`), and an unboxed recursive
-    /// field would make the enum infinite-sized. `Box<AcdpError>` still
-    /// gets `Clone` for free from [`AcdpError`]'s own derive (added for
-    /// issue #248 Phase 4 — see the enum's doc), which is what lets a
-    /// `ProceedWithKnown`-swallowed discovery failure be independently
-    /// owned by both `VerifiedContext::revocation_discovery_failure`
-    /// and `VerificationReport::revocation_discovery` from one call.
-    /// `AcdpError` still has no `PartialEq`.
-    #[error("revocation auto-discovery failed: {source}")]
-    RevocationDiscoveryFailed {
-        /// The underlying error discovery hit — typically a transport
-        /// failure from the search or lineage-walk requests
-        /// (`AcdpError::KeyResolutionUnreachable`, `AcdpError::Http`,
-        /// …) or `AcdpError::SearchTruncated` from exhausting a
-        /// discovery safety cap. [`AcdpError::is_transient`] delegates
-        /// to this field, so a retry-aware caller still gets a correct
-        /// answer through the wrapper.
+    /// Locally detected (RFC-ACDP-0014 §8, 0.5.0 "Discovery outcome
+    /// classes"): a revocation candidate found during auto-discovery
+    /// could be neither verified nor proven invalid. The canonical case is
+    /// the mandatory *historical arm*: the candidate's signing key is in
+    /// the producer's `verificationMethod` but no longer in
+    /// `assertionMethod` (the producer rotated after publishing it), and
+    /// the candidate carries no `registry_receipt` — or one that does not
+    /// verify — so the RFC-ACDP-0010 §10 historical-key rule cannot place
+    /// the signature (rev-005 B).
+    ///
+    /// Not a wire code (RFC-ACDP-0014 §10). Not transient — retrying the
+    /// same discovery will see the same candidate — but **discovery-
+    /// fatal**: the spec forbids folding an unverifiable candidate into
+    /// "not revoked", so discovery surfaces it (wrapped in
+    /// [`AcdpError::RevocationUnknown`]) exactly like a transient
+    /// lookup failure, and the overall outcome is *unknown*.
+    #[error("revocation candidate unverifiable: {0}")]
+    RevocationCandidateUnverifiable(String),
+
+    /// Locally detected (RFC-ACDP-0014 §8, 0.5.0 "Discovery outcome
+    /// classes"): revocation auto-discovery (`RevocationPolicy::discover`
+    /// in `acdp-client`) could not establish whether the signing key is
+    /// revoked — the outcome is **`unknown`**, which is never folded into
+    /// not-revoked. Returned under `DiscoveryFailurePolicy::FailClosed`
+    /// (the default); under `ProceedWithKnown` the same value is reported
+    /// on the verified context instead.
+    ///
+    /// Not a wire code (RFC-ACDP-0014 §10). [`AcdpError::is_transient`] is
+    /// `true` exactly when `reason` is [`UnknownReason::Transient`] — map
+    /// that to "unavailable, retry" and every other reason to "failed
+    /// precondition".
+    ///
+    /// Replaces 0.14's `RevocationDiscoveryFailed { source }`: match
+    /// `RevocationUnknown { source, .. }` for the same shape.
+    #[error("revocation status unknown ({reason}): {detail}")]
+    RevocationUnknown {
+        /// The `unknown` reason sub-code.
+        reason: UnknownReason,
+        /// The underlying failure (a transport or lookup error,
+        /// [`AcdpError::SearchTruncated`],
+        /// [`AcdpError::RevocationDiscoveryBudgetExceeded`],
+        /// [`AcdpError::RevocationCandidateUnverifiable`], …). Boxed:
+        /// the variant recurses.
         source: Box<AcdpError>,
+        /// Human-readable context (which lookup, which vantage).
+        detail: String,
     },
+
+    /// Locally detected (RFC-ACDP-0014 §7, 0.5.0 "Attribution"): a
+    /// verified, in-scope revocation makes the context's signing key not
+    /// authorized — §7 step 3 ([`RevocationEffect::Revoked`], final) or
+    /// step 4 ([`RevocationEffect::Unplaceable`], curable by a receipt).
+    /// The refusal names the revocation that fixes the boundary: its
+    /// `ctx_id`, signer, trust class, controller and T.
+    ///
+    /// Wire code: `key_not_authorized` — a revocation is a verification
+    /// verdict with no wire code of its own (RFC-ACDP-0014 §10), so a
+    /// round trip through the wire yields [`AcdpError::KeyNotAuthorized`].
+    /// [`AcdpError::is_key_not_authorized`] covers both.
+    #[error("key revoked — {0}")]
+    KeyRevoked(Box<RevocationRefusal>),
 
     /// Wire code: `hash_mismatch`. The remote registry rejected a
     /// publish request because its independent hash recomputation did
@@ -479,13 +515,11 @@ impl AcdpError {
     /// transient: a malformed body or invalid signature will not
     /// magically validate on retry.
     ///
-    /// [`AcdpError::RevocationDiscoveryFailed`] is a wrapper, not a
-    /// wire code, so it is exempted from the list above and instead
-    /// delegates to its own `source` — a retry-aware caller unwrapping
-    /// the wrapper still gets the right answer.
+    /// [`AcdpError::RevocationUnknown`] is not a wire code; it is
+    /// transient exactly when its reason is [`UnknownReason::Transient`].
     pub fn is_transient(&self) -> bool {
-        if let AcdpError::RevocationDiscoveryFailed { source } = self {
-            return source.is_transient();
+        if let AcdpError::RevocationUnknown { reason, .. } = self {
+            return *reason == UnknownReason::Transient;
         }
         matches!(
             self,
@@ -495,6 +529,52 @@ impl AcdpError {
                 | AcdpError::RegistryInternal(_)
                 | AcdpError::Http(_)
         )
+    }
+
+    /// The RFC-ACDP-0014 §8 `unknown` reason a revocation-discovery
+    /// failure carrying this error represents (0.5.0 "Discovery outcome
+    /// classes"):
+    ///
+    /// - [`UnknownReason::Truncated`] — [`AcdpError::SearchTruncated`],
+    ///   [`AcdpError::RevocationDiscoveryBudgetExceeded`],
+    ///   [`AcdpError::IncompleteLineage`] (truncation is not completeness);
+    /// - [`UnknownReason::UnverifiableCandidate`] —
+    ///   [`AcdpError::RevocationCandidateUnverifiable`];
+    /// - [`UnknownReason::Transient`] — any [`Self::is_transient`] error;
+    /// - [`UnknownReason::Unanswerable`] — everything else, notably
+    ///   `not_authorized` (403) and `not_implemented` (501) from the
+    ///   discovery vantage.
+    ///
+    /// An existing [`AcdpError::RevocationUnknown`] keeps its own reason.
+    pub fn unknown_reason(&self) -> UnknownReason {
+        match self {
+            AcdpError::RevocationUnknown { reason, .. } => *reason,
+            AcdpError::SearchTruncated(_)
+            | AcdpError::RevocationDiscoveryBudgetExceeded(_)
+            | AcdpError::IncompleteLineage { .. } => UnknownReason::Truncated,
+            AcdpError::RevocationCandidateUnverifiable(_) => UnknownReason::UnverifiableCandidate,
+            e if e.is_transient() => UnknownReason::Transient,
+            _ => UnknownReason::Unanswerable,
+        }
+    }
+
+    /// Whether this is a `key_not_authorized` verdict:
+    /// [`AcdpError::KeyNotAuthorized`] or the attributed
+    /// [`AcdpError::KeyRevoked`].
+    pub fn is_key_not_authorized(&self) -> bool {
+        matches!(
+            self,
+            AcdpError::KeyNotAuthorized(_) | AcdpError::KeyRevoked(_)
+        )
+    }
+
+    /// The attributed revocation refusal, when this is
+    /// [`AcdpError::KeyRevoked`].
+    pub fn revocation_refusal(&self) -> Option<&RevocationRefusal> {
+        match self {
+            AcdpError::KeyRevoked(r) => Some(r),
+            _ => None,
+        }
     }
 
     /// Whether this error is a client-local SSRF-policy refusal: an
@@ -956,6 +1036,7 @@ mod tests {
         // `SearchTruncated` above — never transient, and deliberately NOT
         // added to the `matches!` list in `is_transient`.
         assert!(!AcdpError::RevocationDiscoveryBudgetExceeded("x".into()).is_transient());
+        assert!(!AcdpError::RevocationCandidateUnverifiable("x".into()).is_transient());
     }
 
     /// A wrapper error with an optional source, standing in for the

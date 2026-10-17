@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Migration
+
+0.15.0 is breaking. It is the single release for the Seam-driven work
+(spec PR #77, acdp-rs#385); there was no 0.14.6. See
+[Migrating to 0.15.0](docs/migrating-to-0.15.md):
+- `RevocationDiscoveryFailed` → `RevocationUnknown { reason, .. }`.
+- Revocation refusals are `KeyRevoked(Box<RevocationRefusal>)`, still
+  wire code `key_not_authorized`.
+- `unknown` is a verdict, never folded into not-revoked.
+- The v1 `lineage_id` and `origin_registry` bindings are mandatory.
+- Revocations are scoped to the producer.
+- Strict pre-T placement needs the current receipt key
+  (`accept_historical_receipt_key_for_pre_t` opts out).
+- `RECOMMENDED_NEGATIVE_FRESHNESS` (300 s) is the discovery-freshness
+  default.
+- A non-2xx DID fetch is transient.
+- The content hash is computed over the raw JSON.
+- `.mmmZ` timestamps require upgrading registries together.
+- New: `AuthProvider` read auth, DNS-hook resolver clients, and opt-in
+  transparency-log and witness verification.
+- A log proof without a verified receipt is `LogInclusionVerdict::CannotVerify`,
+  never `invalid_log_proof` (spec #78 L1).
+
 ## [0.14.5](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.14.4...acdp-v0.14.5) - 2026-10-06
 
 ### Fixed

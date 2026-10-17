@@ -26,7 +26,7 @@
 //! Only malformed host input throws.
 
 use acdp::crypto::{
-    canonical_preimage, explain_hash_mismatch, fingerprint_ed25519, verify_body_offline,
+    canonical_preimage, explain_hash_mismatch, fingerprint_ed25519, verify_body_value_offline,
     verify_content_hash, verify_ecdsa_p256, verify_ed25519,
     verify_publish_request_signature_offline,
 };
@@ -208,9 +208,14 @@ impl AcdpVerifier {
     /// Returns `true` on success; throws on any failure.
     #[napi]
     pub fn verify_body_offline(body_json: String) -> Result<bool> {
-        let body: Body = serde_json::from_str(&body_json)
+        // Raw wire value, not a typed re-serialization: the hash is
+        // recomputed over the bytes the producer signed (RFC-ACDP-0001
+        // §5.7). Parsing it as a `Body` first keeps the error class.
+        let raw: serde_json::Value = serde_json::from_str(&body_json)
             .map_err(|e| Error::from_reason(format!("invalid body JSON: {e}")))?;
-        verify_body_offline(&body)
+        let _: Body = serde_json::from_value(raw.clone())
+            .map_err(|e| Error::from_reason(format!("invalid body JSON: {e}")))?;
+        verify_body_value_offline(&raw)
             .map(|_| true)
             .map_err(|e| Error::from_reason(e.to_string()))
     }

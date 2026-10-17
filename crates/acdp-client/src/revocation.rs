@@ -16,12 +16,15 @@
 //!   for a producer's revocation contexts and return the ones that
 //!   verify.
 
-use acdp_crypto::fingerprint::fingerprint_for_key_id;
+use acdp_crypto::fingerprint::{fingerprint_for_key_id, fingerprint_for_key_id_since};
 use acdp_did::WebResolver;
 use acdp_primitives::error::AcdpError;
-use acdp_types::body::Body;
+use acdp_types::body::{Body, FullContext};
 use acdp_types::primitives::{AgentDid, CtxId, LineageId};
-use acdp_types::revocation::{effective_boundary, KeyRevocation, RevocationTrustClass};
+use acdp_types::receipt::ReceiptKeyStatus;
+use acdp_types::revocation::{KeyRevocation, RevocationTrustClass};
+
+use crate::revocation_verdict::{RevocationEffect, RevocationVerdict};
 use acdp_types::search::SearchParamsBuilder;
 use acdp_verify::Verifier;
 use chrono::{DateTime, Utc};
@@ -71,41 +74,57 @@ const MAX_LINEAGE_WALKS: usize = 100;
 ///   — publish time strictly before the boundary (§7 step 2). The
 ///   caller must still verify the signature itself, under the
 ///   RFC-ACDP-0010 §10 historical rule.
-/// - `Err(`[`AcdpError::KeyNotAuthorized`]`)` — fail closed: publish
+/// - `Err(`[`AcdpError::KeyRevoked`]`)` — fail closed (wire code
+///   `key_not_authorized`; [`AcdpError::is_key_not_authorized`]): publish
 ///   time at/after the boundary (§7 step 3), or no verifiable publish
 ///   time at all (§7 step 4). Per RFC-ACDP-0014 §10 this is a
 ///   verification verdict, not a wire condition — there is no new wire
 ///   error code; the key is simply not authorized to speak for the
 ///   producer in (or without placement relative to) the compromise
 ///   window.
+///
+/// `receipt_attested_created_at` is taken as a placement from a
+/// *current* receipt key; use [`classify_under_revocation_placed`] to
+/// apply the 0.5.0 receipt-key-status rule.
 pub fn classify_under_revocation(
     revocations: &[KeyRevocation],
     signing_key_fingerprint: &str,
     receipt_attested_created_at: Option<DateTime<Utc>>,
 ) -> Result<Option<KeyAuthorization>, AcdpError> {
-    let Some(boundary) = effective_boundary(revocations, signing_key_fingerprint) else {
-        return Ok(None);
-    };
-    match receipt_attested_created_at {
-        Some(created_at) if created_at < boundary => {
-            Ok(Some(KeyAuthorization::HistoricallyAuthorizedPreCompromise))
-        }
-        Some(created_at) => Err(AcdpError::KeyNotAuthorized(format!(
-            "signing key {signing_key_fingerprint} is revoked with compromise boundary \
-             {}; the receipt-attested publish time {} is at/after the boundary, so the \
-             signature is not attributable to the producer — fail closed regardless of \
-             DID-document state or receipt validity (RFC-ACDP-0014 §7 step 3)",
-            boundary.format("%Y-%m-%dT%H:%M:%S%.3fZ"),
-            created_at.format("%Y-%m-%dT%H:%M:%S%.3fZ"),
-        ))),
-        None => Err(AcdpError::KeyNotAuthorized(format!(
-            "signing key {signing_key_fingerprint} is revoked (compromise boundary {}) \
-             and the context has no verified registry receipt, so its publish time \
-             cannot be placed relative to the boundary — an unplaceable revoked-key \
-             signature is exactly the artifact an attacker mints freely; the strict \
-             profile fails closed (RFC-ACDP-0014 §7 step 4)",
-            boundary.format("%Y-%m-%dT%H:%M:%S%.3fZ"),
-        ))),
+    classify_under_revocation_placed(
+        revocations,
+        signing_key_fingerprint,
+        receipt_attested_created_at.map(|t| (t, ReceiptKeyStatus::Current)),
+        false,
+    )
+}
+
+/// [`classify_under_revocation`] with the receipt-key status of the
+/// placing receipt (RFC-ACDP-0014 §7 step 1, 0.5.0). Under the strict
+/// profile (`accept_historical_receipt_key == false`) a receipt verified
+/// under a [`ReceiptKeyStatus::Historical`] key cannot place the context:
+/// it is unplaceable (§7 step 4) and fails closed. `true` is the named
+/// non-strict mode
+/// ([`RevocationPolicy::accept_historical_receipt_key_for_pre_t`](crate::RevocationPolicy::accept_historical_receipt_key_for_pre_t)).
+pub fn classify_under_revocation_placed(
+    revocations: &[KeyRevocation],
+    signing_key_fingerprint: &str,
+    receipt_placement: Option<(DateTime<Utc>, ReceiptKeyStatus)>,
+    accept_historical_receipt_key: bool,
+) -> Result<Option<KeyAuthorization>, AcdpError> {
+    let assessment = crate::revocation_verdict::decide_known(
+        revocations,
+        signing_key_fingerprint,
+        receipt_placement,
+        accept_historical_receipt_key,
+    );
+    match assessment.verdict {
+        RevocationVerdict::Revoked {
+            effect: RevocationEffect::PreCompromise,
+            ..
+        } => Ok(Some(KeyAuthorization::HistoricallyAuthorizedPreCompromise)),
+        RevocationVerdict::NotRevoked { .. } => Ok(None),
+        _ => assessment.enforce().map(|_| None),
     }
 }
 
@@ -146,6 +165,190 @@ pub async fn verify_revocation_body(
         fingerprint_for_key_id(&body.signature.key_id, &body.signature.algorithm, resolver).await?;
     revocation.check_not_self_signed(&signer_fingerprint)?;
     Ok(revocation)
+}
+
+/// [`verify_revocation_body`] for a retrieved [`FullContext`]: the
+/// `content_hash` is recomputed over the raw received body
+/// (RFC-ACDP-0001 §5.7), so a revocation whose producer spelled a
+/// timestamp differently from this crate's typed rendering still
+/// verifies. Prefer this whenever the whole context is at hand.
+pub async fn verify_revocation_context(
+    ctx: &FullContext,
+    resolver: &WebResolver,
+) -> Result<KeyRevocation, AcdpError> {
+    let body = &ctx.body;
+    Verifier::new(resolver).verify_context(ctx).await?;
+    let revocation = KeyRevocation::from_body(body)?;
+    let signer_fingerprint =
+        fingerprint_for_key_id(&body.signature.key_id, &body.signature.algorithm, resolver).await?;
+    revocation.check_not_self_signed(&signer_fingerprint)?;
+    Ok(revocation)
+}
+
+/// Verify one revocation **candidate** found by auto-discovery
+/// (RFC-ACDP-0014 §8, 0.5.0 "Discovery outcome classes").
+///
+/// Differs from [`verify_revocation_context`] in two ways the discovery
+/// outcome classes require:
+///
+/// 1. **DID-cache freshness.** Every DID lookup is scoped to `since`
+///    (the discovery run's start): a key absent from — or not yet in
+///    `assertionMethod` of — a cached document older than `since` is
+///    re-fetched once before any verdict (RFC-ACDP-0001 §5.11
+///    "Caching"; rev-005 D). One forced fetch per DID serves every
+///    candidate in the run.
+/// 2. **The mandatory historical arm.** A candidate whose signing key is
+///    in the producer's `verificationMethod` but no longer in
+///    `assertionMethod` — the producer rotated after publishing the
+///    revocation — is evaluated under the RFC-ACDP-0010 §10 historical
+///    rule: its `registry_receipt` (re-retrieved by `ctx_id` when the
+///    candidate came from a lineage walk without one) is verified and,
+///    if it verifies, the signature is checked against the retained key
+///    (rev-005 A). No receipt, or one that does not verify, makes the
+///    candidate **unverifiable** —
+///    [`AcdpError::RevocationCandidateUnverifiable`], which discovery
+///    propagates (rev-005 B) — never a silent drop.
+///
+/// Return classes, as the discovery loops consume them:
+///
+/// - `Ok(rev)` — a verified revocation.
+/// - `Err(e)` with `e.is_transient()` or
+///   [`AcdpError::RevocationCandidateUnverifiable`] — could not decide;
+///   discovery fails (outcome *unknown*).
+/// - any other `Err` — **permanently invalid** (hash failure, bad
+///   signature, §4 shape, self-signed, key absent from a fresh
+///   `verificationMethod`, foreign `key_id`): the candidate is dropped.
+pub async fn verify_revocation_candidate(
+    ctx: &FullContext,
+    client: &RegistryClient,
+    resolver: &WebResolver,
+    since: std::time::Instant,
+) -> Result<KeyRevocation, AcdpError> {
+    let body = &ctx.body;
+    let verifier = Verifier::new(resolver).fresh_since(since);
+    match verifier.verify_context(ctx).await {
+        Ok(()) => {}
+        Err(AcdpError::KeyNotAuthorized(why)) => {
+            verify_candidate_historically(ctx, client, resolver, since, why).await?;
+        }
+        Err(e) => return Err(e),
+    }
+    let revocation = KeyRevocation::from_body(body)?;
+    let signer_fingerprint = fingerprint_for_key_id_since(
+        &body.signature.key_id,
+        &body.signature.algorithm,
+        resolver,
+        since,
+    )
+    .await?;
+    revocation.check_not_self_signed(&signer_fingerprint)?;
+    Ok(revocation)
+}
+
+/// The RFC-ACDP-0014 §8 historical arm for a candidate whose strict
+/// verification ended in `key_not_authorized` (`why`). Schema and hash
+/// already passed (strict verification checks them first).
+async fn verify_candidate_historically(
+    ctx: &FullContext,
+    client: &RegistryClient,
+    resolver: &WebResolver,
+    since: std::time::Instant,
+    why: String,
+) -> Result<(), AcdpError> {
+    let body = &ctx.body;
+    let key_id = body.signature.key_id.as_str();
+    // Only a did:web key of the producer itself can be a rotated-out
+    // historical key; a foreign key_id or an unsupported DID method is
+    // permanently not this producer's signature.
+    let same_producer = key_id
+        .split_once('#')
+        .is_some_and(|(did, _)| did == body.agent_id.as_str() && did.starts_with("did:web:"));
+    if !same_producer {
+        return Err(AcdpError::KeyNotAuthorized(why));
+    }
+
+    // The receipt: carried on the candidate, or — for a lineage-walk
+    // member served without one — re-retrieved by ctx_id (charged to the
+    // discovery budget like every other discovery request).
+    let refetched;
+    let receipt_value = match &ctx.registry_receipt {
+        Some(v) => v,
+        None => {
+            // RFC-ACDP-0014 §8 P1: the FULL-retrieval endpoint (the
+            // body-only one never carries a receipt). A transient failure
+            // or a budget refusal keeps its identity (both → unknown);
+            // any other failure leaves the candidate unverifiable.
+            refetched = match client.retrieve(&body.ctx_id).await {
+                Ok(c) => c,
+                Err(e) if is_discovery_fatal(&e) => return Err(e),
+                Err(e) => {
+                    return Err(AcdpError::RevocationCandidateUnverifiable(format!(
+                        "revocation candidate {} could not be re-retrieved for its \
+                         registry receipt: {e}",
+                        body.ctx_id.as_str()
+                    )))
+                }
+            };
+            if refetched.body.ctx_id != body.ctx_id
+                || refetched.body.content_hash != body.content_hash
+            {
+                return Err(AcdpError::RevocationCandidateUnverifiable(format!(
+                    "revocation candidate {} re-retrieved for its registry receipt came                      back as a different body — cannot place its rotated-out signing key",
+                    body.ctx_id.as_str()
+                )));
+            }
+            match &refetched.registry_receipt {
+                Some(v) => v,
+                None => {
+                    return Err(AcdpError::RevocationCandidateUnverifiable(format!(
+                        "revocation candidate {} is signed by {key_id}, which is no longer                          in assertionMethod, and carries no registry_receipt — the                          RFC-ACDP-0010 §10 historical rule cannot place it ({why})",
+                        body.ctx_id.as_str()
+                    )))
+                }
+            }
+        }
+    };
+
+    let serving_authority = client
+        .authority()
+        .unwrap_or_else(|| body.ctx_id.authority().to_string());
+    let producer_fp =
+        fingerprint_for_key_id_since(key_id, &body.signature.algorithm, resolver, since).await?;
+    match super::receipt::verify_receipt_value_since(
+        receipt_value,
+        &body.ctx_id,
+        body,
+        &body.content_hash,
+        &producer_fp,
+        &serving_authority,
+        resolver,
+        since,
+    )
+    .await
+    {
+        Ok(_) => {}
+        Err(e) if e.is_transient() => return Err(e),
+        Err(e) => {
+            return Err(AcdpError::RevocationCandidateUnverifiable(format!(
+                "revocation candidate {} is signed by rotated-out key {key_id} and its                  registry_receipt does not verify: {e}",
+                body.ctx_id.as_str()
+            )))
+        }
+    }
+    acdp_verify::verify_body_signature_historical_since(body, resolver, since).await
+}
+
+/// A candidate-verification error that makes the discovery outcome
+/// *unknown* rather than dropping the candidate: transient lookups and
+/// unverifiable candidates, and a discovery-budget refusal met while
+/// verifying a candidate (RFC-ACDP-0014 §8, P1/P2).
+fn is_discovery_fatal(e: &AcdpError) -> bool {
+    e.is_transient()
+        || matches!(
+            e,
+            AcdpError::RevocationCandidateUnverifiable(_)
+                | AcdpError::RevocationDiscoveryBudgetExceeded(_)
+        )
 }
 
 /// Walk every member of a revocation lineage and return the ones that
@@ -203,7 +406,7 @@ pub async fn verify_revocation_body(
 /// dropping a **permanently** un-verifiable member and continuing
 /// costs nothing an attacker can turn into a false *authorization* —
 /// such a member was never going to contribute a valid
-/// `compromised_since` to [`effective_boundary`]'s fold, dropped or
+/// `compromised_since` to [`effective_boundary`](acdp_types::revocation::effective_boundary)'s fold, dropped or
 /// not. It is currently invisible without the `tracing` feature; a
 /// future caller auditing registry health should not assume "no
 /// revocations found" means "no suspicious members were seen."
@@ -216,7 +419,7 @@ pub async fn verify_revocation_body(
 /// is "simply absent from the result, never wrongly present" — true
 /// only of the permanent case above, and false in general: a dropped
 /// member that *would* have named an earlier `compromised_since` than
-/// any survivor moves [`effective_boundary`]'s `.min()` fold **later**
+/// any survivor moves [`effective_boundary`](acdp_types::revocation::effective_boundary)'s `.min()` fold **later**
 /// (`acdp_types::revocation::effective_boundary`), which silently
 /// authorizes activity that should have been inside the compromise
 /// window — a genuine false authorization, not a mere omission. A
@@ -306,6 +509,7 @@ async fn walk_revocation_lineage(
     resolver: &WebResolver,
     lineage_id: &LineageId,
     expect_member: Option<&CtxId>,
+    since: std::time::Instant,
 ) -> Result<Vec<(CtxId, KeyRevocation)>, AcdpError> {
     let members = client.lineage(lineage_id).await?;
     if members.is_empty() {
@@ -328,14 +532,16 @@ async fn walk_revocation_lineage(
     }
     let mut out = Vec::with_capacity(members.len());
     for ctx in members {
-        match verify_revocation_body(&ctx.body, resolver).await {
+        match verify_revocation_candidate(&ctx, client, resolver, since).await {
             Ok(rev) => out.push((ctx.body.ctx_id.clone(), rev)),
             // D5 (issue #248 Phase 1): a transient failure means "could
             // not check this member," not "this member is bad" — propagate
             // it rather than silently treating it as if it had never
-            // existed. See the rustdoc block above for why the permanent
+            // existed. An unverifiable member (RFC-ACDP-0014 §8 historical
+            // arm without a usable receipt) is likewise "unknown", never
+            // "absent". See the rustdoc block above for why the permanent
             // case still drops and warns.
-            Err(e) if e.is_transient() => return Err(e),
+            Err(e) if is_discovery_fatal(&e) => return Err(e),
             Err(_e) => {
                 #[cfg(feature = "tracing")]
                 tracing::warn!(
@@ -372,11 +578,17 @@ pub async fn find_revocations_in_lineage(
     resolver: &WebResolver,
     lineage_id: &LineageId,
 ) -> Result<Vec<KeyRevocation>, AcdpError> {
-    Ok(walk_revocation_lineage(client, resolver, lineage_id, None)
-        .await?
-        .into_iter()
-        .map(|(_, rev)| rev)
-        .collect())
+    Ok(walk_revocation_lineage(
+        client,
+        resolver,
+        lineage_id,
+        None,
+        std::time::Instant::now(),
+    )
+    .await?
+    .into_iter()
+    .map(|(_, rev)| rev)
+    .collect())
 }
 
 /// The data-only differences between [`find_revocations`] and
@@ -463,6 +675,10 @@ async fn discover_revocations(
         identity_label,
         identity_value,
     } = params;
+    // One DID-freshness scope for the whole run: a document fetched at
+    // or after this instant is fresh, so a forced re-fetch triggered by
+    // one candidate serves every later candidate (RFC-ACDP-0001 §5.11).
+    let since = std::time::Instant::now();
 
     let mut revocations = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -516,7 +732,7 @@ async fn discover_revocations(
                         continue;
                     }
                     let ctx = client.retrieve(&m.ctx_id).await?;
-                    match verify_revocation_body(&ctx.body, resolver).await {
+                    match verify_revocation_candidate(&ctx, client, resolver, since).await {
                         Ok(rev) => {
                             if keep(&rev) {
                                 revocations.push(rev);
@@ -528,7 +744,9 @@ async fn discover_revocations(
                         // not look," not "clean" — propagate rather than
                         // let the candidate vanish into an empty Vec that
                         // `classify_under_revocation` reads as "proceed."
-                        Err(e) if e.is_transient() => return Err(e),
+                        // Same for an unverifiable candidate (§8 historical
+                        // arm, rev-005 B).
+                        Err(e) if is_discovery_fatal(&e) => return Err(e),
                         Err(_e) => {
                             #[cfg(feature = "tracing")]
                             tracing::warn!(
@@ -589,7 +807,7 @@ async fn discover_revocations(
     // failure.
     for lineage_id in &lineage_order {
         let expect = lineage_expect.get(lineage_id.as_str());
-        let walked = walk_revocation_lineage(client, resolver, lineage_id, expect).await?;
+        let walked = walk_revocation_lineage(client, resolver, lineage_id, expect, since).await?;
         for (ctx_id, rev) in walked {
             if !seen.insert(ctx_id.as_str().to_string()) {
                 continue;
@@ -680,7 +898,7 @@ async fn discover_revocations(
 /// #226 Phase 4). **A retracted revocation is not merely a seed for
 /// finding the rest of the lineage**: once verified it is pushed into
 /// the returned `Vec` exactly like any other member, so it still
-/// permanently constrains [`effective_boundary`]'s earliest-`T` fold.
+/// permanently constrains [`effective_boundary`](acdp_types::revocation::effective_boundary)'s earliest-`T` fold.
 /// This is deliberate, fail-closed behavior, not an oversight — a
 /// registry cannot erase a revocation's effect merely by retracting it
 /// — and it matches the private lineage walk underneath, which never
@@ -760,7 +978,7 @@ async fn discover_revocations(
 /// for it — that error propagates via `?` and this function returns
 /// `Err` rather than a partial `Vec`. A caller cannot distinguish a
 /// `Vec` that omits a compromise window from one that is complete, and
-/// that `Vec` feeds straight into [`effective_boundary`]'s `.min()`
+/// that `Vec` feeds straight into [`effective_boundary`](acdp_types::revocation::effective_boundary)'s `.min()`
 /// over `compromised_since` (RFC-ACDP-0014 §4): silently dropping a
 /// member with an earlier boundary would move the effective boundary
 /// later, and dropping an entire lineage would make revocation
@@ -791,6 +1009,42 @@ pub async fn find_revocations(
     resolver: &WebResolver,
     agent_id: &AgentDid,
 ) -> Result<Vec<KeyRevocation>, AcdpError> {
+    find_revocations_lookup(client, resolver, agent_id)
+        .await
+        .map(|l| l.revocations)
+}
+
+/// One discovery lookup's result: the verified revocations found and, when
+/// a fresh cache marker answered the lookup instead of the network, the
+/// wall-clock time that cached complete absence was observed.
+#[derive(Debug)]
+pub(crate) struct Lookup {
+    pub(crate) revocations: Vec<KeyRevocation>,
+    pub(crate) cached_since: Option<std::time::SystemTime>,
+}
+
+impl Lookup {
+    fn live(revocations: Vec<KeyRevocation>) -> Self {
+        Self {
+            revocations,
+            cached_since: None,
+        }
+    }
+
+    fn cached(observed: std::time::SystemTime) -> Self {
+        Self {
+            revocations: Vec::new(),
+            cached_since: Some(observed),
+        }
+    }
+}
+
+/// [`find_revocations`] reporting whether a cached absence answered it.
+pub(crate) async fn find_revocations_lookup(
+    client: &RegistryClient,
+    resolver: &WebResolver,
+    agent_id: &AgentDid,
+) -> Result<Lookup, AcdpError> {
     // Schema-validate the caller's DID before it is promoted from an
     // opaque search-filter string into an equality operand (filter 1
     // below) — see the exact-byte-match caveat in the doc above. This
@@ -802,7 +1056,7 @@ pub async fn find_revocations(
     // AND still fresh, skips this entire lookup — zero requests issued.
     // Keyed by `(vantage, agent_id, ProducerSigned)`, never by anything
     // registry-specific: this function's scope is the producer itself.
-    // `marker_fresh` is a plain-bool fast path when no cache is attached or
+    // `fresh_marker` is a lock-free fast path when no cache is attached or
     // `freshness == Duration::ZERO` (the default from both
     // `RevocationDiscovery` named constructors), so this costs nothing in
     // the common case. Facts are handled separately, downstream, at
@@ -827,13 +1081,13 @@ pub async fn find_revocations(
     if let (Some((cache, freshness)), Some(vantage)) =
         (client.revocation_cache(), vantage.as_deref())
     {
-        if cache.marker_fresh(
+        if let Some(observed) = cache.fresh_marker(
             vantage,
             agent_id.as_str(),
             RevocationTrustClass::ProducerSigned,
             freshness,
         ) {
-            return Ok(Vec::new());
+            return Ok(Lookup::cached(observed));
         }
     }
 
@@ -902,7 +1156,7 @@ pub async fn find_revocations(
             &revocations,
         );
     }
-    Ok(revocations)
+    Ok(Lookup::live(revocations))
 }
 
 /// Discover a producer's **registry-attested** (§6) key revocations —
@@ -1000,7 +1254,7 @@ pub async fn find_revocations(
 /// truncation and completeness boundary (issue #226 Phase 4). As with
 /// [`find_revocations`], a retracted revocation is not seed-only: once
 /// verified it is pushed into the returned `Vec` like any other member
-/// and still permanently constrains [`effective_boundary`]'s
+/// and still permanently constrains [`effective_boundary`](acdp_types::revocation::effective_boundary)'s
 /// earliest-`T` fold — a registry cannot erase its effect by retracting
 /// it.
 ///
@@ -1038,6 +1292,18 @@ pub async fn find_registry_attested_revocations(
     resolver: &WebResolver,
     controller: &AgentDid,
 ) -> Result<Vec<KeyRevocation>, AcdpError> {
+    find_registry_attested_lookup(client, resolver, controller)
+        .await
+        .map(|l| l.revocations)
+}
+
+/// [`find_registry_attested_revocations`] reporting whether a cached
+/// absence answered it.
+pub(crate) async fn find_registry_attested_lookup(
+    client: &RegistryClient,
+    resolver: &WebResolver,
+    controller: &AgentDid,
+) -> Result<Lookup, AcdpError> {
     let controller = AgentDid::parse(controller.as_str())?;
 
     // Issue #257: the marker check MUST precede `client.capabilities()`
@@ -1067,13 +1333,13 @@ pub async fn find_registry_attested_revocations(
     if let (Some((cache, freshness)), Some(vantage)) =
         (client.revocation_cache(), vantage.as_deref())
     {
-        if cache.marker_fresh(
+        if let Some(observed) = cache.fresh_marker(
             vantage,
             controller.as_str(),
             RevocationTrustClass::RegistryAttested,
             freshness,
         ) {
-            return Ok(Vec::new());
+            return Ok(Lookup::cached(observed));
         }
     }
 
@@ -1141,7 +1407,7 @@ pub async fn find_registry_attested_revocations(
             &revocations,
         );
     }
-    Ok(revocations)
+    Ok(Lookup::live(revocations))
 }
 
 #[cfg(test)]
@@ -1159,6 +1425,7 @@ mod tests {
             revoked_key_controller: AgentDid::new("did:web:agents.example.com:p"),
             publisher: AgentDid::new("did:web:agents.example.com:p"),
             trust_class: RevocationTrustClass::ProducerSigned,
+            ctx_id: None,
         }
     }
 
@@ -1180,7 +1447,7 @@ mod tests {
         );
         assert!(matches!(
             classify_under_revocation(&revs, F, Some(t)),
-            Err(AcdpError::KeyNotAuthorized(_))
+            Err(AcdpError::KeyRevoked(_))
         ));
     }
 
@@ -1190,7 +1457,7 @@ mod tests {
         let revs = [rev(F, at("2026-05-01T00:00:00.000Z"))];
         assert!(matches!(
             classify_under_revocation(&revs, F, None),
-            Err(AcdpError::KeyNotAuthorized(_))
+            Err(AcdpError::KeyRevoked(_))
         ));
     }
 
@@ -1218,7 +1485,7 @@ mod tests {
         // Between the two boundaries: inside the (earliest-T) window.
         assert!(matches!(
             classify_under_revocation(&revs, F, Some(at("2026-04-15T00:00:00.000Z"))),
-            Err(AcdpError::KeyNotAuthorized(_))
+            Err(AcdpError::KeyRevoked(_))
         ));
         // Before both: pre-compromise.
         assert_eq!(

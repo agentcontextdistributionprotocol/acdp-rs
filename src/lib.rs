@@ -85,7 +85,8 @@ pub mod crypto {
     #[cfg(feature = "client")]
     pub use crate::verify::verify_publish_request_signature;
     pub use crate::verify::{
-        verify_body_offline, verify_did_key_envelope, verify_publish_request_signature_offline,
+        verify_body_offline, verify_body_value_offline, verify_did_key_envelope,
+        verify_publish_request_signature_offline,
     };
 }
 

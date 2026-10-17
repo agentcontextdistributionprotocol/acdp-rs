@@ -156,6 +156,7 @@ pub struct SearchResult {
     )]
     pub domain: Option<String>,
     /// Registry-assigned acceptance time.
+    #[serde(with = "acdp_primitives::time::canonical_rfc3339")]
     pub created_at: DateTime<Utc>,
     /// Lifecycle status.
     pub status: Status,

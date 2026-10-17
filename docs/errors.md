@@ -33,7 +33,7 @@ newer registry never breaks an older client.
 | `embedded_too_large` | `EmbeddedTooLarge` |
 | `key_resolution_failed` | `KeyResolution` |
 | `key_resolution_unreachable` | `KeyResolutionUnreachable` |
-| `key_not_authorized` | `KeyNotAuthorized` |
+| `key_not_authorized` | `KeyNotAuthorized`; `KeyRevoked` (0.15.0: the same wire code, raised locally when a verified revocation refuses the signing key — carries an attributed `RevocationRefusal`; test both with `is_key_not_authorized()`) |
 | `unsupported_algorithm` | `UnsupportedAlgorithm` |
 | `unsupported_media_type` | `UnsupportedMediaType` |
 | `not_implemented` | `NotImplemented` |
@@ -70,7 +70,7 @@ are listed because their relationship to the local checks is easy to confuse.
 | `IncompleteLineage` | `GET /lineages/{id}` came back empty, or without the member a search match named, during revocation discovery. |
 | `SearchTruncated` | a revocation-discovery search hit its page or lineage-walk safety cap with results remaining. |
 | `RevocationDiscoveryBudgetExceeded` | revocation discovery ran out of its caller-set `max_requests` / `max_bytes` budget. |
-| `RevocationDiscoveryFailed { source }` | revocation discovery failed under `DiscoveryFailurePolicy::FailClosed`; wraps the cause. |
+| `RevocationUnknown { reason, source, detail }` | revocation discovery could not reach a decision under `DiscoveryFailurePolicy::FailClosed` (RFC-ACDP-0014 §8 *unknown*); `reason` is `truncated`, `unanswerable`, `transient`, or `unverifiable_candidate`, and `source` wraps the cause. Replaces 0.14's `RevocationDiscoveryFailed`. |
 | `InvalidBody` | a producer body could not be parsed (e.g. not a JSON object). |
 | `MissingField` | a required builder field (`title`, `context_type`, …) was not set. |
 | `Serialization` | JSON (de)serialization failed. |
@@ -128,7 +128,7 @@ for the variants the spec marks retryable:
 | `CrossRegistryResolutionFailed` | a foreign hop failed transiently (RFC-ACDP-0006 §7) |
 | `RegistryInternal` | the registry hit an internal error (HTTP 5xx) |
 | `Http` | a connect/timeout/transport error (never an SSRF-policy refusal; see the note below) |
-| `RevocationDiscoveryFailed { source }` | a wrapper, not a wire code: it delegates to `source.is_transient()` |
+| `RevocationUnknown { reason: Transient, .. }` | not a wire code: only the `transient` reason is retryable; `truncated`, `unanswerable`, and `unverifiable_candidate` will not change on retry |
 
 Everything else — `InvalidSignature`, `SchemaViolation`, `HashMismatch`,
 `KeyResolution` (permanent resolution failure: a DNS-rebinding refusal while

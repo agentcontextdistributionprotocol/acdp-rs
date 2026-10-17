@@ -7537,8 +7537,8 @@ async fn cache_ac7c_registry_attested_marker_is_per_producer_not_per_registry() 
     );
 }
 
-/// AC8: a marker minted for vantage A does not suppress discovery at a
-/// different vantage B, for the same producer and cache. Two
+/// AC8 (rev-005 K): a marker minted for vantage A does not suppress
+/// discovery at a different vantage B, for the same producer and cache. Two
 /// `RegistryClient`s pointed at the SAME real harness (`RegistryClient::authority()`
 /// reads the logical host+port from the client's own base URL, not the
 /// physical socket `.resolve()` pins it to) give genuinely different

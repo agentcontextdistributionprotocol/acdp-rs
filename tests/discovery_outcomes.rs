@@ -1,5 +1,5 @@
 //! RFC-ACDP-0014 §8 "Discovery outcome classes" and RFC-ACDP-0001 §5.11
-//! "Caching" (0.5.0) — the rev-005 A–E, rot-002 and did-001 D scenarios.
+//! "Caching" (0.5.0) — the rev-005 A–E, rot-002 A–C and did-001 D scenarios.
 //!
 //! One in-process TLS registry serves the registry DID document, a
 //! *mutable* producer DID document (so a test can rotate keys after the
@@ -282,6 +282,30 @@ async fn rev_005_d_key_added_after_caching_is_revoked() {
         .await
         .expect("refetch finds K3");
     assert_eq!(revs.len(), 1);
+}
+
+/// rot-002 C: several candidates in one discovery run name keys missing
+/// from P's cached document. Exactly one forced fetch happens, and the
+/// fresh document serves every candidate.
+#[tokio::test]
+async fn rot_002_c_one_forced_fetch_per_operation() {
+    let w = World::start(producer_doc(&[("key-1", K1)], &["key-1"])).await;
+    let resolver = w.resolver();
+    resolver.resolve(AGENT).await.unwrap(); // cached copy holds only K1
+
+    w.set_doc(producer_doc(
+        &[("key-1", K1), ("key-2", K2), ("key-3", K3)],
+        &["key-1", "key-2", "key-3"],
+    ));
+    w.publish_revocation_of_k1("key-2", K2).await;
+    w.publish_revocation_of_k1("key-3", K3).await;
+    let before = w.did_hits();
+
+    let revs = find_revocations(&w.client(), &resolver, &agent())
+        .await
+        .expect("both candidates verify against the fresh document");
+    assert_eq!(revs.len(), 2);
+    assert_eq!(w.did_hits(), before + 1, "one forced fetch for the run");
 }
 
 /// rev-005 E: K2 is absent from P's document even after a fresh fetch →

@@ -503,10 +503,13 @@ async fn rev_006_b_in_scope_registry_attestation_applies() {
     assert_eq!(r.revocation.revoked_key_controller, agent());
 }
 
-// ── rev-005 I–K: caching ──────────────────────────────────────────────
+// ── rev-005 I–J: caching ──────────────────────────────────────────────
+// (K, vantage scope, is `cache_ac8_marker_is_per_vantage` in
+// key_revocation.rs.)
 
-/// I: `unknown` is never cached — a repeat lookup after an unknown runs
-/// again; a complete absence is cached and reports when it was observed.
+/// I (freshness bound): `unknown` is never cached — a repeat lookup after
+/// an unknown runs again; a complete absence is cached and reports when it
+/// was observed.
 #[tokio::test]
 async fn rev_005_i_unknown_is_never_cached() {
     let (w, ctx) = world().await;
@@ -537,7 +540,7 @@ async fn rev_005_i_unknown_is_never_cached() {
     );
     let after_live = w.search_hits();
 
-    // J: the complete absence is now cached for the default 300 s.
+    // The complete absence is now cached for the default 300 s.
     let v = fetch(&w, &client, &ctx, &pol).await.unwrap();
     assert_eq!(w.search_hits(), after_live, "fresh marker suppresses");
     assert!(matches!(
@@ -550,11 +553,11 @@ async fn rev_005_i_unknown_is_never_cached() {
     ));
 }
 
-/// K: a verified revocation is a fact — it survives a registry that
+/// J (anti-rollback): a verified revocation is a fact — it survives a registry that
 /// stops serving it and fails every lookup, and is attributed to the
 /// cache and the vantage that first verified it.
 #[tokio::test]
-async fn rev_005_k_verified_revocations_are_never_evicted() {
+async fn rev_005_j_verified_revocations_are_never_evicted() {
     let (w, ctx) = world().await;
     publish_revocation(&w, PAST).await;
     let client = w.client().with_revocation_cache(RevocationCache::new());

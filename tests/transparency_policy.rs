@@ -415,6 +415,78 @@ async fn witness_quorum_without_a_receipt_uses_the_verified_checkpoint() {
     );
 }
 
+/// wit-005 A: the checkpoint's root is altered after signing (log-004
+/// tampering) and a trusted cosignature over the altered triple verifies.
+/// Log-proof checking is off, but the checkpoint is verified anyway: not
+/// witnessed, reported via `invalid_log_proof`, never
+/// `invalid_witness_cosignature` — advisory or enforced.
+#[tokio::test]
+async fn wit_005_a_altered_checkpoint_is_never_witnessed() {
+    let w = World::start(one_key()).await;
+    let other = others(&w).await;
+    let ctx = w.publish("key-1", K1, ContextType::Analysis, None).await;
+    let mut cp = serve_inclusion(&w, &ctx, &other);
+    let altered = format!("sha256:{}", "0".repeat(64));
+    w.tamper(ctx.body.ctx_id.as_str(), |v| {
+        v["log_inclusion"]["log_checkpoint"]["root_hash"] = json!(&altered);
+    });
+    cp.root_hash = altered;
+    let w1 = did_key_witness(W1);
+    serve_cosignatures(&w, &ctx, vec![cosign(&w1, &cp)]);
+
+    let witnesses = WitnessQuorumPolicy::new([w1.witness_id()]);
+    let policy = VerificationPolicy {
+        witness_quorum: Some(witnesses.clone()),
+        ..VerificationPolicy::default()
+    };
+    assert_eq!(policy.log_inclusion, LogInclusionPolicy::default());
+    let v = fetch(&w, &ctx, &policy).await;
+    assert!(
+        matches!(v.witness_quorum(), Some(Err(AcdpError::InvalidLogProof(_)))),
+        "{:?}",
+        v.witness_quorum()
+    );
+
+    let enforced = VerificationPolicy {
+        witness_quorum: Some(witnesses.enforce(WitnessEnforcement::RequireQuorum)),
+        ..VerificationPolicy::default()
+    };
+    let err =
+        VerifiedContext::fetch_with_policy(&w.client(), &w.resolver(), &ctx.body.ctx_id, &enforced)
+            .await
+            .unwrap_err();
+    assert!(matches!(err, AcdpError::InvalidLogProof(_)), "{err:?}");
+}
+
+/// wit-005 B: the checkpoint verifies and the trusted cosignature over it
+/// verifies — 1-witnessed — while inclusion, with no receipt, is reported
+/// separately as cannot-verify.
+#[tokio::test]
+async fn wit_005_b_quorum_counts_without_a_receipt() {
+    let w = World::start(one_key()).await;
+    let other = others(&w).await;
+    let ctx = w.publish("key-1", K1, ContextType::Analysis, None).await;
+    let cp = serve_inclusion(&w, &ctx, &other);
+    let w1 = did_key_witness(W1);
+    serve_cosignatures(&w, &ctx, vec![cosign(&w1, &cp)]);
+    w.strip_receipts.store(true, Ordering::SeqCst);
+    let policy = VerificationPolicy {
+        witness_quorum: Some(
+            WitnessQuorumPolicy::new([w1.witness_id()]).enforce(WitnessEnforcement::RequireQuorum),
+        ),
+        ..VerificationPolicy::default()
+    };
+    let v = fetch(&w, &ctx, &policy).await;
+    let report = v.witness_quorum().unwrap().as_ref().unwrap();
+    assert_eq!(report.witnessed_count, 1);
+    assert!(report.meets_quorum);
+    assert_eq!(
+        v.log_inclusion_verdict()
+            .and_then(LogInclusionVerdict::cannot_verify_reason),
+        Some(CannotVerifyReason::ReceiptAbsent)
+    );
+}
+
 /// RFC-ACDP-0015 §8: trusted cosignatures over the verified checkpoint
 /// count toward the quorum. Witnesses can be did:key (resolved offline) or
 /// did:web with a pinned document. Untrusted witnesses never count.

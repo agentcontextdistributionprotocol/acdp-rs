@@ -147,6 +147,7 @@ const KNOWN_FAMILIES: &[&str] = &[
     "cur",
     "data-ref",
     "data-ref-ssrf",
+    "did",
     "did-ssrf",
     "dk",
     "err",

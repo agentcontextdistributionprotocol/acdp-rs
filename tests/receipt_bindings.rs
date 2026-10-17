@@ -1,6 +1,6 @@
 //! Receipt-key status, the separate receipt verdict, and the consumer
 //! lineage/origin binding (0.5.0 consumer clarifications P5–P7):
-//! `rcpt-005` A–D, `rcpt-006`, `lin-002` A–C and `body-003`.
+//! `rcpt-005` A–D, `rcpt-006`, `ret-003` A–D and `body-003`.
 
 mod common;
 mod world;
@@ -268,11 +268,11 @@ async fn rcpt_006_failed_receipt_is_unplaceable() {
     }
 }
 
-// ── lin-002 / body-003: registry-assigned bindings ───────────────────
+// ── ret-003 / body-003: registry-assigned bindings ───────────────────
 
 /// A: a first version with the correct derivation is accepted.
 #[tokio::test]
-async fn lin_002_a_v1_derived_lineage_accepted() {
+async fn ret_003_a_v1_derived_lineage_accepted() {
     let w = World::start(both_keys()).await;
     let ctx = w.publish("key-1", K1, ContextType::Analysis, None).await;
     let v = fetch(&w, &ctx, &VerificationPolicy::default())
@@ -284,7 +284,7 @@ async fn lin_002_a_v1_derived_lineage_accepted() {
 /// B: a first version whose `lineage_id` derives from another `ctx_id`
 /// is `schema_violation`, receipt or not.
 #[tokio::test]
-async fn lin_002_b_v1_wrong_lineage_rejected() {
+async fn ret_003_b_v1_wrong_lineage_rejected() {
     let w = World::start(both_keys()).await;
     let ctx = w.publish("key-1", K1, ContextType::Analysis, None).await;
     let other = w.publish("key-1", K1, ContextType::Analysis, None).await;
@@ -308,7 +308,7 @@ async fn lin_002_b_v1_wrong_lineage_rejected() {
 /// C: a later version without a receipt is accepted with `lineage_id`
 /// reported unbound; with a verified receipt it is receipt-attested.
 #[tokio::test]
-async fn lin_002_c_v2_lineage_binding_reported() {
+async fn ret_003_c_v2_lineage_binding_reported() {
     let w = World::start(both_keys()).await;
     let v1 = w.publish("key-1", K1, ContextType::Analysis, None).await;
     let v2 = w.publish_next(&v1, "key-1", K1).await;
@@ -334,6 +334,27 @@ async fn lin_002_c_v2_lineage_binding_reported() {
     .await
     .unwrap();
     assert_eq!(report.lineage_binding, Some(LineageBinding::Unbound));
+}
+
+/// D: a later version whose receipt fails RFC-ACDP-0010 §8 is treated as
+/// receipt-less — accepted with `lineage_id` unbound, never attested.
+#[tokio::test]
+async fn ret_003_d_v2_failed_receipt_is_unbound() {
+    let w = World::start(both_keys()).await;
+    let v1 = w.publish("key-1", K1, ContextType::Analysis, None).await;
+    let v2 = w.publish_next(&v1, "key-1", K1).await;
+    w.tamper(v2.body.ctx_id.as_str(), mismatch_receipt_ctx_id);
+
+    let policy = VerificationPolicy {
+        receipts: ReceiptPolicy::VerifyAndReport,
+        ..VerificationPolicy::default()
+    };
+    let v = fetch(&w, &v2, &policy).await.expect("body verdict valid");
+    assert_eq!(v.lineage_binding(), LineageBinding::Unbound);
+    assert!(matches!(
+        v.receipt_verdict(),
+        Some(Err(AcdpError::InvalidReceipt(_)))
+    ));
 }
 
 /// body-003: `origin_registry` ≠ the `ctx_id` authority → rejected.

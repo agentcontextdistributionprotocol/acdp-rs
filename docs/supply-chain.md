@@ -46,10 +46,11 @@ Actions"** badge with the source repo, commit, and workflow file.
 
 Authentication for the publish itself is still the `NPM_TOKEN` automation
 token (`NODE_AUTH_TOKEN`), not npm Trusted Publishing, in both npm release
-workflows (`bindings-release.yml`, `acdp-wasm-release.yml`): they run on
-Node 20, whose bundled npm 10 is older than the npm 11.5.1 that Trusted
-Publishing requires. The OIDC `id-token` is used only for the provenance
-statement.
+workflows (`bindings-release.yml`, `acdp-wasm-release.yml`). Both now run
+on Node 24, whose bundled npm 11 meets Trusted Publishing's npm >= 11.5.1
+floor, so the remaining step is configuring the trusted publisher for each
+package on npmjs.com and then dropping `NPM_TOKEN`. Until then the OIDC
+`id-token` is used only for the provenance statement.
 
 ### npm (`@agentcontextdistributionprotocol/acdp-wasm` — browser WebAssembly verifier)
 

@@ -89,8 +89,8 @@ jobs:
           V="${{ inputs.version }}"; [ -z "$V" ] && V="${GITHUB_REF_NAME#acdp-py-v}"
           echo "stamping version $V"
           sed -i.bak -E "s/^version[[:space:]]*=.*/version = \"$V\"/" pyproject.toml Cargo.toml && rm -f pyproject.toml.bak Cargo.toml.bak
-      # maturin-action picks up `abi3-py39` from Cargo.toml and emits a
-      # single cp39-abi3 wheel per target; `manylinux: auto` builds the
+      # maturin-action picks up `abi3-py310` from Cargo.toml and emits a
+      # single cp310-abi3 wheel per target; `manylinux: auto` builds the
       # Linux wheels in a manylinux container (and cross-compiles aarch64).
       # No --locked here — see the gate step above for why.
       - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0

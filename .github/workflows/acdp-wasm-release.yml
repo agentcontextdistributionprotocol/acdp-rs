@@ -54,7 +54,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
       # Pinned (not `stable`) so a release rebuild resolves the same
       # compiler every time instead of whatever `stable` happens to be on
@@ -279,7 +279,7 @@ jobs:
         working-directory: bindings/acdp-wasm/pkg
       # --provenance publishes a signed npm provenance statement generated
       # from this run's OIDC id-token (job perm `id-token: write`). Requires
-      # npm >= 9.5; setup-node's Node 20 ships npm >= 10.
+      # npm >= 9.5; setup-node's Node 24 ships npm >= 11.
       - name: Publish to npm
         id: publish
         if: ${{ github.event_name == 'push' || !inputs.dry_run }}

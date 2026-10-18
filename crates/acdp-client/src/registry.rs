@@ -657,7 +657,7 @@ impl RegistryClient {
             .parse_success::<serde_json::Value>(resp, MAX_CONTEXT_BYTES)
             .await?;
         self.record_discovery_bytes(nbytes);
-        serde_json::from_value(value).map_err(|e| AcdpError::Serialization(e.to_string()))
+        serde_json::from_value(value).map_err(malformed_response)
     }
 
     /// Retrieve the current (latest) context in a lineage.
@@ -703,6 +703,19 @@ impl RegistryClient {
     pub fn search_builder(&self) -> RegistrySearch<'_> {
         RegistrySearch::new(self)
     }
+}
+
+/// Classify a registry document that does not deserialize (not JSON, a
+/// closed-shape object with an undefined field, a `null` in a non-nullable
+/// slot, a missing required field) as `schema_violation`. RFC-ACDP-0007 §3.3.1:
+/// "Conformant consumers MUST reject deserializing a closed-schema object that
+/// contains fields not defined in the schema (schema_violation)", and the
+/// `schema-*` fixtures pin `consumer_error: schema_violation`. Refusing at
+/// serde time is conformant; the surfaced category must still be
+/// `SchemaViolation`, never the generic `Serialization` (reserved for local
+/// encoding failures).
+fn malformed_response(e: serde_json::Error) -> AcdpError {
+    AcdpError::SchemaViolation(format!("malformed registry response: {e}"))
 }
 
 /// `Accept` sent on every registry request: the canonical ACDP media
@@ -1035,8 +1048,7 @@ impl RegistryClient {
     ) -> Result<(T, usize), AcdpError> {
         if resp.status().is_success() {
             let bytes = read_body_capped(resp, max_bytes).await?;
-            let value = serde_json::from_slice(&bytes)
-                .map_err(|e| AcdpError::Serialization(e.to_string()))?;
+            let value = serde_json::from_slice(&bytes).map_err(malformed_response)?;
             Ok((value, bytes.len()))
         } else {
             // Error envelopes are tiny — apply the metadata cap so a

@@ -2275,3 +2275,15 @@ Closes the `322-zeroize` entry above: its exit criterion is met. Worksheet:
 **Decided by:** Opus. Reversible (re-add the exemption and marker). The audit PR follows
 Policy 4 sign-off (maintainer merge plus a comment naming the worksheet, or an agent merge
 under the standing instruction). **Status:** DECIDED.
+
+## 2026-10-08 — Docs refresh (plans/docs-refresh-2026-10.md, PR #384) — decided by Opus
+Eight docs-only assumptions, all reversible in a commit; no one-way doors, so no Fable analysis.
+- CLI `search` unchanged, docs corrected (paging sentence dropped): CONFIRMED — behavior change would be a contract change with no demanded consumer.
+- `scripts/check-doc-links.sh` optional/local, not CI: CONFIRMED — avoids a network/sibling-checkout flake surface; seeded-failure behavior verified.
+- SECURITY.md reports by email per org policy (repo private reporting is disabled): CONFIRMED.
+- Makefile Node targets use `npm ci`: CONFIRMED — matches CI; `npm ci --dry-run` passed against committed locks.
+- Binding READMEs say "released at the same version as the acdp crate": CONFIRMED — release cascade stamps the version; PyPI/npm at 0.14.5.
+- "Four places" outbound HTTPS = RegistryClient, WebResolver, CrossRegistryResolver, HttpsDataRefFetcher: CONFIRMED against code.
+- fed-010/err-002 documented as not executed here: CONFIRMED — no binding in tests/.
+- Link-script heading-slug simplifications: CONFIRMED — no doc triggers them; the checker passes on all 236 links.
+Resulting status: CONFIRMED (2026-10-08). No code follow-up.

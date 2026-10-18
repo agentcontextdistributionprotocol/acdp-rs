@@ -1352,4 +1352,4 @@ matching `0f9425b`'s style. No lasting blast radius — caught before commit.
 - **Chose:** best defensible default for each; docs-only/comment-only code diffs.
 - **Alternatives:** change CLI search output; wire link check into CI; enable repo private vulnerability reporting (repo setting, out of scope).
 - **Blast radius if wrong:** docs wording only; trivially reversible.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-08)

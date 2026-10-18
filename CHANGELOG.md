@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.15.0...acdp-v0.15.1) - 2026-10-18
+
+### Fixed
+
+- *(client)* report malformed registry documents as SchemaViolation
+
+### Other
+
+- Merge pull request #395 from agentcontextdistributionprotocol/ci/crates-io-trusted-publishing
+- *(bindings)* move off EOL Node 20 and Python 3.9
+
 ## [0.15.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.14.5...acdp-v0.15.0) - 2026-10-17
 
 ### Added

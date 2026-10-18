@@ -392,10 +392,122 @@ async fn search_response_with_results_key_rejected() {
 
     let client = RegistryClient::with_test_transport(&server.uri()).unwrap();
     let err = client.search(&SearchParams::default()).await.unwrap_err();
+    assert_malformed_response(err);
+}
+
+/// A closed-shape (or otherwise malformed) registry document is a
+/// `schema_violation` (RFC-ACDP-0007 §3.3.1: "Conformant consumers MUST reject
+/// deserializing a closed-schema object that contains fields not defined in
+/// the schema (schema_violation)"; the `schema-*` fixtures pin
+/// `consumer_error: schema_violation`). It is never the generic
+/// `Serialization` variant, which is reserved for local encoding failures.
+fn assert_malformed_response(err: AcdpError) {
     match err {
-        AcdpError::Serialization(_) => {}
-        other => panic!("expected Serialization error, got {other:?}"),
+        AcdpError::SchemaViolation(m) => assert!(
+            m.starts_with("malformed registry response: "),
+            "unexpected message: {m}"
+        ),
+        other => panic!("expected SchemaViolation, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn schema_002_publish_response_echoing_content_hash_is_schema_violation() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/contexts"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "ctx_id": "acdp://registry.example.com/uuid-1",
+            "lineage_id": "lin:sha256:aabb",
+            "version": 1,
+            "created_at": "2026-04-16T10:30:15.123Z",
+            "status": "active",
+            "content_hash": "sha256:00"
+        })))
+        .mount(&server)
+        .await;
+
+    let client = RegistryClient::with_test_transport(&server.uri()).unwrap();
+    let err = client.publish(&sample_publish_request()).await.unwrap_err();
+    assert_malformed_response(err);
+}
+
+#[tokio::test]
+async fn schema_008_retrieved_signature_extra_field_is_schema_violation() {
+    let server = MockServer::start().await;
+    let ctx_id = "acdp://registry.example.com/uuid-1";
+    let mut body = sample_body_json(ctx_id);
+    body["signature"]["extra"] = json!("x");
+    Mock::given(method("GET"))
+        .and(path(format!("/contexts/{}", urlencoding::encode(ctx_id))))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "body": body,
+            "registry_state": { "status": "active" }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = RegistryClient::with_test_transport(&server.uri()).unwrap();
+    let err = client.retrieve(&CtxId(ctx_id.into())).await.unwrap_err();
+    assert_malformed_response(err);
+}
+
+#[tokio::test]
+async fn schema_005_search_next_cursor_null_is_schema_violation() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/contexts/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "matches": [],
+            "total_estimate": 0,
+            "next_cursor": null
+        })))
+        .mount(&server)
+        .await;
+
+    let client = RegistryClient::with_test_transport(&server.uri()).unwrap();
+    let err = client.search(&SearchParams::default()).await.unwrap_err();
+    assert_malformed_response(err);
+}
+
+#[tokio::test]
+async fn non_json_success_body_is_schema_violation() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/contexts/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<html>not json</html>"))
+        .mount(&server)
+        .await;
+
+    let client = RegistryClient::with_test_transport(&server.uri()).unwrap();
+    let err = client.search(&SearchParams::default()).await.unwrap_err();
+    assert_malformed_response(err);
+}
+
+#[tokio::test]
+async fn lineage_with_closed_shape_violation_is_schema_violation() {
+    let server = MockServer::start().await;
+    let ctx_id = "acdp://registry.example.com/uuid-1";
+    let mut body = sample_body_json(ctx_id);
+    body["signature"]["extra"] = json!("x");
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/lineages/{}",
+            urlencoding::encode("lin:sha256:aabb")
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+            "body": body,
+            "registry_state": { "status": "active" }
+        }])))
+        .mount(&server)
+        .await;
+
+    let client = RegistryClient::with_test_transport(&server.uri()).unwrap();
+    let err = client
+        .lineage(&LineageId("lin:sha256:aabb".into()))
+        .await
+        .unwrap_err();
+    assert_malformed_response(err);
 }
 
 #[tokio::test]

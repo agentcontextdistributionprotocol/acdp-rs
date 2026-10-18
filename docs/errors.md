@@ -73,7 +73,7 @@ are listed because their relationship to the local checks is easy to confuse.
 | `RevocationUnknown { reason, source, detail }` | revocation discovery could not reach a decision under `DiscoveryFailurePolicy::FailClosed` (RFC-ACDP-0014 §8 *unknown*); `reason` is `truncated`, `unanswerable`, `transient`, or `unverifiable_candidate`, and `source` wraps the cause. Replaces 0.14's `RevocationDiscoveryFailed`. |
 | `InvalidBody` | a producer body could not be parsed (e.g. not a JSON object). |
 | `MissingField` | a required builder field (`title`, `context_type`, …) was not set. |
-| `Serialization` | JSON (de)serialization failed. |
+| `Serialization` | Local JSON (de)serialization failed. A registry document that does not deserialize (not JSON, closed-shape extra field, `null` in a non-nullable slot) is reported as `SchemaViolation` (`"malformed registry response: …"`), per RFC-ACDP-0007 §3.3.1 and the `schema-*` fixtures. |
 | `Http` | a transport error (connect, timeout, redirect policy, I/O). |
 
 ## Local vs. remote hash mismatches

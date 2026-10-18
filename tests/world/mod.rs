@@ -15,7 +15,12 @@ use acdp::producer::Producer;
 use acdp::registry::{InMemoryStore, RegistryServer, RegistryStore as _};
 use acdp::types::receipt::ReceiptSigner;
 use acdp::types::{AgentDid, ContextType, FullContext, Visibility};
-use axum::{http::StatusCode, response::IntoResponse, routing::get, Json, Router};
+use axum::{
+    http::StatusCode,
+    response::IntoResponse,
+    routing::{get, post},
+    Json, Router,
+};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use serde_json::{json, Value};
@@ -200,6 +205,17 @@ impl World {
                 }),
             )
             .route("/.well-known/acdp.json", get(|| async { Json(caps()) }))
+            // Publish endpoint: only the `Authorization` log matters, so it
+            // always refuses.
+            .route(
+                "/contexts",
+                post(|| async {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": { "code": "internal_error", "message": "test" } })),
+                    )
+                }),
+            )
             .route(
                 "/contexts/search",
                 get({

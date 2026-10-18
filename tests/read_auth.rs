@@ -10,13 +10,16 @@ mod world;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use acdp::client::RegistryClient;
 use acdp::client::{
     find_revocations_verdict, AuthFuture, AuthProvider, BearerToken, CrossRegistryResolver,
     PerAuthorityTokens, RevocationDiscovery, RevocationEffect, RevocationPolicy, RevocationVerdict,
     StaticBearerToken, UnknownReason, VerificationPolicy, VerifiedContext,
 };
+use acdp::crypto::SigningKey;
 use acdp::error::AcdpError;
-use acdp::types::ContextType;
+use acdp::producer::Producer;
+use acdp::types::{AgentDid, ContextType, Visibility};
 use world::*;
 
 const TOKEN: &str = "eyJhbGciOiJFZERTQSJ9.eyJhdWQiOiJkaWQ6d2ViOmxvY2FsaG9zdCJ9.c2ln";
@@ -152,6 +155,71 @@ async fn token_is_not_sent_on_capabilities_or_did_fetches() {
         .auth_headers_for("/contexts")
         .iter()
         .all(|a| a.as_deref() == Some(&*format!("Bearer {TOKEN}"))));
+}
+
+/// Bearers are read credentials (RFC-ACDP-0008 §6.2): publish is
+/// authenticated by the producer signature, so even a provider holding a
+/// token for this very authority never sees it attached to `POST /contexts`.
+#[tokio::test]
+async fn token_is_never_sent_on_publish() {
+    let w = World::start(both_keys()).await;
+    let ctx = w.publish("key-1", K1, ContextType::Analysis, None).await;
+    let client = w
+        .client()
+        .with_auth_provider(Arc::new(StaticBearerToken::new(
+            REGISTRY_AUTHORITY,
+            token(TOKEN),
+        )));
+    let req = Producer::new(
+        SigningKey::from_bytes(&K1),
+        AgentDid::new(AGENT),
+        format!("{AGENT}#key-1"),
+    )
+    .publish_request()
+    .title("publish without bearer")
+    .context_type(ContextType::Analysis)
+    .visibility(Visibility::Public)
+    .build()
+    .expect("build");
+    client.publish(&req).await.unwrap_err();
+    // The same client does present the token on a read.
+    client.retrieve(&ctx.body.ctx_id).await.unwrap();
+    let seen = w.auth_headers_for("/contexts");
+    let (publishes, reads) = (
+        seen.iter().filter(|a| a.is_none()).count(),
+        seen.iter().filter(|a| a.is_some()).count(),
+    );
+    assert_eq!((publishes, reads), (1, 1), "{seen:?}");
+}
+
+/// Tokens go over `https` only: an `http://` registry never receives one,
+/// even when the provider has a token for its authority.
+#[tokio::test]
+async fn token_is_never_sent_over_plain_http() {
+    use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({ "matches": [] })),
+        )
+        .mount(&mock)
+        .await;
+    let base = mock.uri();
+    let authority = base.trim_start_matches("http://").to_string();
+    let client = RegistryClient::with_test_transport(&base)
+        .unwrap()
+        .with_auth_provider(Arc::new(StaticBearerToken::new(authority, token(TOKEN))));
+    client
+        .search(&acdp::types::search::SearchParams::default())
+        .await
+        .unwrap();
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests[0].headers.get("authorization").is_none(),
+        "{:?}",
+        requests[0].headers
+    );
 }
 
 /// A rejected token is reported back to the provider so it can refresh;

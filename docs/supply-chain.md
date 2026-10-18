@@ -121,19 +121,22 @@ artifact never built here) fails closed.
 
 `acdp` is published to crates.io by
 [`release-plz.yml`](../.github/workflows/release-plz.yml), which drives
-`cargo publish`, authenticated with the long-lived `CARGO_REGISTRY_TOKEN`
-secret.
+`cargo publish` authenticated by crates.io **Trusted Publishing** (#383). No
+long-lived token is stored: release-plz exchanges the job's GitHub OIDC
+`id-token` (`permissions: id-token: write`, on the release-plz job only) for a
+short-lived crates.io token, scoped to the crates whose trusted publisher names
+this repository and workflow.
 
-- `cargo publish` has no build-provenance / attestation mechanism comparable
-  to npm `--provenance` or PyPI PEP 740.
-- crates.io **Trusted Publishing** (OIDC, no long-lived token, via
-  `rust-lang/crates-io-auth-action`) is available upstream, but this workflow
-  has **not** adopted it: release-plz's version/publish flow is deliberately
-  unchanged. Adopting it means adding `permissions: id-token: write` to the
-  release-plz **job only** and dropping `CARGO_REGISTRY_TOKEN` (see the header
-  comment in `release-plz.yml`).
+- Each workspace crate has a trusted publisher on crates.io: owner
+  `agentcontextdistributionprotocol`, repository `acdp-rs`, workflow
+  `release-plz.yml`, no environment.
+- A **new** crate cannot be first-published through Trusted Publishing (a
+  crates.io limitation). Publish it once by hand, then add its trusted
+  publisher before the next release.
+- `cargo publish` still has no build-provenance / attestation mechanism
+  comparable to npm `--provenance` or PyPI PEP 740.
 
-Without it, crate integrity rests on crates.io's own immutable-version guarantee
+Without such a mechanism, crate integrity rests on crates.io's own immutable-version guarantee
 plus the `Cargo.lock` checksums, and provenance for the *contents* is available
 via the GitHub build-provenance attestations above (same commits, same CI).
 

@@ -6,7 +6,7 @@ build-backend = "maturin"
 name             = "acdp"
 version = "0.10.0"
 description      = "Agent Context Distribution Protocol — Python SDK"
-requires-python  = ">=3.9"
+requires-python  = ">=3.10"
 classifiers      = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",

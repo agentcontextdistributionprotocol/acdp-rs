@@ -50,7 +50,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ['3.9', '3.11', '3.13']
+        python: ['3.10', '3.12', '3.14']
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
@@ -76,19 +76,18 @@ jobs:
       - name: Install maturin + pytest
         run: |
           python -m pip install --upgrade pip
-          python -m pip install 'maturin==1.15.0' 'pytest==8.4.2'
+          python -m pip install 'maturin==1.15.0' 'pytest==9.1.1'
       # The pins above are declared, not enforced, by pip alone (a stale
       # cache or an index anomaly could still hand back something else);
       # assert the resolved versions the same way bindings.yml's
       # `Assert the pinned @napi-rs/cli version` step does for npm.
-      # pytest==8.4.2 (not the newer 9.x also seen in this fleet) is the
-      # one version that installs on every leg of this job's python
-      # matrix — pytest>=9 requires Python>=3.10 and this matrix includes
-      # 3.9.
+      # pytest 9.x requires Python >= 3.10, which is also this binding's
+      # floor (`requires-python = ">=3.10"`, #382), so one pin serves every
+      # leg of the matrix.
       - name: Assert the pinned maturin + pytest versions
         run: |
           python -c 'import importlib.metadata as m, sys; sys.exit(0 if m.version("maturin") == "1.15.0" else 1)'
-          python -c 'import importlib.metadata as m, sys; sys.exit(0 if m.version("pytest") == "8.4.2" else 1)'
+          python -c 'import importlib.metadata as m, sys; sys.exit(0 if m.version("pytest") == "9.1.1" else 1)'
       - name: Build the wheel (editable)
         working-directory: bindings/acdp-py
         run: maturin develop --release --locked
@@ -102,14 +101,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 20 (LTS), 22 (LTS) — 22 catches `node --test tests/`
-        # regressions where bare dir paths started failing with
-        # MODULE_NOT_FOUND. 18 dropped: `@napi-rs/cli` 3.x's
-        # `@inquirer/core` dependency imports `node:util`'s
-        # `styleText`, added in Node 20.17/22.13+ and absent in 18
-        # (already EOL since 2025-04) — `napi build` can no longer
-        # run there at all. `engines.node` in package.json matches.
-        node: ['20', '22']
+        # 22 (maintenance LTS) and 24 (active LTS). 20 dropped (#381): EOL
+        # since 2026-04, and its bundled npm 10 predates npm Trusted
+        # Publishing (npm >= 11.5.1). 18 was dropped earlier: `@napi-rs/cli`
+        # 3.x imports `node:util`'s `styleText` (Node 20.17/22.13+), so
+        # `napi build` cannot run there. `engines.node` in package.json
+        # matches the oldest leg.
+        node: ['22', '24']
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
@@ -320,7 +318,7 @@ jobs:
           python-version: '3.11'
       - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '24'
       # `maturin develop` requires an active venv — see acdp-py job.
       - name: Create and activate venv
         run: |
@@ -330,13 +328,13 @@ jobs:
       - name: Install build tools
         run: |
           python -m pip install --upgrade pip
-          python -m pip install 'maturin==1.15.0' 'pytest==8.4.2'
+          python -m pip install 'maturin==1.15.0' 'pytest==9.1.1'
       # See the acdp-py job's identical assertion step for why these
       # exact versions (pytest==8.4.2, not the newer 9.x) were chosen.
       - name: Assert the pinned maturin + pytest versions
         run: |
           python -c 'import importlib.metadata as m, sys; sys.exit(0 if m.version("maturin") == "1.15.0" else 1)'
-          python -c 'import importlib.metadata as m, sys; sys.exit(0 if m.version("pytest") == "8.4.2" else 1)'
+          python -c 'import importlib.metadata as m, sys; sys.exit(0 if m.version("pytest") == "9.1.1" else 1)'
       - name: Build the Python SDK (editable)
         working-directory: bindings/acdp-py
         run: maturin develop --release --locked
@@ -412,7 +410,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '24'
       # bindings/acdp-node/package-lock.json is committed (see .gitignore's
       # acdp-node section); `npm ci` installs exactly that pinned graph and
       # fails the job outright if it ever drifts from package.json (#249).

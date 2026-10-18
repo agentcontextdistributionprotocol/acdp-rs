@@ -273,7 +273,7 @@ The binding builds pin their toolchains so a release is reproducible:
 
 | Tool | Pin | Where |
 |---|---|---|
-| `maturin`, `pytest` | `maturin==1.15.0`, `pytest==8.4.2` | `.github/workflows/bindings.yml` |
+| `maturin`, `pytest` | `maturin==1.15.0`, `pytest==9.1.1` | `.github/workflows/bindings.yml` |
 | `@napi-rs/cli` | `3.8.6`, exact | `bindings/acdp-node/package.json`; asserted in `bindings.yml` and `bindings-release.yml` |
 | `rustc` for the wasm release | `1.98.0` | `.github/workflows/acdp-wasm-release.yml` |
 | `wasm-pack` | `0.15.0` | `bindings.yml`, `acdp-wasm-release.yml` (via `taiki-e/install-action`) |

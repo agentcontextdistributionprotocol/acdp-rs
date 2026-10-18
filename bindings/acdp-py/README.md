@@ -20,7 +20,7 @@ pip install acdp               # from PyPI
 ## Install (development)
 
 ```bash
-pip install 'maturin==1.15.0' 'pytest==8.4.2'   # the versions CI pins
+pip install 'maturin==1.15.0' 'pytest==9.1.1'   # the versions CI pins
 maturin develop                # editable install into the active venv
 pytest tests/                  # in-process unit tests, no HTTP
 ```

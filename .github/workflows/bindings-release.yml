@@ -267,6 +267,45 @@ jobs:
       # exists by the time the consumer reacts; this step's own gate does not depend on
       # "Tag the release" succeeding: a tag-step failure (e.g. a blank manual `version`)
       # must not suppress the notification for a release that did ship.
+      # A successful `npm publish` is not the same as "installable": npm answers
+      # "being processed and may take a few minutes to become available", and a
+      # platform package has lagged ~7 min behind the root (0.15.1: published
+      # 16:15:54, served 16:23:05). The consumer's relock (acdp-ci npm-relock)
+      # gives up after ~3 min, so the 0.14.5/0.15.0/0.15.1 auto-bumps all failed.
+      # Wait here — with the same `npm view` check the consumer runs — until the
+      # root and every platform package it names are served. On timeout, warn and
+      # dispatch anyway: the release shipped and the consumer still retries.
+      - name: Wait for npm to serve every package
+        if: ${{ always() && steps.publish-root.outcome == 'success' && (github.event_name == 'push' || !inputs.dry_run) }}
+        env:
+          REF: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          ATTEMPTS: '40'
+          SLEEP: '30'
+        run: |
+          VER="${INPUT_VERSION:-${REF#acdp-node-v}}"
+          ROOT="$(jq -r .name package.json)"
+          for i in $(seq 1 "$ATTEMPTS"); do
+            missing=""
+            if [ -z "$(npm view "$ROOT@$VER" version 2>/dev/null || true)" ]; then
+              missing="$ROOT@$VER"
+            else
+              # `--json` prints an error object on failure; only an object of
+              # name→version strings counts.
+              opts="$(npm view "$ROOT@$VER" optionalDependencies --json 2>/dev/null || true)"
+              names="$(printf '%s' "$opts" | jq -r 'select(type=="object" and (has("error")|not)) | keys[]' 2>/dev/null || true)"
+              [ -z "$names" ] && missing="optionalDependencies of $ROOT@$VER"
+              for p in $names; do
+                if [ -z "$(npm view "$p@$VER" version 2>/dev/null || true)" ]; then
+                  missing="$p@$VER"; break
+                fi
+              done
+            fi
+            if [ -z "$missing" ]; then echo "all packages served at $VER"; exit 0; fi
+            echo "waiting for $missing ($i/$ATTEMPTS)…"
+            sleep "$SLEEP"
+          done
+          echo "::warning::npm still not serving $missing after $((ATTEMPTS * SLEEP))s; dispatching anyway"
       - name: Mint token for acdp-control-plane
         id: dispatch-token
         if: ${{ always() && steps.publish-root.outcome == 'success' && (github.event_name == 'push' || !inputs.dry_run) }}

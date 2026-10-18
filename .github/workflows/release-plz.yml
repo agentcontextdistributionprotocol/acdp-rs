@@ -14,19 +14,24 @@ concurrency:
   cancel-in-progress: false
 
 # Supply-chain note (crates.io provenance) — see docs/supply-chain.md §crates.io.
-# release-plz drives `cargo publish`, which today has no build-provenance /
-# attestation mechanism comparable to npm --provenance or PyPI attestations;
-# crates.io Trusted Publishing (OIDC, no long-lived token) is being rolled out
-# upstream. This workflow is DELIBERATELY LEFT on the CARGO_REGISTRY_TOKEN flow
-# and its version/publish behavior is unchanged. Migrating to crates.io Trusted
-# Publishing is tracked as a conservative follow-up (roadmap §6.5): when
-# release-plz-action documents an `id-token: write` OIDC path, add
-# `permissions: id-token: write` to THIS job only and drop CARGO_REGISTRY_TOKEN.
+# Publishing uses crates.io Trusted Publishing (#383): release-plz exchanges this
+# job's GitHub OIDC id-token for a short-lived crates.io token (the same API
+# calls as rust-lang/crates-io-auth-action), so there is NO long-lived
+# CARGO_REGISTRY_TOKEN. `id-token: write` is granted to the release-plz job only.
+# Each published crate must have a trusted publisher configured on crates.io
+# (owner agentcontextdistributionprotocol, repo acdp-rs, workflow
+# release-plz.yml, no environment). A brand-new crate cannot be first-published
+# this way — publish it once by hand, then add its trusted publisher.
 jobs:
   release-plz:
     name: release-plz
     runs-on: ubuntu-latest
     if: ${{ github.repository_owner == 'agentcontextdistributionprotocol' }}
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write # dispatch the SDK binding release workflows
+      id-token: write # crates.io Trusted Publishing (OIDC)
     steps:
       - uses: actions/checkout@v7
         with:
@@ -48,7 +53,6 @@ jobs:
         id: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
       # #231: release-plz bumps the 13 workspace crates but cannot maintain the
       # three binding lockfiles (separate workspaces, excluded from the root;

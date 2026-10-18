@@ -20,6 +20,9 @@ npm install @agentcontextdistributionprotocol/acdp
 Prebuilt native binaries are published for macOS (x64/arm64) and Linux
 (x64/arm64-gnu); the loader package selects the right one at install time.
 
+Requires **Node.js 22 or newer** (`engines.node: ">=22"`; Node 20 is
+end-of-life and was dropped in 0.15.1). CI tests Node 22 and 24.
+
 ## Install (development)
 
 `package-lock.json` is committed; use `npm ci` (as CI does) to install exactly

@@ -17,6 +17,10 @@ The package is released at the same version as the
 pip install acdp               # from PyPI
 ```
 
+Requires **Python 3.10 or newer** (`requires-python = ">=3.10"`; one
+`cp310-abi3` wheel per platform covers every later CPython). Python 3.9 is
+end-of-life and was dropped in 0.15.1. CI tests 3.10, 3.12 and 3.14.
+
 ## Install (development)
 
 ```bash

@@ -108,7 +108,7 @@ even if you obtained it outside the registry.
 
 ```bash
 # Verify a downloaded wheel / sdist / .node against this repo:
-gh attestation verify ./acdp-<version>-cp39-abi3-manylinux_2_17_x86_64.whl \
+gh attestation verify ./acdp-<version>-cp310-abi3-manylinux_2_17_x86_64.whl \
     --repo agentcontextdistributionprotocol/acdp-rs
 
 gh attestation verify ./acdp.linux-x64-gnu.node \
@@ -411,7 +411,7 @@ latest release, and no open advisory.
 | `p256` | 0.14.0 | 0.13.2, 0.14.0 | audit (full, 2026-10-04; discretion note on a test-only fixture) | RustCrypto | `ecdsa-p256` signing and verification-method support |
 | `ecdsa` | 0.17.0 | 0.16.9, 0.17.0 | audit (full, 2026-10-04; discretion note on a test-only fixture) | RustCrypto | Generic ECDSA under p256 |
 | `elliptic-curve` | 0.14.1 | 0.13.8, 0.14.1 | audit (full, 2026-10-04) | RustCrypto | Curve trait framework |
-| `rustls` | 0.23.45 | 0.23.40, 0.23.40 → 0.23.45 | audit (delta, 2026-10-04) | rustls | HTTPS transport (RFC-ACDP-0008) |
+| `rustls` | 0.23.46 | 0.23.40, 0.23.40 → 0.23.45, 0.23.45 → 0.23.46 | audit (delta, 2026-10-04; delta 0.23.45 → 0.23.46, 2026-10-16, RUSTSEC-2026-0346..0349) | rustls | HTTPS transport (RFC-ACDP-0008) |
 | `ring` | 0.17.14 | 0.17.14 | audit (2026-07-05) | briansmith | the only rustls crypto provider, in production (via reqwest's `rustls-tls`) and in the TLS test harness; `aws-lc-rs` is not in the graph (#339) |
 | `ed25519` | 3.0.0 | 3.0.0 | audit (full, 2026-10-04, #339 B1; discretion note on test-only fixtures) | RustCrypto | `Signature` byte container under ed25519-dalek |
 | `crypto-common` | 0.2.2 | 0.2.2 | audit (full, 2026-10-04, #339 B1) | RustCrypto | Size/key-init traits under `digest`, `sha2`, `elliptic-curve` |

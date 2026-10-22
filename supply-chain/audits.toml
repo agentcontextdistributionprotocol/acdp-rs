@@ -704,6 +704,20 @@ Advisories: cargo deny check advisories clean on 2026-10-05.
 Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance; certificate path-validation, name-constraint and revocation correctness (upstream's responsibility, as for rustls and webpki-roots). This audit claims only that the crate's code is safe to deploy under the vet criterion.
 Method: Reviewed with Claude (Opus) assistance; worksheet in https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/364 (supply-chain/worksheets/rustls-webpki-0.103.15.md, issue #339 Tier B batch B7b); certification decision recorded in DECISIONS.md 322-rustls-webpki."""
 
+[[audits.rustls-webpki]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+delta = "0.103.15 -> 0.103.16"
+notes = """
+Scope: delta 0.103.15 -> 0.103.16 (12 files, +160/-3 per scripts/vet-facts.sh; 163 changed / 10197 src lines = 0.02, so delta per the #322 method rule); every hunk of the 253-line diff read. Base 0.103.15 audited 2026-10-05 (full, #339 B7b).
+Source: crates.io tarball sha256 4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281 == Cargo.lock checksum (root and py/node binding locks); base f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2 == crates.io index cksum.
+Change (RUSTSEC-2026-0382, emSign distrust): new pub(crate) DISTRUSTED_SPKIS (verify_cert.rs) of eight include_bytes! SPKI blobs under src/data/distrusted/; ChainOptions gains distrusted_spkis, set to DISTRUSTED_SPKIS by EndEntityCert::verify_for_usage (end_entity.rs), the path rustls's WebPkiServerVerifier takes for every ACDP HTTPS client. build_chain_inner rejects with the new Error::CertDistrusted when the path head's SPKI or the chosen trust anchor's SPKI is in the list (replacing the old "TODO: check_distrust" comment); exact byte-slice equality, no parsing. CertDistrusted ranks with CertRevoked (270). rustls 0.23.46 maps it through its pki_error catch-all to CertificateError::Other, so the handshake still fails closed. The remaining hunks are a cfg(test) test.
+Vendored binary content (concern-rule trigger, inspected): all eight blobs are 118 bytes; each, wrapped in a SEQUENCE header, parses as a P-384 EC SubjectPublicKeyInfo (openssl pkey); sha256s are recorded in the worksheet. They are only ever compared, never executed or parsed. That they are exactly the distrusted emSign intermediates is upstream's claim and is not claimed here.
+unsafe: 0 sites (full-source grep). asm/SIMD: none. build.rs / proc-macro: none. New deps: none (Cargo.toml differs only in version).
+Advisories: cargo deny check clean after the bump, 2026-10-21.
+Not claimed: certificate-validation correctness, completeness or correctness of the distrust list.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/rustls-webpki-0.103.16.md (PR #404)."""
+
 [[audits.sec1]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"
 criteria = "safe-to-deploy"
@@ -865,6 +879,19 @@ Role: reqwest 0.12's rustls-tls feature (crates/acdp-client/Cargo.toml:41, crate
 Advisories: cargo deny check advisories clean on 2026-10-04.
 Not claimed: that the root set is correct, complete, current, or appropriate for ACDP; certificate-validation correctness (rustls-webpki); cryptographic correctness; constant-time behaviour; side-channel resistance. This audit claims only that the crate's code is safe to deploy and that the table is what its comments say it is.
 Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/webpki-roots-1.0.9.md (issue #339 Tier B batch B4 PR)."""
+
+[[audits.webpki-roots]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+delta = "1.0.9 -> 1.0.10"
+notes = """
+Scope: delta 1.0.9 -> 1.0.10 (2 files, +2/-30 per scripts/vet-facts.sh; 32 changed / 4575 src lines = 0.01, so delta per the #322 method rule); every hunk of the 53-line diff read. Base 1.0.9 audited 2026-10-04 (full, #339 B4).
+Source: crates.io tarball sha256 1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9 == Cargo.lock checksum (root and py/node binding locks); base 7dcd9d09a39985f5344844e66b0c530a33843579125f23e21e9f0f220850f22a == crates.io index cksum.
+Change (RUSTSEC-2026-0381, emSign distrust): exactly one TrustAnchor removed from TLS_SERVER_ROOTS, "emSign ECC Root CA - G3" (SHA-256 86:a1:ec:ba:08:9c:4a:8d:3b:be:27:34:c6:12:ba:34:1d:81:3e:04:3c:f9:e8:a8:62:cd:5c:57:a3:6b:be:6b), its comment block included, so the table goes from 121 to 120 entries; no entry added or altered. Cargo.toml: version and rust-version 1.70 -> 1.71 (below ACDP's 1.86 MSRV). The other emSign roots (Root CA - C1, G1, ECC Root CA - C3) remain, as upstream intends.
+unsafe: 0 sites; #![forbid(unsafe_code, unstable_features)] at src/lib.rs:26. asm/SIMD: none. build.rs / proc-macro: none. New deps: none.
+Advisories: cargo deny check clean after the bump, 2026-10-21.
+Not claimed: root-set correctness.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/webpki-roots-1.0.10.md (PR #404)."""
 
 [[audits.wnaf]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"

@@ -108,7 +108,7 @@ even if you obtained it outside the registry.
 
 ```bash
 # Verify a downloaded wheel / sdist / .node against this repo:
-gh attestation verify ./acdp-<version>-cp39-abi3-manylinux_2_17_x86_64.whl \
+gh attestation verify ./acdp-<version>-cp310-abi3-manylinux_2_17_x86_64.whl \
     --repo agentcontextdistributionprotocol/acdp-rs
 
 gh attestation verify ./acdp.linux-x64-gnu.node \
@@ -411,7 +411,7 @@ latest release, and no open advisory.
 | `p256` | 0.14.0 | 0.13.2, 0.14.0 | audit (full, 2026-10-04; discretion note on a test-only fixture) | RustCrypto | `ecdsa-p256` signing and verification-method support |
 | `ecdsa` | 0.17.0 | 0.16.9, 0.17.0 | audit (full, 2026-10-04; discretion note on a test-only fixture) | RustCrypto | Generic ECDSA under p256 |
 | `elliptic-curve` | 0.14.1 | 0.13.8, 0.14.1 | audit (full, 2026-10-04) | RustCrypto | Curve trait framework |
-| `rustls` | 0.23.45 | 0.23.40, 0.23.40 → 0.23.45 | audit (delta, 2026-10-04) | rustls | HTTPS transport (RFC-ACDP-0008) |
+| `rustls` | 0.23.46 | 0.23.40, 0.23.40 → 0.23.45, 0.23.45 → 0.23.46 | audit (delta, 2026-10-04; delta 0.23.45 → 0.23.46, 2026-10-16, RUSTSEC-2026-0346..0349) | rustls | HTTPS transport (RFC-ACDP-0008) |
 | `ring` | 0.17.14 | 0.17.14 | audit (2026-07-05) | briansmith | the only rustls crypto provider, in production (via reqwest's `rustls-tls`) and in the TLS test harness; `aws-lc-rs` is not in the graph (#339) |
 | `ed25519` | 3.0.0 | 3.0.0 | audit (full, 2026-10-04, #339 B1; discretion note on test-only fixtures) | RustCrypto | `Signature` byte container under ed25519-dalek |
 | `crypto-common` | 0.2.2 | 0.2.2 | audit (full, 2026-10-04, #339 B1) | RustCrypto | Size/key-init traits under `digest`, `sha2`, `elliptic-curve` |
@@ -433,7 +433,7 @@ latest release, and no open advisory.
 | `primeorder` | 0.14.0 | 0.14.0 | audit (full, 2026-10-04, #339 B3) | RustCrypto | Generic prime-order curve arithmetic under p256 (sign, verify, SEC1 key decoding) |
 | `rand_core` | 0.10.1, 0.9.5 | 0.10.1, 0.9.5 | audit (full, 2026-10-04, #339 B4; 0.9.5 is dev-only and now meets `safe-to-deploy`) | rust-random | RNG traits; `UnwrapErr(getrandom::SysRng)` in key generation (0.10.1); proptest's `rand` (0.9.5) |
 | `ctutils` | 0.4.2 | 0.4.2 | audit (full, 2026-10-04, #339 B4; constant-time behaviour not claimed) | RustCrypto | Constant-time selection/equality helpers under digest, sec1, crypto-bigint |
-| `webpki-roots` | 1.0.9 | 1.0.9 | audit (full, 2026-10-04, #339 B4; table checked against its embedded certificates; root-set correctness not claimed) | rustls | Default trust anchors for every ACDP HTTPS client (reqwest `rustls-tls`) |
+| `webpki-roots` | 1.0.10 | 1.0.9, 1.0.9 → 1.0.10 | audit (full, 2026-10-04, #339 B4; table checked against its embedded certificates; delta 1.0.9 → 1.0.10, 2026-10-21, RUSTSEC-2026-0381, removes `emSign ECC Root CA - G3`; root-set correctness not claimed) | rustls | Default trust anchors for every ACDP HTTPS client (reqwest `rustls-tls`) |
 | `typenum` | 1.20.1 | 1.20.1 | audit (full, 2026-10-04, #339 B4; generated files shape-checked, impl headers sampled) | paholg | Type-level integers under hybrid-array |
 | `base16ct` | 1.0.0 | 1.0.0 | audit (full, 2026-10-04, #339 B5; constant-time behaviour not claimed) | RustCrypto | Hex encoding under sec1 and elliptic-curve (`HexDisplay`, `FromStr`) |
 | `base64ct` | 1.8.3 | 1.8.3 | audit (full, 2026-10-04, #339 B5; constant-time behaviour not claimed) | RustCrypto | Lock-only: `spki`'s optional `base64` feature is off, so it is compiled into no ACDP build |
@@ -447,7 +447,7 @@ latest release, and no open advisory.
 | `hybrid-array` | 0.4.14 | 0.4.14 | audit (full, 2026-10-04, #339 B6; size table script-checked; discretion note on packaged CI files) | RustCrypto | Fixed-size arrays under digest, crypto-bigint, elliptic-curve, sec1 |
 | `crypto-bigint` | 0.7.5 | 0.7.5 | audit (full, 2026-10-04, #339 B6; the 37,233 compiled lines were read in full by seven Claude sub-reviews, with every `unsafe` site and the file/line counts independently confirmed by the main review; uncompiled `boxed`/`der`/`rlp` modules grep-only; constant-time behaviour not claimed) | RustCrypto | Big-integer arithmetic under the P-256 stack |
 | `getrandom` | 0.4.3, 0.2.17, 0.3.4 | 0.4.3, 0.2.17, 0.3.4 | audit (full, 2026-10-05, #339 B7a; discretion notes on the opt-in `linux_raw` backend, DECISIONS.md `322-getrandom`, and on nightly/tier-3 backends; 0.3.4 is dev-only and meets `safe-to-deploy`; RNG output quality not claimed) | rust-random | OS RNG: `UnwrapErr(SysRng)` in key generation (0.4.3); ring's `SystemRandom` under rustls (0.2.17; uncalled in the wasm binding, #363); proptest's `rand` (0.3.4) |
-| `rustls-webpki` | 0.103.15 | 0.103.15 | audit (full, 2026-10-05, #339 B7b; 0 `unsafe`; DECISIONS.md `322-rustls-webpki`; bounded path-building DoS cost recorded as an observation; certificate-validation correctness not claimed) | rustls | Certificate path validation behind rustls's `WebPkiServerVerifier` for every ACDP HTTPS client (trust boundary); its CRL code is compiled but unreached |
+| `rustls-webpki` | 0.103.16 | 0.103.15, 0.103.15 → 0.103.16 | audit (full, 2026-10-05, #339 B7b; 0 `unsafe`; DECISIONS.md `322-rustls-webpki`; bounded path-building DoS cost recorded as an observation; delta 0.103.15 → 0.103.16, 2026-10-21, RUSTSEC-2026-0382, emSign SPKI distrust list; certificate-validation correctness not claimed) | rustls | Certificate path validation behind rustls's `WebPkiServerVerifier` for every ACDP HTTPS client (trust boundary); its CRL code is compiled but unreached |
 
 **`zeroize` 1.9.1 is audited (full); 1.9.0 was exempt.** 1.9.0's new safe
 `optimization_barrier` read a possibly-uninitialized byte on targets without
@@ -790,6 +790,13 @@ carries an advisory.
 same change set (`09197e0`). No `deny.toml` ignore entry was needed. #322 later
 replaced that exemption with a delta audit, 0.23.40 → 0.23.45, whose
 worksheet reads the fix (`supply-chain/worksheets/rustls-0.23.45.md`).
+
+**emSign distrust, RUSTSEC-2026-0381 and RUSTSEC-2026-0382 (CVE-2026-111943):**
+fixed by bumping `webpki-roots` 1.0.9 → 1.0.10 (which removes the
+`emSign ECC Root CA - G3` root) and `rustls-webpki` 0.103.15 → 0.103.16 (which rejects
+any path containing one of eight distrusted emSign intermediate keys), 2026-10-21, #404.
+Both bumps are covered by delta audits (`supply-chain/worksheets/webpki-roots-1.0.10.md`,
+`supply-chain/worksheets/rustls-webpki-0.103.16.md`). No `deny.toml` ignore entry was needed.
 
 Together: **`vet`** answers "did a human look at this code?", **`deny`**
 answers "is there a known-bad advisory or license here?", and the **provenance +

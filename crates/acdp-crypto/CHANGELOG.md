@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.2](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-crypto-v0.15.1...acdp-crypto-v0.15.2) - 2026-10-22
+
+### Other
+
+- release v0.15.1
+
 ## [0.15.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-crypto-v0.15.0...acdp-crypto-v0.15.1) - 2026-10-18
 
 ### Other

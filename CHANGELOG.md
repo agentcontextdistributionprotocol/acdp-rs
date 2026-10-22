@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.2](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.15.1...acdp-v0.15.2) - 2026-10-22
+
+### Fixed
+
+- *(deps)* rustls-webpki 0.103.16 + webpki-roots 1.0.10 (RUSTSEC-2026-0381/0382); supply-chain doc fixes ([#404](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/404))
+
 ## [0.15.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.15.0...acdp-v0.15.1) - 2026-10-18
 
 ### Fixed

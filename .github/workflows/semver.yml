@@ -1,0 +1,172 @@
+name: semver
+
+# cargo-semver-checks gate (COMPATIBILITY.md). Its own workflow, not a job
+# in ci.yml, so retitling a PR (adding `!`) or adding the override label
+# re-runs only this gate instead of the whole CI.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  semver:
+    # BLOCKING and a required check. An undeclared break fails the PR; a
+    # declared one (`feat!:` title, a `!`/BREAKING CHANGE commit since the
+    # last release tag, or the `semver-checks-override` label for a
+    # verified false positive) passes with a warning. The decision lives
+    # in scripts/semver-gate.sh; COMPATIBILITY.md is the policy.
+    name: cargo-semver-checks
+    runs-on: ubuntu-latest
+    outputs:
+      status: ${{ steps.semver-checks.outputs.status }}
+      unsupported: ${{ steps.semver-checks.outputs.unsupported }}
+    steps:
+      # Full history and tags: the gate looks for breaking-change markers
+      # since the last release tag.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2.9.1
+      # Pinned to a release-tagged commit (not just any main-branch commit):
+      # that's what lets Dependabot's github-actions updater resolve the SHA
+      # to a release via the git ref API and keep it bumped — the
+      # `# vX.Y.Z` comment isn't the mechanism, it's just what Dependabot
+      # rewrites to stay in sync. All other taiki-e/install-action pins in
+      # this repo are untagged commits, which is why Dependabot can't map
+      # them to a release and silently skips them — that's how this pin sat
+      # frozen on a cargo-semver-checks@0.48 that can't parse current stable
+      # rustdoc output while looking green (see the semver-tool-health job
+      # below). Keep this tag-resolvable pattern on any future bump of this
+      # line.
+      - uses: taiki-e/install-action@7b8d4719ee4aaa279bdf55df38dacb9ebfe12a6c # v2.87.6
+        with:
+          tool: cargo-semver-checks@0.50.0
+          # A version absent from this SHA's manifest must fail the job, not
+          # silently rebuild from QuickInstall (a third-party source) via
+          # install-action's own `fallback` default. See docs/supply-chain.md
+          # "Pinned-tool inventory".
+          fallback: none
+      # Make the installed version deterministic in the log rather than
+      # relying on install-action's own post-install `--version` call
+      # (a third party's logging side effect, not ours to depend on).
+      - run: cargo semver-checks --version
+      # Compares every published workspace crate's public API against its
+      # latest crates.io release and fails when a change requires a semver
+      # bump the current version numbers don't carry. release-plz derives
+      # the bump from Conventional Commits; this job catches the case
+      # where an API break rides a commit that wasn't marked breaking.
+      #
+      # Deliberately left on `stable` (not pinned): release-plz's own
+      # semver check, which sets the release's version bump, also runs on
+      # stable and can't practically be pinned (the same job drives
+      # `cargo publish`). Pinning just this job would let it go green on a
+      # frozen rustdoc format while release-plz's check breaks on the next
+      # stable release — the silent outage semver-tool-health exists to
+      # catch.
+      #
+      # Streamed through `tee` instead of buffered into a shell variable so
+      # the log is visible live and isn't lost on a runner timeout — exactly
+      # when it's most needed. `${PIPESTATUS[0]}` recovers cargo-semver-
+      # checks' own exit status from under `tee` (whose own exit status
+      # would otherwise win). `status`/`unsupported` go to $GITHUB_OUTPUT so
+      # the semver-tool-health job can classify the real numeric exit code,
+      # and the gate step below decides pass/fail from it. This step itself
+      # always succeeds so the gate, not the raw exit code, is the verdict.
+      - name: cargo semver-checks --workspace
+        id: semver-checks
+        run: |
+          set +e
+          cargo semver-checks --workspace 2>&1 | tee semver-checks.log
+          s=${PIPESTATUS[0]}
+          if grep -q "unsupported rustdoc format" semver-checks.log; then
+            echo "unsupported=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "unsupported=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "status=$s" >> "$GITHUB_OUTPUT"
+      - name: Semver gate self-test
+        run: scripts/test-semver-gate.sh
+      - name: Block undeclared breaking changes
+        env:
+          STATUS: ${{ steps.semver-checks.outputs.status }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "acdp") | .version')
+          export VERSION
+          scripts/semver-gate.sh
+
+  # Kept separate from the `semver` job above so a red run says which of
+  # two things is wrong. `semver` fails on an undeclared API break (or a
+  # tool failure); this job fails only when the TOOL itself is broken — it
+  # can't parse the rustdoc it was given, or exits abnormally — never on a
+  # genuine detected API break, which is treated as this job's success
+  # case. A silently broken tool once reported a false "compatible" on
+  # every run for months (see release-plz.yml's
+  # MarcoIeni/release-plz-action comment for the incident).
+  #
+  # Classifies the `semver` job's own run instead of re-running
+  # `cargo semver-checks --workspace` a second time — that used to mean
+  # generating rustdoc for every workspace crate twice (current + baseline)
+  # and a second rust-cache entry for no extra signal. `needs: [semver]` +
+  # `if: ${{ !cancelled() }}` means this still runs when `semver` "fails"
+  # (i.e. on any detected break); it needs no checkout, toolchain,
+  # rust-cache, or install-action of its own. Not `always()`: the
+  # `cancel-in-progress: true` concurrency group above makes a superseded
+  # run routine on every follow-up push to a PR, and a tool-health tripwire
+  # that reds on mere cancellation carries no signal — it just trains
+  # people to ignore it.
+  semver-tool-health:
+    name: semver-tool-health
+    needs: [semver]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Classify cargo-semver-checks' exit status
+        env:
+          STATUS: ${{ needs.semver.outputs.status }}
+          UNSUPPORTED: ${{ needs.semver.outputs.unsupported }}
+        run: |
+          # cargo-semver-checks (src/main.rs:18-21,205-213) uses fixed exit
+          # codes:
+          #   0   = clean, no version bump required.
+          #   100 = LINT_FAILURE_EXIT_CODE — a deny-level lint fired, i.e.
+          #         the tool WORKED and found a genuine semver-incompatible
+          #         change. Both major- and minor-only breaks share one
+          #         format string ("semver requires new {major,minor}
+          #         version: ... checks failed", check_release.rs:566) and
+          #         both exit 100 — classify on the code, never that text.
+          #         This is this job's success case.
+          #   101 = ERROR_EXIT_CODE — a tool error or a transient
+          #         infrastructure failure (baseline fetch, crates.io
+          #         unreachable, etc).
+          #   anything else (e.g. 137 SIGKILL) = abnormal.
+          if [ "$UNSUPPORTED" = "true" ]; then
+            echo "::error::cargo-semver-checks cannot parse this rustdoc format — the tool is broken, not the crate. See release-plz.yml's MarcoIeni/release-plz-action comment."
+            exit 1
+          fi
+          if [ -z "$STATUS" ]; then
+            echo "::error::semver job reported no exit status (the runner died, or the job failed before this check ran) — treating this as a tool-health failure, fail-closed."
+            exit 1
+          fi
+          if [ "$STATUS" -eq 0 ] || [ "$STATUS" -eq 100 ]; then
+            echo "Tool ran and either found no break (0) or correctly reported a genuine semver-incompatible change (100); treating as tool-healthy."
+            exit 0
+          fi
+          echo "::error::cargo-semver-checks exited with status $STATUS — a tool error or transient infrastructure failure, not a recognizable API-break result. Treating this as a tool-health failure, not an API break."
+          exit 1

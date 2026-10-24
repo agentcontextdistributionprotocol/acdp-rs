@@ -45,6 +45,7 @@ Guides that complement the [rustdoc](https://docs.rs/acdp) live in [`docs/`](./d
 - [Producing contexts](./docs/producing.md) · [Consuming & verifying](./docs/consuming.md) · [Errors & retries](./docs/errors.md)
 - [Security model](./docs/security.md) — the SSRF/HTTPS/size defenses applied by default.
 - [Implementing a registry](./docs/registry.md) · [CLI reference](./docs/cli.md) · [Language bindings](./docs/bindings.md) · [Conformance & testing](./docs/conformance.md)
+- [Compatibility promise](./COMPATIBILITY.md) — what a version number promises, what counts as breaking, deprecation and MSRV policy.
 
 These docs are additive to the [specification](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol) and cite the relevant RFC sections rather than restating them.
 For a language-neutral producer/consumer walkthrough, read the spec's
@@ -295,6 +296,8 @@ RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo +nightly doc --workspace --all-fea
 ## Contributing
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for the dev workflow and quality bars.
+[COMPATIBILITY.md](./COMPATIBILITY.md) says what a version number promises and
+what counts as a breaking change.
 Security issues should follow [SECURITY.md](./SECURITY.md).
 
 ## License

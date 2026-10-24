@@ -669,7 +669,7 @@ mod tests {
             seed[0] = 1;
             seed[28..32].copy_from_slice(&(i / 10 + 1).to_be_bytes());
             let key = P256SigningKey::from_bytes(&seed).unwrap();
-            let sig = if i % 2 == 0 {
+            let sig = if i.is_multiple_of(2) {
                 let hash = ContentHash(format!("sha256:{:064x}", i));
                 key.sign_content_hash(&hash)
             } else {

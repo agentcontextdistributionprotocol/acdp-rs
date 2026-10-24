@@ -57,9 +57,8 @@ Reproduce the facts with `scripts/vet-facts.sh ctutils 0.4.5 0.4.2`.
 - Powerful imports: none.
 - Dependencies: the `subtle` requirement goes from `2` to `2.6` (locked 2.6.1, unchanged).
   No new crates.
-- `rust-version` moves from 1.85 to 1.87, above ACDP's 1.86 MSRV. The MSRV CI job
-  re-resolves with `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback` and lands on 0.4.2
-  there.
+- `rust-version` moves from 1.85 to 1.87, above ACDP's previous 1.86 MSRV. ACDP's MSRV
+  moves to 1.87 in the same change.
 
 ## Not claimed
 

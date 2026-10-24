@@ -165,9 +165,9 @@ Two upstreams use the *ref name* to select behavior. Pinning them to a SHA
 **preserves that behavior**, because each behavior lives on its own branch/tag
 whose `action.yml` bakes in the default:
 
-- **`dtolnay/rust-toolchain@stable|nightly|1.86.0`** — the `stable` branch's
+- **`dtolnay/rust-toolchain@stable|nightly|1.87.0`** — the `stable` branch's
   `action.yml` defaults `toolchain: stable`, `nightly` → `nightly`, and the
-  `1.86.0` branch hard-codes `toolchain: 1.86.0`. We pin each ref to *its own*
+  `1.87.0` branch hard-codes `toolchain: 1.87.0`. We pin each ref to *its own*
   branch SHA. Every step also passes an explicit `toolchain:` input, and that
   input overrides the branch default: for example `bindings.yml`'s
   `bindings-fmt` job passes `toolchain: stable`, and `acdp-wasm-release.yml`
@@ -194,7 +194,7 @@ rather than a semver, because that is what identifies the pinned behavior.
 | `Swatinem/rust-cache` | `f0d9c3887740aee45f6153b24b3a6b815192ec16` | v2.9.1 |
 | `dtolnay/rust-toolchain` (stable) | `4be7066ada62dd38de10e7b70166bc74ed198c30` | stable branch |
 | `dtolnay/rust-toolchain` (nightly) | `efcb852328a9f50117170cc43094fb6f09eaf1ae` | nightly branch |
-| `dtolnay/rust-toolchain` (1.86.0) | `2767295e193a2ee92d23c1ff586f596cb6d94a7a` | 1.86.0 branch |
+| `dtolnay/rust-toolchain` (1.87.0) | `9fd5edfc8bba9f7408b867e3f58b5a2119358898` | 1.87.0 branch |
 | `taiki-e/install-action` (cargo-deny) | `0751bff5da373f43f04fdc57a72795931a822bd7` | cargo-deny and wasm-pack install pin |
 | `taiki-e/install-action` (cargo-semver-checks) | `7b8d4719ee4aaa279bdf55df38dacb9ebfe12a6c` | v2.87.6 |
 | `taiki-e/install-action` (cargo-llvm-cov) | `7c1105379b6217809b9ed26c163a46c65c7a528f` | cargo-llvm-cov tag |
@@ -806,11 +806,9 @@ operations intended to be constant-time could branch on secrets), and `tokio` 1.
 not call `AsyncFd`), 2026-10-24. Both crypto bumps are covered by delta audits
 (`supply-chain/worksheets/ctutils-0.4.5.md`, `supply-chain/worksheets/crypto-bigint-0.7.6.md`).
 The `tokio` exemption moved to 1.53.3. No `deny.toml` ignore entry was needed.
-The two crypto releases declare `rust-version = "1.87"`, above ACDP's 1.86 MSRV, so the
-MSRV CI job runs `cargo update` with `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`
-before building. That is what a 1.86 consumer's resolver does, and it picks
-`ctutils` 0.4.2 / `crypto-bigint` 0.7.5 there. The MSRV stays 1.86; a 1.86 build simply
-does not get these two fixes.
+The two crypto releases declare `rust-version = "1.87"`, so ACDP's MSRV moved from 1.86 to
+1.87 with them. The alternative, letting a 1.86 build fall back to the vulnerable releases,
+would leave that build without the fixes and without saying so.
 
 Together: **`vet`** answers "did a human look at this code?", **`deny`**
 answers "is there a known-bad advisory or license here?", and the **provenance +

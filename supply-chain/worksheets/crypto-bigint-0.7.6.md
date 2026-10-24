@@ -108,9 +108,8 @@ None of these is reachable at the P-256 sizes ACDP uses.
 - Powerful imports: none.
 - Dependencies: `ctutils` requirement `0.4` becomes `0.4.5` (audited separately,
   `ctutils-0.4.5.md`). Dev-only: `num-bigint` 0.5, `num-modular` 0.7.
-- `rust-version` is 1.87, above ACDP's 1.86 MSRV. The MSRV CI job re-resolves with
-  `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`, which a 1.86 consumer also gets, and
-  lands on 0.7.5 there.
+- `rust-version` is 1.87, above ACDP's previous 1.86 MSRV. ACDP's MSRV moves to 1.87 in the
+  same change.
 
 ## Not claimed
 

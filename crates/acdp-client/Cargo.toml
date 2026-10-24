@@ -10,7 +10,7 @@ homepage    = "https://github.com/agentcontextdistributionprotocol/acdp-rs"
 documentation = "https://docs.rs/acdp-client"
 keywords    = ["acdp", "client", "agent", "context", "consumer"]
 categories  = ["web-programming::http-client", "cryptography"]
-rust-version = "1.86"
+rust-version = "1.87"
 
 [features]
 tracing = ["dep:tracing", "acdp-did/tracing"]

@@ -89,22 +89,14 @@ jobs:
         run: cargo test --workspace --all-features
 
   msrv:
-    name: MSRV (1.86)
+    name: MSRV (1.87)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@2767295e193a2ee92d23c1ff586f596cb6d94a7a # 1.86.0
+      - uses: dtolnay/rust-toolchain@9fd5edfc8bba9f7408b867e3f58b5a2119358898 # 1.87.0
         with:
-          toolchain: 1.86.0
+          toolchain: 1.87.0
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2.9.1
-      # Re-resolve to the newest 1.86-compatible versions before building.
-      # The committed Cargo.lock tracks security fixes, and some of them
-      # (crypto-bigint 0.7.6 / ctutils 0.4.5 for RUSTSEC-2026-0385/0387) need
-      # Rust 1.87. The MSRV claim is that a 1.86 consumer can build acdp, and
-      # the MSRV-aware resolver is what such a consumer gets.
-      - run: cargo update
-        env:
-          CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
       - run: cargo build --workspace --all-features
       - run: cargo build -p acdp --no-default-features
 

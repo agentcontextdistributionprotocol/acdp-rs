@@ -4,7 +4,7 @@
 [![Crates.io](https://img.shields.io/crates/v/acdp.svg)](https://crates.io/crates/acdp)
 [![docs.rs](https://img.shields.io/docsrs/acdp)](https://docs.rs/acdp)
 [![License](https://img.shields.io/crates/l/acdp.svg)](#license)
-[![MSRV](https://img.shields.io/badge/MSRV-1.86-blue)](https://blog.rust-lang.org/2025/04/03/Rust-1.86.0.html)
+[![MSRV](https://img.shields.io/badge/MSRV-1.87-blue)](https://blog.rust-lang.org/2025/05/15/Rust-1.87.0/)
 
 Reference Rust library for the **Agent Context Distribution Protocol**.
 `acdp::ACDP_VERSION` is the newest Final wire line the builder emits; some

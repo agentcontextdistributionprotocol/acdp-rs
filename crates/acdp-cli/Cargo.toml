@@ -10,7 +10,7 @@ homepage    = "https://github.com/agentcontextdistributionprotocol/acdp-rs"
 documentation = "https://docs.rs/acdp-cli"
 keywords    = ["acdp", "cli", "agent", "context", "did"]
 categories  = ["command-line-utilities"]
-rust-version = "1.86"
+rust-version = "1.87"
 
 [[bin]]
 name = "acdp"

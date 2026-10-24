@@ -10,7 +10,7 @@ homepage    = "https://github.com/agentcontextdistributionprotocol/acdp-rs"
 documentation = "https://docs.rs/acdp-crypto"
 keywords    = ["acdp", "ed25519", "ecdsa", "sha256", "cryptography"]
 categories  = ["cryptography"]
-rust-version = "1.86"
+rust-version = "1.87"
 
 [features]
 # Enables the resolver-backed fingerprint helper that takes a WebResolver.

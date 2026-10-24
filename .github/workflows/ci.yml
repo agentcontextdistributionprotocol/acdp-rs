@@ -97,6 +97,14 @@ jobs:
         with:
           toolchain: 1.86.0
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2.9.1
+      # Re-resolve to the newest 1.86-compatible versions before building.
+      # The committed Cargo.lock tracks security fixes, and some of them
+      # (crypto-bigint 0.7.6 / ctutils 0.4.5 for RUSTSEC-2026-0385/0387) need
+      # Rust 1.87. The MSRV claim is that a 1.86 consumer can build acdp, and
+      # the MSRV-aware resolver is what such a consumer gets.
+      - run: cargo update
+        env:
+          CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
       - run: cargo build --workspace --all-features
       - run: cargo build -p acdp --no-default-features
 

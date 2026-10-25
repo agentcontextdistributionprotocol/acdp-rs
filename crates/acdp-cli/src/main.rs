@@ -557,7 +557,7 @@ async fn cmd_publish(rest: &[String]) -> Result<(), CliError> {
                 // When the guard fails the arm doesn't match and falls
                 // through to the catch-all, which is the correct no-op
                 // semantic. Let-chains would be cleaner but aren't
-                // stable until 1.88 (MSRV is 1.86).
+                // stable until 1.88 (MSRV is 1.87).
                 "title" if title.is_none() => {
                     title = v.as_str().map(str::to_string);
                 }

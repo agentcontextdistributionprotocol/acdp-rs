@@ -10,7 +10,7 @@ homepage    = "https://github.com/agentcontextdistributionprotocol/acdp-rs"
 documentation = "https://docs.rs/acdp-validation"
 keywords    = ["acdp", "validation", "schema", "agent", "context"]
 categories  = ["data-structures", "encoding"]
-rust-version = "1.86"
+rust-version = "1.87"
 
 [dependencies]
 acdp-primitives = { path = "../acdp-primitives", version = "=0.15.1" }

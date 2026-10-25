@@ -143,6 +143,21 @@ Advisories: cargo deny check advisories clean on 2026-10-04.
 Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
 Method: Reviewed with Claude (Opus) assistance; the compiled files were read in seven partitions by Claude (Opus) sub-reviews and every unsafe site was read and verdicted by the main review; worksheet in supply-chain/worksheets/crypto-bigint-0.7.5.md (issue #339 Tier B batch B6 PR)."""
 
+[[audits.crypto-bigint]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+delta = "0.7.5 -> 0.7.6"
+notes = """
+Scope: delta 0.7.5 -> 0.7.6 (60 files, +1459/-666 per scripts/vet-facts.sh; 2125 changed / 46650 src lines = 0.05, so delta per the #322 method rule); every hunk of the 3427-line src/ diff and the 120-line metadata diff read. Base 0.7.5 audited 2026-10-04 (full, #339 B6).
+Source: crates.io tarball sha256 6bb08299a6046833a879ace115697f12fd2bd6c8d3e93c909ffc9e0738e7cae0 == Cargo.lock checksum (root and py/node/wasm binding locks); base 1a52aa3fcda4e6302a9f48734f234d35d4721b96f8fe07d073f07ce9df4f0271 == crates.io index cksum.
+Change (RUSTSEC-2026-0387, timing variability): word-level primitives (borrowing_sub, leading/trailing_zeros, overflowing_add_wide, choice_from_nz/wide_eq) now delegate to the new ctutils 0.4.5 primitives module; Choice -> bool/mask conversions use the black_box-backed to_bool/to_u8 instead of the *_vartime forms; UintRef PartialEq is now ct_eq (was a derived, short-circuiting slice compare); BoxedMontyForm::invert no longer branches on invertibility; the div quotient correction is masked instead of saturating_sub. Correctness fixes: try_sub_with_carry took the wrong tuple element for the carry (src/uint/sub_mod.rs); the Karatsuba square path dropped a carry (src/uint/mul/karatsuba.rs); div_exact trailing-zero handling rewritten; the optimized binary-GCD Jacobi path removed (issue #1295); safegcd iteration count computed in u64 with an overflow assert; square_repeat_montgomery_form uses one conditional subtraction per step (#1344); floor_sqrt replaced by a Brent-Zimmermann Algorithm 1.12 UintRef implementation (src/uint/ref_type/sqrt.rs, new). Slice add/sub helpers now accept self longer than rhs and propagate the carry/borrow through the tail.
+unsafe: 14 sites, the same 14 as 0.7.5; no unsafe line added or removed. The hunks next to unsafe: src/uint/ref_type/cmp.rs:85 (Ordering transmute) now gets its i8 from to_u8() instead of to_u8_vartime(), still (0|1) * (+1|-1), so still a valid repr(i8) Ordering; src/uint/encoding.rs adds a Zeroize impl beside the unchanged cast_slice; UintRef stays repr(transparent) and its manual Eq/Ord/PartialEq impls replace a derive. asm/SIMD: none. build.rs / proc-macro: none.
+Panics added (safe code): UintRef::ct_assign now asserts self is at least as wide as other (was debug_assert of equal width); safegcd iterations() asserts precision <= 1,864,517,463 bits; sqrt asserts buffer length and a < 4-limb base case. None is reachable at P-256 sizes.
+New deps: ctutils requirement 0.4 -> 0.4.5 (separately audited); dev-only num-bigint 0.5, num-modular 0.7. rust-version 1.87 (above ACDP's 1.86 MSRV; the MSRV CI job re-resolves with the MSRV-aware resolver to 0.7.5). ACDP features unchanged: getrandom, hybrid-array, rand_core, subtle, zeroize; alloc is off, so the boxed/* changes are not compiled.
+Advisories: cargo deny check clean after the bump, 2026-10-24.
+Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance (the advisory fix is a constant-time fix; that the generated code is now branch-free is upstream's claim).
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/crypto-bigint-0.7.6.md."""
+
 [[audits.crypto-common]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"
 criteria = "safe-to-deploy"
@@ -177,6 +192,20 @@ New deps: cmov ^0.5.3 (locked 0.5.4); optional subtle 2 (feature subtle, enabled
 Advisories: cargo deny check advisories clean on 2026-10-04.
 Not claimed: cryptographic correctness, constant-time behaviour (this is a constant-time utility crate; its constant-time property is explicitly NOT claimed and rests on cmov and the compiler), side-channel resistance.
 Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/ctutils-0.4.2.md (issue #339 Tier B batch B4 PR)."""
+
+[[audits.ctutils]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+delta = "0.4.2 -> 0.4.5"
+notes = """
+Scope: delta 0.4.2 -> 0.4.5 (11 files, +602/-80 per scripts/vet-facts.sh; 682 changed / 3838 src lines = 0.18, so delta per the #322 method rule); every hunk of the 1636-line diff read. Base 0.4.2 audited 2026-10-04 (full, #339 B4).
+Source: crates.io tarball sha256 38d28fb6aa7dd680b3ffd1a3e64e115c177bdba63c0ae7f9cd48129ff05c4fa0 == Cargo.lock checksum (root and py/node/wasm binding locks); base 7d5515a3834141de9eafb9717ad39eea8247b5674e6066c404e8c4b365d2a29e == crates.io index cksum.
+Change (RUSTSEC-2026-0385, non-constant-time masks and u128 compares): Choice mask generation now goes through to_u8() (core::hint::black_box) instead of the raw field; u128 lt/le/gt are split into u64 halves on 32-bit targets; Choice::and is hardened on Thumb-1. New pub primitives module: bit-level compare macros, borrowing_sub_u32/u64 (black_box on the borrow), leading/trailing_zeros with a branch-free fallback where there is no native clz, overflowing_add_u64/u128 (RV32 halves). to_bool/to_u8 become const fn; the *_vartime conversions are deprecated aliases. The rest is tests and proptests.
+unsafe: 0 sites (full-source grep); #![forbid(unsafe_code)] at src/lib.rs:7. asm/SIMD: none. build.rs / proc-macro: none.
+New deps: subtle requirement 2 -> 2.6 (locked 2.6.1, unchanged). rust-version 1.85 -> 1.87 (above ACDP's 1.86 MSRV; the MSRV CI job re-resolves to 0.4.2).
+Advisories: cargo deny check clean after the bump, 2026-10-24.
+Not claimed: cryptographic correctness, constant-time behaviour (this is a constant-time utility crate; that the fix achieves branch-free code is upstream's claim, verified upstream with BINSEC), side-channel resistance.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/ctutils-0.4.5.md."""
 
 [[audits.curve25519-dalek]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"

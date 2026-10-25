@@ -165,9 +165,9 @@ Two upstreams use the *ref name* to select behavior. Pinning them to a SHA
 **preserves that behavior**, because each behavior lives on its own branch/tag
 whose `action.yml` bakes in the default:
 
-- **`dtolnay/rust-toolchain@stable|nightly|1.86.0`** — the `stable` branch's
+- **`dtolnay/rust-toolchain@stable|nightly|1.87.0`** — the `stable` branch's
   `action.yml` defaults `toolchain: stable`, `nightly` → `nightly`, and the
-  `1.86.0` branch hard-codes `toolchain: 1.86.0`. We pin each ref to *its own*
+  `1.87.0` branch hard-codes `toolchain: 1.87.0`. We pin each ref to *its own*
   branch SHA. Every step also passes an explicit `toolchain:` input, and that
   input overrides the branch default: for example `bindings.yml`'s
   `bindings-fmt` job passes `toolchain: stable`, and `acdp-wasm-release.yml`
@@ -194,7 +194,7 @@ rather than a semver, because that is what identifies the pinned behavior.
 | `Swatinem/rust-cache` | `f0d9c3887740aee45f6153b24b3a6b815192ec16` | v2.9.1 |
 | `dtolnay/rust-toolchain` (stable) | `4be7066ada62dd38de10e7b70166bc74ed198c30` | stable branch |
 | `dtolnay/rust-toolchain` (nightly) | `efcb852328a9f50117170cc43094fb6f09eaf1ae` | nightly branch |
-| `dtolnay/rust-toolchain` (1.86.0) | `2767295e193a2ee92d23c1ff586f596cb6d94a7a` | 1.86.0 branch |
+| `dtolnay/rust-toolchain` (1.87.0) | `9fd5edfc8bba9f7408b867e3f58b5a2119358898` | 1.87.0 branch |
 | `taiki-e/install-action` (cargo-deny) | `0751bff5da373f43f04fdc57a72795931a822bd7` | cargo-deny and wasm-pack install pin |
 | `taiki-e/install-action` (cargo-semver-checks) | `7b8d4719ee4aaa279bdf55df38dacb9ebfe12a6c` | v2.87.6 |
 | `taiki-e/install-action` (cargo-llvm-cov) | `7c1105379b6217809b9ed26c163a46c65c7a528f` | cargo-llvm-cov tag |
@@ -432,7 +432,7 @@ latest release, and no open advisory.
 | `tokio-rustls` | 0.26.4 | 0.26.4 | audit (full, 2026-10-04, #339 B3; discretion note on test-only PEM fixtures) | rustls | Async TLS stream adapter under hyper-rustls and reqwest |
 | `primeorder` | 0.14.0 | 0.14.0 | audit (full, 2026-10-04, #339 B3) | RustCrypto | Generic prime-order curve arithmetic under p256 (sign, verify, SEC1 key decoding) |
 | `rand_core` | 0.10.1, 0.9.5 | 0.10.1, 0.9.5 | audit (full, 2026-10-04, #339 B4; 0.9.5 is dev-only and now meets `safe-to-deploy`) | rust-random | RNG traits; `UnwrapErr(getrandom::SysRng)` in key generation (0.10.1); proptest's `rand` (0.9.5) |
-| `ctutils` | 0.4.2 | 0.4.2 | audit (full, 2026-10-04, #339 B4; constant-time behaviour not claimed) | RustCrypto | Constant-time selection/equality helpers under digest, sec1, crypto-bigint |
+| `ctutils` | 0.4.5 | 0.4.2, 0.4.2 → 0.4.5 | audit (full, 2026-10-04, #339 B4; delta 0.4.2 → 0.4.5, 2026-10-24, RUSTSEC-2026-0385, black_box-backed masks, split `u128` compares, new `primitives` module; constant-time behaviour not claimed) | RustCrypto | Constant-time selection/equality helpers under digest, sec1, crypto-bigint |
 | `webpki-roots` | 1.0.10 | 1.0.9, 1.0.9 → 1.0.10 | audit (full, 2026-10-04, #339 B4; table checked against its embedded certificates; delta 1.0.9 → 1.0.10, 2026-10-21, RUSTSEC-2026-0381, removes `emSign ECC Root CA - G3`; root-set correctness not claimed) | rustls | Default trust anchors for every ACDP HTTPS client (reqwest `rustls-tls`) |
 | `typenum` | 1.20.1 | 1.20.1 | audit (full, 2026-10-04, #339 B4; generated files shape-checked, impl headers sampled) | paholg | Type-level integers under hybrid-array |
 | `base16ct` | 1.0.0 | 1.0.0 | audit (full, 2026-10-04, #339 B5; constant-time behaviour not claimed) | RustCrypto | Hex encoding under sec1 and elliptic-curve (`HexDisplay`, `FromStr`) |
@@ -445,7 +445,7 @@ latest release, and no open advisory.
 | `block-buffer` | 0.12.1 | 0.12.1 | audit (full, 2026-10-04, #339 B6; 21 `unsafe` lines verdicted) | RustCrypto | Block buffering under digest (sha2, hmac) |
 | `cmov` | 0.5.4 | 0.5.4 | audit (full, 2026-10-04, #339 B6; x86/aarch64 `asm!` checked for memory safety; constant-time behaviour not claimed) | RustCrypto | Conditional-move primitives under ctutils |
 | `hybrid-array` | 0.4.14 | 0.4.14 | audit (full, 2026-10-04, #339 B6; size table script-checked; discretion note on packaged CI files) | RustCrypto | Fixed-size arrays under digest, crypto-bigint, elliptic-curve, sec1 |
-| `crypto-bigint` | 0.7.5 | 0.7.5 | audit (full, 2026-10-04, #339 B6; the 37,233 compiled lines were read in full by seven Claude sub-reviews, with every `unsafe` site and the file/line counts independently confirmed by the main review; uncompiled `boxed`/`der`/`rlp` modules grep-only; constant-time behaviour not claimed) | RustCrypto | Big-integer arithmetic under the P-256 stack |
+| `crypto-bigint` | 0.7.6 | 0.7.5, 0.7.5 → 0.7.6 | audit (full, 2026-10-04, #339 B6; the 37,233 compiled lines were read in full by seven Claude sub-reviews, with every `unsafe` site and the file/line counts independently confirmed by the main review; uncompiled `boxed`/`der`/`rlp` modules grep-only; delta 0.7.5 → 0.7.6, 2026-10-24, RUSTSEC-2026-0387, every hunk read, no `unsafe` line changed; constant-time behaviour not claimed) | RustCrypto | Big-integer arithmetic under the P-256 stack |
 | `getrandom` | 0.4.3, 0.2.17, 0.3.4 | 0.4.3, 0.2.17, 0.3.4 | audit (full, 2026-10-05, #339 B7a; discretion notes on the opt-in `linux_raw` backend, DECISIONS.md `322-getrandom`, and on nightly/tier-3 backends; 0.3.4 is dev-only and meets `safe-to-deploy`; RNG output quality not claimed) | rust-random | OS RNG: `UnwrapErr(SysRng)` in key generation (0.4.3); ring's `SystemRandom` under rustls (0.2.17; uncalled in the wasm binding, #363); proptest's `rand` (0.3.4) |
 | `rustls-webpki` | 0.103.16 | 0.103.15, 0.103.15 → 0.103.16 | audit (full, 2026-10-05, #339 B7b; 0 `unsafe`; DECISIONS.md `322-rustls-webpki`; bounded path-building DoS cost recorded as an observation; delta 0.103.15 → 0.103.16, 2026-10-21, RUSTSEC-2026-0382, emSign SPKI distrust list; certificate-validation correctness not claimed) | rustls | Certificate path validation behind rustls's `WebPkiServerVerifier` for every ACDP HTTPS client (trust boundary); its CRL code is compiled but unreached |
 
@@ -797,6 +797,18 @@ fixed by bumping `webpki-roots` 1.0.9 → 1.0.10 (which removes the
 any path containing one of eight distrusted emSign intermediate keys), 2026-10-21, #404.
 Both bumps are covered by delta audits (`supply-chain/worksheets/webpki-roots-1.0.10.md`,
 `supply-chain/worksheets/rustls-webpki-0.103.16.md`). No `deny.toml` ignore entry was needed.
+
+**Constant-time fixes and tokio I/O safety, RUSTSEC-2026-0385, RUSTSEC-2026-0386 and
+RUSTSEC-2026-0387:** fixed by bumping `ctutils` 0.4.2 → 0.4.5 (mask generation and 32-bit
+`u128` compares could compile to branches), `crypto-bigint` 0.7.5 → 0.7.6 (several
+operations intended to be constant-time could branch on secrets), and `tokio` 1.53.2 →
+1.53.3 (`AsyncFd` constructors violated I/O safety; informational "unsound", and ACDP does
+not call `AsyncFd`), 2026-10-24. Both crypto bumps are covered by delta audits
+(`supply-chain/worksheets/ctutils-0.4.5.md`, `supply-chain/worksheets/crypto-bigint-0.7.6.md`).
+The `tokio` exemption moved to 1.53.3. No `deny.toml` ignore entry was needed.
+The two crypto releases declare `rust-version = "1.87"`, so ACDP's MSRV moved from 1.86 to
+1.87 with them. The alternative, letting a 1.86 build fall back to the vulnerable releases,
+would leave that build without the fixes and without saying so.
 
 Together: **`vet`** answers "did a human look at this code?", **`deny`**
 answers "is there a known-bad advisory or license here?", and the **provenance +

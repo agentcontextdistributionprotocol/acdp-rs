@@ -10,7 +10,7 @@ homepage    = "https://github.com/agentcontextdistributionprotocol/acdp-rs"
 documentation = "https://docs.rs/acdp-primitives"
 keywords    = ["acdp", "agent", "context", "did", "verifiable"]
 categories  = ["data-structures", "web-programming"]
-rust-version = "1.86"
+rust-version = "1.87"
 
 [features]
 # Enables the `From<reqwest::Error> for AcdpError` impl. The orphan rule

@@ -431,7 +431,11 @@ impl LogCheckpoint {
         now: DateTime<Utc>,
         max_clock_skew: chrono::Duration,
     ) -> Result<(), AcdpError> {
-        if self.timestamp.timestamp_subsec_nanos() % 1_000_000 != 0 {
+        if !self
+            .timestamp
+            .timestamp_subsec_nanos()
+            .is_multiple_of(1_000_000)
+        {
             return Err(AcdpError::InvalidLogProof(
                 "log_checkpoint timestamp is not millisecond-truncated (RFC-ACDP-0001 §5.3)".into(),
             ));

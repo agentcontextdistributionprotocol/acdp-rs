@@ -142,7 +142,7 @@ impl DiscoveryBudget {
             // `try_update` (rust-lang/rust#135894); nightly already flags
             // the old name as deprecated, but `try_update` itself is behind
             // the unstable `atomic_try_update` feature on this crate's
-            // MSRV (1.86) — confirmed by hand: `rustc +1.86.0` rejects
+            // MSRV (1.87) — confirmed by hand: `rustc +1.87.0` rejects
             // `try_update` with E0658. Suppress narrowly here rather than
             // rename, and do NOT raise MSRV to chase this.
             #[allow(deprecated)]

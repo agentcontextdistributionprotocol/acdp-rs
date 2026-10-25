@@ -220,7 +220,7 @@ fn round_half_even_correction(abs: f64, digits: &str, e10: i32) -> Option<String
         return None;
     }
     let s: u128 = digits.parse().ok()?;
-    if s % 2 == 0 {
+    if s.is_multiple_of(2) {
         // Already even: in any tie, ECMAScript would pick this candidate.
         return None;
     }

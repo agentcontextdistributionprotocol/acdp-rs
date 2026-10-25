@@ -5,7 +5,7 @@ quality bars, and conventions for `acdp-rs`.
 
 ## Prerequisites
 
-- Rust **1.86** or newer (MSRV — verified in CI).
+- Rust **1.87** or newer (MSRV — verified in CI).
 - `cargo fmt`, `cargo clippy`, `cargo test` (the rust-toolchain components are
   installed by `rustup`).
 

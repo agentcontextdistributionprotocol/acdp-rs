@@ -205,7 +205,7 @@ fn truncate_sub_ms_strings(v: &serde_json::Value) -> serde_json::Value {
         Value::String(s) => {
             if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
                 let utc = dt.with_timezone(&chrono::Utc);
-                if utc.timestamp_subsec_nanos() % 1_000_000 != 0 {
+                if !utc.timestamp_subsec_nanos().is_multiple_of(1_000_000) {
                     return Value::String(
                         acdp_primitives::time::trunc_ms(utc)
                             .format("%Y-%m-%dT%H:%M:%S%.3fZ")

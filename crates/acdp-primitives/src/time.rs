@@ -34,7 +34,7 @@ pub fn fmt_rfc3339_ms(dt: DateTime<Utc>) -> String {
 /// (`can-006` nanosecond, `can-012` microsecond) keeps its full
 /// precision so a typed re-serialization does not silently truncate it.
 pub fn fmt_rfc3339_canonical(dt: DateTime<Utc>) -> String {
-    if dt.timestamp_subsec_nanos() % 1_000_000 == 0 {
+    if dt.timestamp_subsec_nanos().is_multiple_of(1_000_000) {
         fmt_rfc3339_ms(dt)
     } else {
         dt.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)

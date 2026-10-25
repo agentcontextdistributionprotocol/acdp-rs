@@ -10,7 +10,7 @@ homepage    = "https://github.com/agentcontextdistributionprotocol/acdp-rs"
 documentation = "https://docs.rs/acdp-jcs"
 keywords    = ["acdp", "jcs", "rfc8785", "canonicalization", "json"]
 categories  = ["encoding", "data-structures"]
-rust-version = "1.86"
+rust-version = "1.87"
 
 [dependencies]
 acdp-primitives = { path = "../acdp-primitives", version = "=0.15.1" }

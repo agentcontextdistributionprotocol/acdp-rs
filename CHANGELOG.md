@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.16.1...acdp-v0.17.0) - 2026-10-25
+
+### Added
+
+- [**breaking**] RFC-ACDP-0018 retraction recall (changes feed, hints, acdp-consumer-recall) ([#431](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/431))
+
+### Other
+
+- *(semver)* make cargo-semver-checks advisory; allow breaks in minor releases ([#426](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/426))
+
 ## [0.16.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.16.0...acdp-v0.16.1) - 2026-10-25
 
 ### Added

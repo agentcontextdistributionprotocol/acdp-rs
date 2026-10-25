@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-cli-v0.16.1...acdp-cli-v0.17.0) - 2026-10-25
+
+### Other
+
+- update Cargo.lock dependencies
+
 ## [0.16.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-cli-v0.15.1...acdp-cli-v0.16.0) - 2026-10-25
 
 ### Fixed

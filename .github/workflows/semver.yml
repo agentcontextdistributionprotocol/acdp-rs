@@ -91,10 +91,7 @@ jobs:
         id: semver-checks
         run: |
           set +e
-          # acdp-chain is excluded until its first crates.io release: a
-          # crate with no published baseline makes the tool exit 101
-          # ("not found in registry"). Drop the --exclude once it ships.
-          cargo semver-checks --workspace --exclude acdp-chain 2>&1 | tee semver-checks.log
+          cargo semver-checks --workspace 2>&1 | tee semver-checks.log
           s=${PIPESTATUS[0]}
           if grep -q "unsupported rustdoc format" semver-checks.log; then
             echo "unsupported=true" >> "$GITHUB_OUTPUT"

@@ -144,6 +144,9 @@ const KNOWN_FAMILIES: &[&str] = &[
     "body",
     "can",
     "caps",
+    // RFC-ACDP-0017 scenario fixtures: exercised by `crates/acdp-chain/tests/chain.rs`
+    // over bundles built from fixed seeds (see `chain_fixtures_each_have_tests`).
+    "chain",
     "cur",
     "data-ref",
     "data-ref-ssrf",
@@ -201,6 +204,109 @@ fn fixture_family_bucketing_prefers_longest_match() {
     assert_eq!(bucket_family("did-ssrf-001", &candidates), Some("did-ssrf"));
     assert_eq!(bucket_family("did-001", &candidates), Some("did"));
     assert_eq!(bucket_family("unrelated-001", &candidates), None);
+}
+
+/// Every `chain-NNN` fixture in the spec checkout has at least one
+/// `chain_NNN_*` test in `crates/acdp-chain/tests/chain.rs` (the chain
+/// fixtures are prose scenarios, so they are bound by name, not driven
+/// from the file).
+#[test]
+fn chain_fixtures_each_have_tests() {
+    let Some(root) = spec_root() else {
+        eprintln!("ACDP spec not found; skipping chain fixture binding test");
+        return;
+    };
+    let tests = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/acdp-chain/tests/chain.rs"),
+    )
+    .expect("crates/acdp-chain/tests/chain.rs readable");
+    let mut seen = 0;
+    for entry in std::fs::read_dir(root.join("schemas/conformance")).unwrap() {
+        let name = entry.unwrap().file_name().into_string().unwrap();
+        let Some(num) = name.strip_prefix("chain-").and_then(|r| r.get(..3)) else {
+            continue;
+        };
+        seen += 1;
+        assert!(
+            tests.contains(&format!("fn chain_{num}_")),
+            "{name} has no chain_{num}_* test in crates/acdp-chain/tests/chain.rs"
+        );
+    }
+    eprintln!("{seen} chain fixtures bound");
+}
+
+/// RFC-ACDP-0017 known-answer vectors pinned in the spec: every
+/// `chain-NNN` fixture's `vectors[]` names an evidence bundle and an
+/// expected verdict under `examples/`. Re-verifying the bundle must give
+/// the verdict member-for-member and the three pinned digests, so a
+/// drift on either side fails here.
+#[test]
+fn chain_kat_vectors_reproduce() {
+    use acdp::chain::{verify_chain, Evidence, Limits, Options, Pinned};
+
+    let Some(root) = spec_root() else {
+        eprintln!("ACDP spec not found; skipping chain KAT vectors");
+        return;
+    };
+    let mut ran = 0;
+    for entry in std::fs::read_dir(root.join("schemas/conformance")).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        if !name.starts_with("chain-") {
+            continue;
+        }
+        let fixture = read_json(&path);
+        for v in fixture
+            .get("vectors")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+        {
+            let label = format!("{name} / {}", v["name"].as_str().unwrap_or("?"));
+            let evidence = Evidence::from_value(&read_json(
+                &root.join(v["evidence"].as_str().expect("vector.evidence")),
+            ))
+            .unwrap_or_else(|e| panic!("{label}: evidence rejected: {e}"));
+            let expected = read_json(&root.join(v["verdict"].as_str().expect("vector.verdict")));
+            let o = &v["options"];
+            let mut options = Options::default();
+            if let Some(t) = o["as_of"].as_str() {
+                options = Options::as_of(
+                    chrono::DateTime::parse_from_rfc3339(t)
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                );
+            }
+            if !o["limits"].is_null() {
+                let limits: Limits = serde_json::from_value(o["limits"].clone()).unwrap();
+                options = options.with_limits(limits);
+            }
+            options = options
+                .with_pinned(Pinned::from_value(&o["pinned"]).unwrap())
+                .with_require_attested_events(
+                    o["require_attested_events"].as_bool().unwrap_or(true),
+                );
+            let roots: Vec<String> = v["roots"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r.as_str().unwrap().to_string())
+                .collect();
+            let got = verify_chain(&roots, &evidence, &options)
+                .unwrap_or_else(|e| panic!("{label}: verify_chain failed: {e}"));
+            assert_eq!(
+                got.to_value(),
+                expected,
+                "{label}: verdict differs from {}",
+                v["verdict"]
+            );
+            for k in ["evidence_digest", "as_of_digest", "verdict_digest"] {
+                assert_eq!(got.to_value()[k], v[k], "{label}: {k}");
+            }
+            ran += 1;
+        }
+    }
+    eprintln!("{ran} chain KAT vectors reproduced");
 }
 
 #[test]

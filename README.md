@@ -30,10 +30,11 @@ witness cosigning, key revocation, and lifecycle/retraction events.
 This is a **Cargo workspace**: the umbrella `acdp` crate is a thin facade that
 re-exports a fine-grained set of crates under [`crates/`](./crates/)
 (`acdp-primitives` → `acdp-jcs`/`acdp-safe-http` → `acdp-did` → `acdp-crypto` →
-`acdp-types` → `acdp-validation` → `acdp-verify` → `acdp-producer` →
+`acdp-types` → `acdp-validation` → `acdp-verify` → `acdp-chain` (offline
+RFC-ACDP-0017 chain verification, Draft) → `acdp-producer` →
 `acdp-client`/`acdp-server` → `acdp-cli`), preserving the historical
-`acdp::{error, types, crypto, did, validation, verify, producer, client,
-registry, …}` paths. Language bindings live under [`bindings/`](./bindings/)
+`acdp::{error, types, crypto, did, validation, verify, chain, producer,
+client, registry, …}` paths. Language bindings live under [`bindings/`](./bindings/)
 (Python, Node.js, and a browser/edge WebAssembly verifier core published to npm).
 
 ## Documentation

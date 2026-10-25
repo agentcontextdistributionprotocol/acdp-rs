@@ -675,6 +675,29 @@ fn client_types_are_send_sync() {
     assert_send_sync::<WitnessConsistencyCheck<'static>>();
 }
 
+/// RFC-ACDP-0017: the offline chain verifier's public types.
+#[test]
+fn chain_types_are_send_sync() {
+    use acdp::chain::*;
+
+    assert_send_sync::<ChainError>();
+    assert_send_sync::<Evidence>();
+    assert_send_sync::<ContextEvidence>();
+    assert_send_sync::<DidSnapshot>();
+    assert_send_sync::<DiscoveryRecord>();
+    assert_send_sync::<CheckpointEvidence>();
+    assert_send_sync::<Omitted>();
+    assert_send_sync::<Options>();
+    assert_send_sync::<Limits>();
+    assert_send_sync::<Pinned>();
+    assert_send_sync::<PinnedSnapshot>();
+    assert_send_sync::<ChainVerdict>();
+    assert_send_sync::<Node>();
+    assert_send_sync::<Pass>();
+    assert_send_sync::<Stages>();
+    assert_send_sync::<Drift>();
+}
+
 #[test]
 fn core_types_are_send_sync() {
     use acdp::crypto::{AcdpSigningKey, P256SigningKey, SigningKey};

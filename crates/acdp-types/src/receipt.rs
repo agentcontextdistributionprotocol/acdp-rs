@@ -75,7 +75,7 @@ pub(crate) fn preimage_hash_of_object_with(
 
 /// RFC-ACDP-0010 §5 / RFC-ACDP-0011 §5 preimage hash with the
 /// receipt-verdict error mapping.
-fn preimage_hash_of_object(
+pub(crate) fn preimage_hash_of_object(
     value: &serde_json::Value,
     what: &str,
 ) -> Result<ContentHash, AcdpError> {

@@ -1,0 +1,47 @@
+[package]
+name        = "acdp-chain"
+version.workspace = true
+edition     = "2021"
+description = "Offline, as-of chain verification over evidence bundles (RFC-ACDP-0017) for the Agent Context Distribution Protocol (ACDP)"
+license     = "MIT OR Apache-2.0"
+readme      = "README.md"
+repository  = "https://github.com/agentcontextdistributionprotocol/acdp-rs"
+homepage    = "https://github.com/agentcontextdistributionprotocol/acdp-rs"
+documentation = "https://docs.rs/acdp-chain"
+keywords    = ["acdp", "verification", "provenance", "audit", "evidence"]
+categories  = ["cryptography", "data-structures"]
+rust-version = "1.87"
+
+# Pure: no HTTP stack, no async runtime, no clock. The online collector
+# (`collect_evidence` / `verify_chain_online`) lives in acdp-client.
+[dependencies]
+acdp-primitives = { path = "../acdp-primitives", version = "=0.16.0" }
+acdp-jcs        = { path = "../acdp-jcs", version = "=0.16.0" }
+acdp-did        = { path = "../acdp-did", version = "=0.16.0" }
+acdp-crypto     = { path = "../acdp-crypto", version = "=0.16.0" }
+acdp-types      = { path = "../acdp-types", version = "=0.16.0" }
+acdp-validation = { path = "../acdp-validation", version = "=0.16.0" }
+acdp-verify     = { path = "../acdp-verify", version = "=0.16.0" }
+serde      = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+chrono     = { version = "0.4", default-features = false, features = ["serde"] }
+hex        = "0.4"
+sha2       = "0.11"
+thiserror  = "2"
+
+[dev-dependencies]
+# Build real signed bodies for the chain-001..010 behavioral tests.
+# PATH-ONLY (no version): acdp-producer is not a normal dependency, so
+# release-plz may publish acdp-chain first (same rule as acdp-verify).
+acdp-producer = { path = "../acdp-producer" }
+base64        = "0.23"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

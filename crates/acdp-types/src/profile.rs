@@ -14,8 +14,10 @@
 use crate::capabilities::CapabilitiesDocument;
 
 /// A conformance profile: the RFC-ACDP-0001 §9.1 set plus the receipt
-/// profiles added by RFC-ACDP-0010 (0.2.0) and RFC-ACDP-0011 (0.3.0).
+/// profiles added by RFC-ACDP-0010 (0.2.0) and RFC-ACDP-0011 (0.3.0),
+/// lifecycle (RFC-ACDP-0013) and retraction recall (RFC-ACDP-0018).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Profile {
     /// `acdp-registry-core` — minimum profile for any registry.
     RegistryCore,
@@ -40,8 +42,20 @@ pub enum Profile {
     /// `not_implemented` on both endpoints and never emit
     /// `lifecycle_events` or the `retracted` status.
     RegistryLifecycle,
+    /// `acdp-registry-changes` — the `GET /changes` feed of
+    /// reliance-changing changes (0.5.0 Draft, RFC-ACDP-0018 §3–§6).
+    /// Prerequisites: `acdp-registry-lifecycle` and
+    /// `acdp-registry-receipts`.
+    RegistryChanges,
+    /// `acdp-registry-events` — change-hint webhook subscriptions (0.5.0
+    /// Draft, RFC-ACDP-0018 §8). Prerequisite: `acdp-registry-changes`.
+    RegistryEvents,
     /// `acdp-consumer` — a consumer of contexts (not a registry).
     Consumer,
+    /// `acdp-consumer-recall` — a consumer that verifies change entries
+    /// before acting on them (0.5.0 Draft, RFC-ACDP-0018 §7).
+    /// Prerequisite: `acdp-consumer`.
+    ConsumerRecall,
 }
 
 impl Profile {
@@ -55,7 +69,10 @@ impl Profile {
             Profile::RegistryReceipts => "acdp-registry-receipts",
             Profile::RegistryHeadReceipts => "acdp-registry-head-receipts",
             Profile::RegistryLifecycle => "acdp-registry-lifecycle",
+            Profile::RegistryChanges => "acdp-registry-changes",
+            Profile::RegistryEvents => "acdp-registry-events",
             Profile::Consumer => "acdp-consumer",
+            Profile::ConsumerRecall => "acdp-consumer-recall",
         }
     }
 }
@@ -65,7 +82,7 @@ impl Profile {
 /// crate's primitives (`PublishValidator`, `SsrfPolicy`,
 /// `CrossRegistryResolver`) MAY claim additional profiles in their
 /// own capabilities document.
-pub const CLAIMED: &[Profile] = &[Profile::Consumer];
+pub const CLAIMED: &[Profile] = &[Profile::Consumer, Profile::ConsumerRecall];
 
 impl CapabilitiesDocument {
     /// Returns `true` if the registry advertises the given profile.
@@ -109,6 +126,10 @@ mod tests {
                 max_embedded_bytes: 65_536,
                 idempotency_key_ttl_seconds: None,
                 max_publish_per_minute: None,
+                change_retention_seconds: None,
+                max_change_filters: None,
+                max_changes_page: None,
+                max_subscriptions_per_requester: None,
             },
             read_authentication_methods: vec![],
             anonymous_public_reads: true,
@@ -143,5 +164,6 @@ mod tests {
     #[test]
     fn claimed_includes_consumer() {
         assert!(CLAIMED.contains(&Profile::Consumer));
+        assert!(CLAIMED.contains(&Profile::ConsumerRecall));
     }
 }

@@ -173,6 +173,7 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "hex",
+ "hmac",
  "serde",
  "serde_json",
  "sha2",
@@ -1283,7 +1284,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

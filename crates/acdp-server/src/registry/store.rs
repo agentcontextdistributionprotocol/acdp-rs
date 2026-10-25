@@ -487,6 +487,7 @@ impl RegistryStore for InMemoryStore {
             registry_state: RegistryState {
                 status: Status::Active,
                 lifecycle_events: None,
+                event_receipts: None,
                 extensions: Default::default(),
             },
             registry_receipt: None,
@@ -863,6 +864,7 @@ impl RegistryStore for InMemoryStore {
             registry_state: RegistryState {
                 status: Status::Active,
                 lifecycle_events: None,
+                event_receipts: None,
                 extensions: Default::default(),
             },
             registry_receipt: registry_receipt.clone(),
@@ -1631,6 +1633,10 @@ mod tests {
                 max_embedded_bytes: 65_536,
                 idempotency_key_ttl_seconds: None,
                 max_publish_per_minute: None,
+                change_retention_seconds: None,
+                max_change_filters: None,
+                max_changes_page: None,
+                max_subscriptions_per_requester: None,
             },
             read_authentication_methods: vec![],
             anonymous_public_reads: true,

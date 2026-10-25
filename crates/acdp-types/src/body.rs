@@ -286,6 +286,21 @@ pub struct RegistryState {
     /// (RFC-ACDP-0013 §7.3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle_events: Option<Vec<crate::lifecycle::LifecycleEvent>>,
+    /// Registry-signed acceptance receipts parallel to
+    /// [`Self::lifecycle_events`] (RFC-ACDP-0017 §10.2): element *i*
+    /// receipts event *i*. Omitted entirely (never `[]`) when there are
+    /// none. Each element is parsed with the closed
+    /// [`EventReceipt::from_value`](crate::EventReceipt::from_value), so
+    /// a receipt violating its schema is malformed registry state and
+    /// fails the parse, as a malformed lifecycle event does. A receipt
+    /// that parses but fails verification is the verifier's business
+    /// (RFC-ACDP-0017 §10.3: treated as absent).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_event_receipts"
+    )]
+    pub event_receipts: Option<Vec<crate::EventReceipt>>,
     /// Forward-compatible passthrough for fields added in future versions
     /// (e.g. the reserved `relationships`, `attestations`,
     /// `subscriptions` — see the type docs for the reserved set).
@@ -294,37 +309,6 @@ pub struct RegistryState {
 }
 
 impl RegistryState {
-    /// The `event_receipts` member (RFC-ACDP-0017 §10.2): registry-signed
-    /// acceptance receipts parallel to [`Self::lifecycle_events`],
-    /// carried in [`Self::extensions`] so the struct stays
-    /// semver-compatible. `None` when absent; each element is parsed with
-    /// the closed [`EventReceipt::from_value`](crate::EventReceipt::from_value).
-    pub fn event_receipts(&self) -> Option<Result<Vec<crate::EventReceipt>, AcdpError>> {
-        let v = self.extensions.get(EVENT_RECEIPTS)?;
-        Some(match v.as_array() {
-            Some(items) => items.iter().map(crate::EventReceipt::from_value).collect(),
-            None => Err(AcdpError::InvalidReceipt(
-                "registry_state.event_receipts is not an array".into(),
-            )),
-        })
-    }
-
-    /// Set (or, with an empty vector, remove) `event_receipts`. Like
-    /// `lifecycle_events`, the member is omitted rather than emitted as
-    /// `[]`.
-    pub fn set_event_receipts(
-        &mut self,
-        receipts: Vec<crate::EventReceipt>,
-    ) -> Result<(), AcdpError> {
-        if receipts.is_empty() {
-            self.extensions.remove(EVENT_RECEIPTS);
-        } else {
-            self.extensions
-                .insert(EVENT_RECEIPTS.into(), serde_json::to_value(receipts)?);
-        }
-        Ok(())
-    }
-
     /// Retraction as a consumer can know it (RFC-ACDP-0013 §4.1, §7.1):
     /// `Some(true)` retracted, `Some(false)` not retracted, `None`
     /// unknown.
@@ -355,8 +339,19 @@ impl RegistryState {
     }
 }
 
-/// The `registry_state` member carrying event receipts.
-const EVENT_RECEIPTS: &str = "event_receipts";
+/// `registry_state.event_receipts`: present means a non-null array, each
+/// element parsed with the closed [`crate::EventReceipt::from_value`].
+fn de_event_receipts<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Vec<crate::EventReceipt>>, D::Error> {
+    let items = Vec::<serde_json::Value>::deserialize(d)?;
+    items
+        .iter()
+        .map(crate::EventReceipt::from_value)
+        .collect::<Result<Vec<_>, AcdpError>>()
+        .map(Some)
+        .map_err(serde::de::Error::custom)
+}
 
 // ── Full retrieval envelope ───────────────────────────────────────────────────
 

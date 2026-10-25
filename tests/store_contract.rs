@@ -46,6 +46,10 @@ fn caps(supports_idempotency_key: bool) -> CapabilitiesDocument {
                 None
             },
             max_publish_per_minute: None,
+            change_retention_seconds: None,
+            max_change_filters: None,
+            max_changes_page: None,
+            max_subscriptions_per_requester: None,
         },
         read_authentication_methods: vec![],
         anonymous_public_reads: true,

@@ -360,30 +360,31 @@ mod tests {
             .unwrap();
         let mut state: RegistryState =
             serde_json::from_value(serde_json::json!({"status": "active"})).unwrap();
-        assert!(state.event_receipts().is_none());
-        state.set_event_receipts(vec![r.clone()]).unwrap();
+        assert!(state.event_receipts.is_none());
+        state.event_receipts = Some(vec![r.clone()]);
         let wire = serde_json::to_value(&state).unwrap();
         assert_eq!(
             wire["event_receipts"][0]["receipt_type"],
             EVENT_RECEIPT_TYPE
         );
+        assert!(!wire.as_object().unwrap().contains_key("extensions"));
         let back: RegistryState = serde_json::from_value(wire).unwrap();
-        assert_eq!(back.event_receipts().unwrap().unwrap(), vec![r]);
+        assert_eq!(back.event_receipts, Some(vec![r]));
+        assert!(back.extensions.is_empty());
         // Omitted, never `[]`.
-        state.set_event_receipts(vec![]).unwrap();
+        state.event_receipts = None;
         assert!(serde_json::to_value(&state)
             .unwrap()
             .get("event_receipts")
             .is_none());
-        // A malformed element surfaces as InvalidReceipt.
-        let bad: RegistryState = serde_json::from_value(
+        // A malformed element, or a non-array, is malformed registry state.
+        for bad in [
             serde_json::json!({"status": "active", "event_receipts": [{"x": 1}]}),
-        )
-        .unwrap();
-        assert!(matches!(
-            bad.event_receipts(),
-            Some(Err(AcdpError::InvalidReceipt(_)))
-        ));
+            serde_json::json!({"status": "active", "event_receipts": {"x": 1}}),
+            serde_json::json!({"status": "active", "event_receipts": null}),
+        ] {
+            assert!(serde_json::from_value::<RegistryState>(bad).is_err());
+        }
     }
 
     /// Regression: a fresh context from a lifecycle registry carries no

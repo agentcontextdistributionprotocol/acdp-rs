@@ -829,6 +829,86 @@ to check it outside the pipeline:
 | `verify_witness_cosignature_value`, `evaluate_witness_quorum` | one witness cosignature, and a quorum over a trusted witness set | [RFC-ACDP-0015](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0015-witness-cosigning.md) |
 | `verify_revocation_body`, `classify_under_revocation` | a key-revocation context, and a verdict under a set of revocations | [RFC-ACDP-0014](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0014-key-revocation.md) |
 
+## Retraction recall (RFC-ACDP-0018, Draft)
+
+A consumer that relied on a context needs to hear when it is retracted,
+superseded, or signed by a key later revoked. A registry claiming
+`acdp-registry-changes` serves that as a feed, `GET /changes`. The
+`acdp::client::recall` module is the `acdp-consumer-recall` side:
+
+- `RegistryClient::changes(since, filter, limit)` reads one page.
+  `Since::Start` replays retained history, `Since::Head` starts at the
+  present, and `Since::Cursor` resumes from a persisted `next_cursor`.
+  The response is checked against the closed schema
+  (`acdp::types::change::ChangesResponse`) but **not verified**.
+- `ChangeFeed` holds the filter and the position. `fetch` reads the next
+  page without moving the cursor, and `advance` moves past a page once
+  every entry in it is processed. Persist `position()` after `advance`
+  (§7 "Cursor persistence").
+- `verify_change` is the §7 procedure. It returns
+  `ChangeVerdict::Verified(effect)` or `ChangeVerdict::Rejected(reason)`.
+  A rejected entry MUST NOT change any reliance decision. `Err` means the
+  entry could not be decided (a transient failure), so leave it
+  unprocessed and retry.
+- `SeenChanges` deduplicates by (registry authority, `seq`), because
+  delivery is at-least-once.
+
+```rust,no_run
+# #[cfg(feature = "client")]
+# async fn run(
+#     client: &acdp::client::RegistryClient,
+#     resolver: &acdp::did::WebResolver,
+#     relied_on: acdp::types::CtxId,
+# ) -> Result<(), acdp::AcdpError> {
+use acdp::client::recall::{verify_change, ChangeEffect, ChangeFeed, ChangeVerdict, Since};
+use acdp::client::VerificationPolicy;
+use acdp::types::change::WatchFilter;
+
+// A ctx_id watch also hears key revocations for that context's producer (§6).
+let mut feed = ChangeFeed::new(client, WatchFilter::new().ctx_id(relied_on))
+    .since(Since::Head);
+let page = feed.fetch().await?;
+for change in &page.changes {
+    match verify_change(client, resolver, change, None, &VerificationPolicy::default()).await? {
+        ChangeVerdict::Verified(ChangeEffect::Lifecycle { retracted: true, .. }) => {
+            // Stop relying on it.
+        }
+        ChangeVerdict::Verified(_) => { /* re-evaluate under your policy */ }
+        ChangeVerdict::Rejected(_) => { /* no change; re-verify the context directly */ }
+        _ => {}
+    }
+}
+feed.advance(&page);
+# Ok(()) }
+```
+
+What `verify_change` checks, by kind:
+
+| Kind | Verification |
+|---|---|
+| all | `recorded_at` and `ctx_id` agree with the evidence (`Change::check_consistency`), before any fetch. |
+| `lifecycle` | The event (RFC-ACDP-0013 §5) and its event receipt (RFC-ACDP-0017 §10.3, `verify_event_receipt_value`) both verify. The retraction state is re-derived over the **full** event list. A `HeldContext` stands in for re-retrieval only when it holds every earlier event. Otherwise the context is re-retrieved, and `lifecycle_events[index]` must equal the entry's event under JCS. |
+| `superseded` | `superseded_by` is retrieved and verified with its receipt required. Its `supersedes`, `lineage_id` and `agent_id` must be the entry's, and its receipt must be the entry's. |
+| `key_revocation` | The revocation is retrieved and verified under RFC-ACDP-0014 §5/§6, including the historical-key arm. A registry-attested revocation must be published by this registry. It must also speak for the entry's `agent_id` (§7 producer scope). |
+
+On `AcdpError::CursorExpired`, the consumer has missed an unknown set of
+entries. It must re-verify every watched context directly and then call
+`ChangeFeed::reset_to_head` (§7 "Resync"). The feed is a notification
+channel, not a completeness proof, so high-stakes reliance should also be
+re-verified on a schedule.
+
+**Change hints (§8).** A registry claiming `acdp-registry-events` POSTs a
+contentless `acdp-change-hint/1` to a subscriber's callback. The registry
+signs it with `ACDP-Signature: t=<unix>,v1=<hex HMAC-SHA-256>`. The HMAC
+key is the UTF-8 bytes of the subscription `secret` string exactly as
+served, **not** its base64 decoding. Verify the header over the raw body
+bytes with `acdp::types::change::verify_hint_signature(secret, header,
+body, now)`, which compares in constant time and rejects a `t` more than
+300 s from `now`. Then call `ChangeFeed::on_hint`, which reads from the
+feed's **own** cursor and never the hint's `head_cursor`. Registries sign
+with `sign_hint`. `SubscriptionRequest`, `Subscription` and `ChangeHint`
+are the closed wire types.
+
 ## Fetching data references
 
 A verified context tells you *where* its data lives; fetching that data is a

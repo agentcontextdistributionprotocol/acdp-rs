@@ -183,6 +183,10 @@ fn pub_003_supersession_lineage_mismatch() {
             max_embedded_bytes: 65_536,
             idempotency_key_ttl_seconds: None,
             max_publish_per_minute: None,
+            change_retention_seconds: None,
+            max_change_filters: None,
+            max_changes_page: None,
+            max_subscriptions_per_requester: None,
         },
         read_authentication_methods: vec![],
         anonymous_public_reads: true,
@@ -494,6 +498,7 @@ async fn fetch_report_happy_path() {
         registry_state: RegistryState {
             status: Status::Active,
             lifecycle_events: None,
+            event_receipts: None,
             extensions: Default::default(),
         },
         registry_receipt: None,
@@ -618,6 +623,7 @@ async fn verification_policy_validate_body_schema_off_skips_structural_check() {
         registry_state: RegistryState {
             status: Status::Active,
             lifecycle_events: None,
+            event_receipts: None,
             extensions: Default::default(),
         },
         registry_receipt: None,
@@ -778,6 +784,7 @@ async fn fetch_report_records_embedded_hash_failure() {
         registry_state: RegistryState {
             status: Status::Active,
             lifecycle_events: None,
+            event_receipts: None,
             extensions: Default::default(),
         },
         registry_receipt: None,
@@ -939,6 +946,7 @@ async fn fetch_report_accepts_root_only_hash_disagreement() {
         registry_state: RegistryState {
             status: Status::Active,
             lifecycle_events: None,
+            event_receipts: None,
             extensions: Default::default(),
         },
         registry_receipt: None,
@@ -1057,6 +1065,7 @@ async fn fetch_report_diagnose_records_forged_signature() {
         registry_state: RegistryState {
             status: Status::Active,
             lifecycle_events: None,
+            event_receipts: None,
             extensions: Default::default(),
         },
         registry_receipt: None,

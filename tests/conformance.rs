@@ -165,6 +165,11 @@ const KNOWN_FAMILIES: &[&str] = &[
     "pub",
     "rate",
     "rcpt",
+    // RFC-ACDP-0018: rec-006/007 (acdp-consumer-recall) are bound by name in
+    // `tests/recall.rs` (`rec_fixtures_for_consumer_recall_each_have_tests`);
+    // the registry-side ones (acdp-registry-changes/-events) are a registry's
+    // to run, and rec-007's HMAC vector runs in `rec_007_hint_hmac_vectors`.
+    "rec",
     "ret",
     "rev",
     "rot",
@@ -307,6 +312,121 @@ fn chain_kat_vectors_reproduce() {
         }
     }
     eprintln!("{ran} chain KAT vectors reproduced");
+}
+
+/// Every `rec-NNN` fixture that applies to `acdp-consumer-recall` has at
+/// least one `rec_NNN_*` test in `tests/recall.rs` (behavioral fixtures,
+/// bound by name like the chain family).
+#[test]
+fn rec_fixtures_for_consumer_recall_each_have_tests() {
+    let Some(root) = spec_root() else {
+        eprintln!("ACDP spec not found; skipping rec fixture binding test");
+        return;
+    };
+    let tests = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/recall.rs"),
+    )
+    .expect("tests/recall.rs readable");
+    let mut seen = 0;
+    for entry in std::fs::read_dir(root.join("schemas/conformance")).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let Some(num) = name.strip_prefix("rec-").and_then(|r| r.get(..3)) else {
+            continue;
+        };
+        let consumer = read_json(&path)["applies_to_profiles"]
+            .as_array()
+            .is_some_and(|p| p.iter().any(|p| p == "acdp-consumer-recall"));
+        if !consumer {
+            continue;
+        }
+        seen += 1;
+        assert!(
+            tests.contains(&format!("fn rec_{num}_")),
+            "{name} has no rec_{num}_* test in tests/recall.rs"
+        );
+    }
+    eprintln!("{seen} consumer-recall rec fixtures bound");
+}
+
+/// RFC-ACDP-0018 §8.2 known-answer vectors (`rec-007` `vectors[]`): the
+/// header is reproduced byte-for-byte, it verifies, and `not_header` (the
+/// MAC under the base64-decoded key) does not.
+#[test]
+fn rec_007_hint_hmac_vectors() {
+    use acdp::types::change::{sign_hint, verify_hint_signature};
+
+    let Some(root) = spec_root() else {
+        return;
+    };
+    let path = root.join("schemas/conformance/rec-007-change-hints.json");
+    if fixture_missing(&path) {
+        return;
+    }
+    let fixture = read_json(&path);
+    let vectors = fixture["vectors"].as_array().expect("rec-007 vectors[]");
+    assert!(!vectors.is_empty(), "rec-007 carries no HMAC vector");
+    for v in vectors {
+        let name = v["name"].as_str().unwrap_or("?");
+        let secret = v["secret"].as_str().unwrap();
+        let t = v["t"].as_i64().unwrap();
+        let body = v["body"].as_str().unwrap().as_bytes();
+        let now = chrono::DateTime::from_timestamp(t, 0).unwrap();
+        assert_eq!(
+            sign_hint(secret, t, body),
+            v["expected_header"].as_str().unwrap(),
+            "{name}"
+        );
+        verify_hint_signature(secret, v["expected_header"].as_str().unwrap(), body, now)
+            .unwrap_or_else(|e| panic!("{name}: expected_header rejected: {e}"));
+        if let Some(not) = v["not_header"].as_str() {
+            assert!(
+                verify_hint_signature(secret, not, body, now).is_err(),
+                "{name}: not_header verified"
+            );
+        }
+    }
+}
+
+/// The RFC-ACDP-0018 examples parse under the closed types and
+/// round-trip to the same JSON.
+#[test]
+fn recall_examples_round_trip() {
+    use acdp::types::change::{ChangeHint, ChangesResponse, Subscription, SubscriptionRequest};
+
+    let Some(root) = spec_root() else {
+        return;
+    };
+    type Parse = fn(&serde_json::Value) -> Result<serde_json::Value, acdp::error::AcdpError>;
+    let dirs: [(&str, Parse); 4] = [
+        ("examples/changes", |v| {
+            ChangesResponse::from_value(v).map(|r| serde_json::to_value(r).unwrap())
+        }),
+        ("examples/change-hint", |v| {
+            ChangeHint::from_value(v).map(|r| serde_json::to_value(r).unwrap())
+        }),
+        ("examples/subscription", |v| {
+            Subscription::from_value(v).map(|r| serde_json::to_value(r).unwrap())
+        }),
+        ("examples/subscription-request", |v| {
+            SubscriptionRequest::from_value(v).map(|r| serde_json::to_value(r).unwrap())
+        }),
+    ];
+    for (dir, parse) in dirs {
+        let dir = root.join(dir);
+        if fixture_missing(&dir) {
+            continue;
+        }
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let v = read_json(&path);
+            let back = parse(&v).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            assert_eq!(back, v, "{} does not round-trip", path.display());
+        }
+    }
 }
 
 #[test]
@@ -2015,6 +2135,10 @@ fn pub_002_hash_mismatch_rejected_by_validator() {
             max_embedded_bytes: 65_536,
             idempotency_key_ttl_seconds: None,
             max_publish_per_minute: None,
+            change_retention_seconds: None,
+            max_change_filters: None,
+            max_changes_page: None,
+            max_subscriptions_per_requester: None,
         },
         read_authentication_methods: vec![],
         anonymous_public_reads: true,
@@ -2288,6 +2412,10 @@ mod registry_behavior {
                 max_embedded_bytes: 65_536,
                 idempotency_key_ttl_seconds: None,
                 max_publish_per_minute: None,
+                change_retention_seconds: None,
+                max_change_filters: None,
+                max_changes_page: None,
+                max_subscriptions_per_requester: None,
             },
             read_authentication_methods: vec![],
             anonymous_public_reads,
@@ -2924,6 +3052,10 @@ fn dk_fixtures_did_key_rejections() {
                     max_embedded_bytes: 65_536,
                     idempotency_key_ttl_seconds: None,
                     max_publish_per_minute: None,
+                    change_retention_seconds: None,
+                    max_change_filters: None,
+                    max_changes_page: None,
+                    max_subscriptions_per_requester: None,
                 },
                 read_authentication_methods: vec![],
                 anonymous_public_reads: true,
@@ -3660,6 +3792,10 @@ mod idempotency_fixtures {
                     None
                 },
                 max_publish_per_minute: None,
+                change_retention_seconds: None,
+                max_change_filters: None,
+                max_changes_page: None,
+                max_subscriptions_per_requester: None,
             },
             read_authentication_methods: vec![],
             anonymous_public_reads: true,

@@ -48,6 +48,10 @@ pub fn caps() -> acdp::types::CapabilitiesDocument {
             max_embedded_bytes: 65_536,
             idempotency_key_ttl_seconds: None,
             max_publish_per_minute: None,
+            change_retention_seconds: None,
+            max_change_filters: None,
+            max_changes_page: None,
+            max_subscriptions_per_requester: None,
         },
         read_authentication_methods: vec![],
         anonymous_public_reads: true,
@@ -139,6 +143,11 @@ pub struct World {
     pub required_bearer: Arc<RwLock<Option<String>>>,
     /// `(path, Authorization header)` of every request, in order.
     pub auth_seen: AuthLog,
+    /// Queued `GET /changes` answers `(status, body)`, served in order;
+    /// when empty, an empty page at cursor `end`.
+    pub changes_queue: Arc<RwLock<std::collections::VecDeque<(u16, Value)>>>,
+    /// The raw query string of every `GET /changes`, in order.
+    pub changes_queries: Arc<RwLock<Vec<String>>>,
 }
 
 /// How the world's `/contexts/search` route answers.
@@ -170,6 +179,8 @@ impl World {
         let retrieved: Arc<RwLock<Vec<String>>> = Arc::default();
         let required_bearer: Arc<RwLock<Option<String>>> = Arc::default();
         let auth_seen: AuthLog = Arc::default();
+        let changes_queue: Arc<RwLock<std::collections::VecDeque<(u16, Value)>>> = Arc::default();
+        let changes_queries: Arc<RwLock<Vec<String>>> = Arc::default();
 
         let router = Router::new()
             .route(
@@ -280,6 +291,26 @@ impl World {
                 }),
             )
             .route(
+                "/changes",
+                get({
+                    let (queue, queries) = (changes_queue.clone(), changes_queries.clone());
+                    move |uri: axum::http::Uri| {
+                        let (queue, queries) = (queue.clone(), queries.clone());
+                        async move {
+                            queries
+                                .write()
+                                .unwrap()
+                                .push(uri.query().unwrap_or("").to_string());
+                            let (code, body) = queue.write().unwrap().pop_front().unwrap_or((
+                                200,
+                                json!({ "changes": [], "next_cursor": "end", "has_more": false }),
+                            ));
+                            (StatusCode::from_u16(code).unwrap(), Json(body)).into_response()
+                        }
+                    }
+                }),
+            )
+            .route(
                 "/lineages/{id}",
                 get({
                     let lineages = lineages.clone();
@@ -361,7 +392,22 @@ impl World {
             retrieved,
             required_bearer,
             auth_seen,
+            changes_queue,
+            changes_queries,
         }
+    }
+
+    /// Queue a `GET /changes` answer.
+    pub fn queue_changes(&self, status: u16, body: Value) {
+        self.changes_queue
+            .write()
+            .unwrap()
+            .push_back((status, body));
+    }
+
+    /// The query strings `GET /changes` was called with.
+    pub fn changes_queries(&self) -> Vec<String> {
+        self.changes_queries.read().unwrap().clone()
     }
 
     /// Gate reads behind `Authorization: Bearer <token>` (`None` = open).

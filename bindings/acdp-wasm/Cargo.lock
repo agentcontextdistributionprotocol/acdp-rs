@@ -127,6 +127,7 @@ dependencies = [
  "base64",
  "chrono",
  "hex",
+ "hmac",
  "serde",
  "serde_json",
  "sha2",

@@ -11,6 +11,7 @@
 pub mod anchor;
 pub mod body;
 pub mod capabilities;
+pub mod change;
 pub mod cosignature;
 pub mod data_ref;
 pub mod event_receipt;
@@ -32,6 +33,10 @@ pub use acdp_primitives::wire_error::{WireError, WireErrorBody};
 pub use anchor::AnchorEntry;
 pub use body::{Body, DataPeriod, FullContext, RegistryState, Signature};
 pub use capabilities::{CapabilitiesDocument, Limits};
+pub use change::{
+    Change, ChangeEvidence, ChangeHint, ChangeKind, ChangesResponse, Subscription,
+    SubscriptionRequest, SubscriptionStatus, WatchFilter,
+};
 pub use cosignature::{LogCosignature, WitnessSigner, WitnessedCheckpoint, COSIGNATURE_VERSION};
 pub use data_ref::{DataRef, DataRefType, EmbeddedContent, EmbeddedEncoding, Location};
 pub use event_receipt::EventReceipt;

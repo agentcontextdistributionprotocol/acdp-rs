@@ -20,12 +20,14 @@ registry receipts, offline `did:key` verification, a transparency log,
 witness cosigning, key revocation, and lifecycle/retraction events.
 
 > Spec: [agentcontextdistributionprotocol/agentcontextdistributionprotocol](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol)
-> — RFC-ACDP-0001 through 0016 (0009 reserved; see the spec's
+> — RFC-ACDP-0001 through 0018 (0009 reserved; see the spec's
 > [RFC index](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/README.md)).
 > This crate implements 0001–0008 (core + retrieval/lineage/search), 0010
 > (registry receipts), 0011 (lineage-head receipts), 0012 (transparency log),
 > 0013 (lifecycle/retraction), 0014 (key revocation), 0015 (witness
-> cosigning), and 0016 (typed external anchors, on the Draft line).
+> cosigning), and, on the Draft line, 0016 (typed external anchors), 0017
+> (offline chain verification) and 0018 (retraction recall: the changes
+> feed, change hints and the `acdp-consumer-recall` profile).
 
 This is a **Cargo workspace**: the umbrella `acdp` crate is a thin facade that
 re-exports a fine-grained set of crates under [`crates/`](./crates/)

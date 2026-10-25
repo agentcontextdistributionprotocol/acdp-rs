@@ -262,7 +262,7 @@ explicitly to `cargo-binstall` because `none` is not viable there — see the
 | `cargo-llvm-cov` | `cargo-llvm-cov@0.8.7` | `7c1105379b6217809b9ed26c163a46c65c7a528f` | `none` | `ci.yml` |
 | `cargo-fuzz` | `cargo-fuzz@0.11.2` | `82fc405565b9cf90abfe700ba43b4751ce2fe422` | `cargo-binstall`, unconditional — no `fallback` input exists at this SHA to disable it (known gap, see below) | `fuzz.yml` (build + run jobs) |
 | `cargo-vet` | `cargo-vet@0.10.2` | `c0ae9b92c15529ec87e792a1233f3f4a6c726bfa` | `cargo-binstall` (known gap, see below) | `ci.yml` |
-| `cargo-semver-checks` | `cargo-semver-checks@0.50.0` | `7b8d4719ee4aaa279bdf55df38dacb9ebfe12a6c` | `none` | `ci.yml` |
+| `cargo-semver-checks` | `cargo-semver-checks@0.50.0` | `7b8d4719ee4aaa279bdf55df38dacb9ebfe12a6c` | `none` | `semver.yml` |
 
 **Known gap — `cargo-vet@0.10.2`:** no `install-action` manifest, at any
 SHA, carries `cargo-vet` 0.10.2 — checked through the latest release,

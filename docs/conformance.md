@@ -31,6 +31,7 @@ and [`registries/profiles.md`](https://github.com/agentcontextdistributionprotoc
 | `tests/anchors.rs` | **0.5.0 Draft** | Typed external anchors (RFC-ACDP-0016), `anc-001..005`. |
 | `tests/store_contract.rs` | **Server** | Concurrency contract of the atomic publish commit. |
 | `tests/send_futures.rs` | **API** | Compile-only check that the affected public async entry points return `Send` futures. |
+| `tests/auto_traits.rs` | **API** | Compile-only guard for [`COMPATIBILITY.md`](../COMPATIBILITY.md): every public async fn returns a `Send` future, and public types are `Send + Sync`. |
 | `tests/body_materialization.rs` | **Server** | Field-transfer guard: every `PublishRequest` field survives `Body::from_publish_request`. |
 | `tests/negative_inputs.rs` | **API** | Error-path coverage: malformed identifiers, builder rule violations, oversize fields. |
 | `tests/facade_reexports.rs` | **API** | Locks in the umbrella crate's re-export surface. |

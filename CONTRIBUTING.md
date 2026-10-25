@@ -35,8 +35,10 @@ because the pure-core feature matrix lives on the facade.
 CI runs these on every PR, plus jobs you don't need to reproduce locally: the
 spec-fixture conformance run against a pinned spec checkout (with
 `ACDP_REQUIRE_CONFORMANCE=1`, so a missing fixture fails), MSRV, `cargo deny`,
-`cargo vet`, `cargo semver-checks` (advisory), and coverage. See
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) and
+`cargo vet`, `cargo semver-checks` (blocking; see
+[`COMPATIBILITY.md`](COMPATIBILITY.md) for how to ship a declared break), and
+coverage. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml),
+[`.github/workflows/semver.yml`](.github/workflows/semver.yml) and
 [`docs/conformance.md`](docs/conformance.md).
 
 Optional but recommended for crypto-sensitive changes:

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.15.1...acdp-v0.16.0) - 2026-10-25
+
+### Fixed
+
+- *(deps)* [**breaking**] crypto-bigint 0.7.6 + ctutils 0.4.5 + tokio 1.53.3 (RUSTSEC-2026-0385/0386/0387); MSRV 1.87 ([#407](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/407))
+- *(deps)* rustls-webpki 0.103.16 + webpki-roots 1.0.10 (RUSTSEC-2026-0381/0382); supply-chain doc fixes ([#404](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/404))
+
+### Other
+
+- *(semver)* make cargo-semver-checks blocking; auto-trait guards; COMPATIBILITY.md ([#406](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/406))
+
 ## [0.15.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.15.0...acdp-v0.15.1) - 2026-10-18
 
 ### Fixed

@@ -63,7 +63,7 @@ jobs:
       # no-op today (see #196).
       #
       # This pin is deliberately INDEPENDENT of both the workspace MSRV
-      # (1.86, Cargo.toml's `rust-version` / ci.yml's pinned MSRV job) and
+      # (1.87, Cargo.toml's `rust-version` / ci.yml's pinned MSRV job) and
       # every other job's floating `toolchain: stable` (including this
       # repo's own `bindings.yml` acdp-wasm CI job) — it exists solely for
       # reproducibility of the published npm artifact, not for MSRV

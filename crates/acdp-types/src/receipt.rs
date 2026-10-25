@@ -366,7 +366,11 @@ impl RegistryReceipt {
                 self.key_fingerprint
             )));
         }
-        if self.created_at.timestamp_subsec_nanos() % 1_000_000 != 0 {
+        if !self
+            .created_at
+            .timestamp_subsec_nanos()
+            .is_multiple_of(1_000_000)
+        {
             return Err(AcdpError::InvalidReceipt(
                 "receipt created_at is not millisecond-truncated (RFC-ACDP-0001 §5.3)".into(),
             ));
@@ -690,7 +694,11 @@ impl LineageHeadReceipt {
         now: DateTime<Utc>,
         max_clock_skew: chrono::Duration,
     ) -> Result<(), AcdpError> {
-        if self.as_of.timestamp_subsec_nanos() % 1_000_000 != 0 {
+        if !self
+            .as_of
+            .timestamp_subsec_nanos()
+            .is_multiple_of(1_000_000)
+        {
             return Err(AcdpError::InvalidReceipt(
                 "lineage_head_receipt as_of is not millisecond-truncated (RFC-ACDP-0001 §5.3)"
                     .into(),

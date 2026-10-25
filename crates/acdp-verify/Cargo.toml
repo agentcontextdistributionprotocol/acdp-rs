@@ -10,7 +10,7 @@ homepage    = "https://github.com/agentcontextdistributionprotocol/acdp-rs"
 documentation = "https://docs.rs/acdp-verify"
 keywords    = ["acdp", "verification", "signature", "did", "ed25519"]
 categories  = ["cryptography", "web-programming"]
-rust-version = "1.86"
+rust-version = "1.87"
 
 [features]
 # Enables the resolver-backed Verifier and publish-request verification

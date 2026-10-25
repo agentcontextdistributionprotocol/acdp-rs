@@ -200,8 +200,8 @@ pub fn verify_inclusion(
         if fnode % 2 == 1 || fnode == snode {
             // §9.1 step 5.2: the sibling is on the left.
             r = node_hash(p, &r);
-            if fnode % 2 == 0 {
-                while fnode % 2 == 0 && fnode != 0 {
+            if fnode.is_multiple_of(2) {
+                while fnode.is_multiple_of(2) && fnode != 0 {
                     fnode >>= 1;
                     snode >>= 1;
                 }
@@ -286,8 +286,8 @@ pub fn verify_consistency(
             // §9.2 step 5.2: node on the left of both subtrees.
             fr = node_hash(c, &fr);
             sr = node_hash(c, &sr);
-            if fnode % 2 == 0 {
-                while fnode % 2 == 0 && fnode != 0 {
+            if fnode.is_multiple_of(2) {
+                while fnode.is_multiple_of(2) && fnode != 0 {
                     fnode >>= 1;
                     snode >>= 1;
                 }

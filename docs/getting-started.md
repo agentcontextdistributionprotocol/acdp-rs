@@ -16,7 +16,7 @@ cargo add acdp --features server        # add the registry-side validator
 The `acdp` command-line tool is its own crate: `cargo install acdp-cli`
 (see [CLI](cli.md)).
 
-MSRV is **1.86**. The crate is `#![forbid(unsafe_code)]`.
+MSRV is **1.87**. The crate is `#![forbid(unsafe_code)]`.
 
 ### Which feature do I need?
 

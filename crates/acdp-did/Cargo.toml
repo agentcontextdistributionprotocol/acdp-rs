@@ -10,7 +10,7 @@ homepage    = "https://github.com/agentcontextdistributionprotocol/acdp-rs"
 documentation = "https://docs.rs/acdp-did"
 keywords    = ["acdp", "did", "did-web", "did-key", "identity"]
 categories  = ["cryptography", "web-programming"]
-rust-version = "1.86"
+rust-version = "1.87"
 
 [features]
 # Enables the HTTPS-backed `WebResolver` (reqwest + LRU cache + SSRF

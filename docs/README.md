@@ -1,6 +1,6 @@
 # acdp — Library Documentation
 
-**Crate**: `acdp` &nbsp;|&nbsp; **Protocol**: ACDP — the newest Final wire line is `acdp::ACDP_VERSION`; per-line status in the spec's [`VERSIONING.md`](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/VERSIONING.md) and [version matrix](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/docs/version-matrix.md) &nbsp;|&nbsp; **Language**: Rust (MSRV 1.86)
+**Crate**: `acdp` &nbsp;|&nbsp; **Protocol**: ACDP — the newest Final wire line is `acdp::ACDP_VERSION`; per-line status in the spec's [`VERSIONING.md`](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/VERSIONING.md) and [version matrix](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/docs/version-matrix.md) &nbsp;|&nbsp; **Language**: Rust (MSRV 1.87)
 
 This is the reference Rust implementation of the **Agent Context Distribution
 Protocol**. ACDP lets agents publish immutable, producer-signed context

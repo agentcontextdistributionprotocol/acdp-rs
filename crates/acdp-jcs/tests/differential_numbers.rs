@@ -47,7 +47,7 @@ fn apply_even_tie_rule(x: f64, s: String, n: i64) -> String {
     let k = s.len() as i64;
     let e = (n - k) as i32; // value = s_int × 10^e
     let v: u128 = s.parse().expect("digit string parses as an integer");
-    if v % 2 == 0 {
+    if v.is_multiple_of(2) {
         return s; // even already wins any tie
     }
     for cand in [v - 1, v + 1] {

@@ -10,7 +10,7 @@ homepage    = "https://github.com/agentcontextdistributionprotocol/acdp-rs"
 documentation = "https://docs.rs/acdp-safe-http"
 keywords    = ["acdp", "ssrf", "security", "http", "dns-rebinding"]
 categories  = ["network-programming", "web-programming"]
-rust-version = "1.86"
+rust-version = "1.87"
 
 [features]
 # Pulls in the reqwest-backed `SafeDnsResolver` and `pin_resolved_ip`

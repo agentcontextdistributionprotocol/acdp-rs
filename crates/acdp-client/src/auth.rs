@@ -33,7 +33,7 @@ use std::sync::{Arc, RwLock};
 use acdp_primitives::AcdpError;
 
 /// The boxed future an [`AuthProvider`] returns. Boxed because the trait
-/// is used as `dyn AuthProvider` and the MSRV (1.86) has no `async fn` in
+/// is used as `dyn AuthProvider` and the MSRV (1.87) has no `async fn` in
 /// object-safe traits.
 pub type AuthFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Option<BearerToken>, AcdpError>> + Send + 'a>>;

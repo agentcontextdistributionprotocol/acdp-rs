@@ -23,7 +23,7 @@ homepage      = "https://github.com/agentcontextdistributionprotocol/acdp-rs"
 documentation = "https://docs.rs/acdp"
 keywords      = ["acdp", "agent", "context", "did", "verifiable"]
 categories    = ["web-programming", "cryptography", "data-structures"]
-rust-version  = "1.86"
+rust-version  = "1.87"
 exclude       = [
     "/.github",
     "/target",

@@ -58,7 +58,7 @@ pr_labels = ["release"]
 #      a `fix:` commit (or a manual release), not just the bump.
 #
 # Lockstep is preserved: per release-plz's documented version_group behaviour,
-# one matching commit in any member releases the whole group, so the 13 crates
+# one matching commit in any member releases the whole group, so the 14 crates
 # still move together.
 release_commits = "^(feat|fix|perf)"
 
@@ -101,6 +101,9 @@ name = "acdp-validation"
 version_group = "acdp"
 [[package]]
 name = "acdp-verify"
+version_group = "acdp"
+[[package]]
+name = "acdp-chain"
 version_group = "acdp"
 [[package]]
 name = "acdp-producer"

@@ -199,6 +199,7 @@ acdp-crypto     = { path = "crates/acdp-crypto", version = "=0.16.0" }
 acdp-types      = { path = "crates/acdp-types", version = "=0.16.0" }
 acdp-validation = { path = "crates/acdp-validation", version = "=0.16.0" }
 acdp-verify     = { path = "crates/acdp-verify", version = "=0.16.0" }
+acdp-chain      = { path = "crates/acdp-chain", version = "=0.16.0" }
 acdp-producer   = { path = "crates/acdp-producer", version = "=0.16.0" }
 acdp-client     = { path = "crates/acdp-client", version = "=0.16.0", optional = true }
 acdp-server     = { path = "crates/acdp-server", version = "=0.16.0", optional = true }

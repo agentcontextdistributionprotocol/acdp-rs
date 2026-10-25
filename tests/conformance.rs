@@ -144,6 +144,9 @@ const KNOWN_FAMILIES: &[&str] = &[
     "body",
     "can",
     "caps",
+    // RFC-ACDP-0017 scenario fixtures: exercised by `crates/acdp-chain/tests/chain.rs`
+    // over bundles built from fixed seeds (see `chain_fixtures_each_have_tests`).
+    "chain",
     "cur",
     "data-ref",
     "data-ref-ssrf",
@@ -201,6 +204,35 @@ fn fixture_family_bucketing_prefers_longest_match() {
     assert_eq!(bucket_family("did-ssrf-001", &candidates), Some("did-ssrf"));
     assert_eq!(bucket_family("did-001", &candidates), Some("did"));
     assert_eq!(bucket_family("unrelated-001", &candidates), None);
+}
+
+/// Every `chain-NNN` fixture in the spec checkout has at least one
+/// `chain_NNN_*` test in `crates/acdp-chain/tests/chain.rs` (the chain
+/// fixtures are prose scenarios, so they are bound by name, not driven
+/// from the file).
+#[test]
+fn chain_fixtures_each_have_tests() {
+    let Some(root) = spec_root() else {
+        eprintln!("ACDP spec not found; skipping chain fixture binding test");
+        return;
+    };
+    let tests = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/acdp-chain/tests/chain.rs"),
+    )
+    .expect("crates/acdp-chain/tests/chain.rs readable");
+    let mut seen = 0;
+    for entry in std::fs::read_dir(root.join("schemas/conformance")).unwrap() {
+        let name = entry.unwrap().file_name().into_string().unwrap();
+        let Some(num) = name.strip_prefix("chain-").and_then(|r| r.get(..3)) else {
+            continue;
+        };
+        seen += 1;
+        assert!(
+            tests.contains(&format!("fn chain_{num}_")),
+            "{name} has no chain_{num}_* test in crates/acdp-chain/tests/chain.rs"
+        );
+    }
+    eprintln!("{seen} chain fixtures bound");
 }
 
 #[test]

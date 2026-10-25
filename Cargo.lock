@@ -6,6 +6,7 @@ version = 4
 name = "acdp"
 version = "0.16.0"
 dependencies = [
+ "acdp-chain",
  "acdp-client",
  "acdp-crypto",
  "acdp-did",
@@ -38,6 +39,27 @@ dependencies = [
  "urlencoding",
  "uuid",
  "wiremock",
+]
+
+[[package]]
+name = "acdp-chain"
+version = "0.16.0"
+dependencies = [
+ "acdp-crypto",
+ "acdp-did",
+ "acdp-jcs",
+ "acdp-primitives",
+ "acdp-producer",
+ "acdp-types",
+ "acdp-validation",
+ "acdp-verify",
+ "base64 0.23.1",
+ "chrono",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
 ]
 
 [[package]]

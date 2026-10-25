@@ -296,11 +296,32 @@ async fn verify_signature_envelope(
         )));
     }
 
-    // Step 5.5: algorithm-downgrade rejection (RFC-ACDP-0008 §3.9 +
-    // RFC-ACDP-0001 §5.11 step 6). When the verification method declares
-    // an algorithm via its `type` (or `publicKeyJwk` params), it MUST equal
-    // `signature.algorithm`. Otherwise an attacker could route an Ed25519
-    // key through a verifier that thinks it's checking some other algorithm.
+    // Steps 5.5–7 run against the located method.
+    verify_signature_with_method(method, signature, content_hash)
+}
+
+/// Steps 5.5–7 of RFC-ACDP-0001 §5.11 against an already-located
+/// verification method — the synchronous core shared by the
+/// resolver-backed envelope, the historical-key path, and offline
+/// callers that select the DID document themselves (RFC-ACDP-0017
+/// evidence bundles).
+///
+/// 1. Algorithm-downgrade rejection (RFC-ACDP-0008 §3.9): when the
+///    method declares an algorithm via its `type` (or `publicKeyJwk`
+///    params), it MUST equal `signature.algorithm`.
+/// 2. Signature verification over the ASCII bytes of `content_hash`.
+///
+/// Key *selection* (fragment lookup, `assertionMethod` authorization)
+/// is the caller's: this checks only that `method` produced
+/// `signature`.
+pub fn verify_signature_with_method(
+    method: &acdp_did::VerificationMethod,
+    signature: &Signature,
+    content_hash: &ContentHash,
+) -> Result<(), AcdpError> {
+    // Algorithm-downgrade rejection (RFC-ACDP-0008 §3.9 + RFC-ACDP-0001
+    // §5.11 step 6). Otherwise an attacker could route an Ed25519 key
+    // through a verifier that thinks it's checking some other algorithm.
     if let Some(declared) = method.declared_algorithm() {
         if declared != signature.algorithm {
             return Err(AcdpError::InvalidSignature(format!(
@@ -517,30 +538,7 @@ pub async fn verify_body_signature_historical_since(
     let method = doc
         .find_by_fragment(fragment)
         .expect("resolve_with_fragment guarantees the fragment");
-    if let Some(declared) = method.declared_algorithm() {
-        if declared != body.signature.algorithm {
-            return Err(AcdpError::InvalidSignature(format!(
-                "signature.algorithm '{}' does not match verification method type \
-                 (resolved key declares '{declared}')",
-                body.signature.algorithm
-            )));
-        }
-    }
-    match body.signature.algorithm.as_str() {
-        "ed25519" => verify_ed25519(
-            &method.ed25519_public_key_bytes()?,
-            &body.signature.value,
-            body.content_hash.as_str(),
-        ),
-        "ecdsa-p256" => verify_ecdsa_p256(
-            &method.ecdsa_p256_public_key_sec1()?,
-            &body.signature.value,
-            body.content_hash.as_str(),
-        ),
-        other => Err(AcdpError::UnsupportedAlgorithm(format!(
-            "verifier does not support signature algorithm '{other}'"
-        ))),
-    }
+    verify_signature_with_method(method, &body.signature, &body.content_hash)
 }
 
 // ── Context-identity binding (RFC-ACDP-0006 §4.1 step 7) ─────────────────────
@@ -609,7 +607,12 @@ pub fn verify_ctx_id_binding(served_ctx_id: &str, expected_ctx_id: &str) -> Resu
 ///    be signed; an unsigned registry event is attributable only as far
 ///    as transport and cannot be *verified* — callers that tolerate it
 ///    check `event.is_signed()` before calling here).
-fn lifecycle_event_prechecks(
+///
+/// Returns the parsed event and its preimage hash (the signing input).
+/// Signature verification is the caller's: [`verify_lifecycle_event`]
+/// resolves the actor's DID; offline callers holding a DID document use
+/// [`verify_signature_with_method`].
+pub fn lifecycle_event_prechecks(
     raw_event: &serde_json::Value,
     expected_ctx_id: &CtxId,
     producer_did: &AgentDid,

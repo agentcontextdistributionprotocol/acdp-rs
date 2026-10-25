@@ -60,6 +60,10 @@ fn caps_at(version: &str) -> CapabilitiesDocument {
             // (RFC-ACDP-0007 §3.2), which it is unconditionally below.
             idempotency_key_ttl_seconds: Some(86_400),
             max_publish_per_minute: None,
+            change_retention_seconds: None,
+            max_change_filters: None,
+            max_changes_page: None,
+            max_subscriptions_per_requester: None,
         },
         read_authentication_methods: vec![],
         anonymous_public_reads: true,

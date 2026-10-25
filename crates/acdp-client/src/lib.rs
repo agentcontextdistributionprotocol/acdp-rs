@@ -10,6 +10,7 @@ pub mod auth;
 pub mod cross_registry;
 pub mod data_ref;
 pub mod log;
+pub mod recall;
 pub mod receipt;
 pub mod registry;
 pub mod revocation;
@@ -25,9 +26,13 @@ pub use data_ref::{
     fetch_and_verify_data_ref, DataRefFetcher, HttpsDataRefFetcher, DEFAULT_MAX_BYTES,
 };
 pub use log::{verify_log_checkpoint_value, verify_log_inclusion_value};
+pub use recall::{
+    verify_change, ChangeEffect, ChangeFeed, ChangeVerdict, HeldContext, LifecycleSource,
+    SeenChanges, Since,
+};
 pub use receipt::{
-    verify_lineage_head_receipt_value, verify_receipt_value, verify_receipt_value_since,
-    verify_receipt_value_with_status_since,
+    verify_event_receipt_value, verify_lineage_head_receipt_value, verify_receipt_value,
+    verify_receipt_value_since, verify_receipt_value_with_status_since,
 };
 pub use registry::{RegistryClient, RegistryClientBuilder, ACDP_ACCEPT};
 pub use revocation::{

@@ -158,6 +158,22 @@ Advisories: cargo deny check clean after the bump, 2026-10-24.
 Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance (the advisory fix is a constant-time fix; that the generated code is now branch-free is upstream's claim).
 Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/crypto-bigint-0.7.6.md."""
 
+[[audits.crypto-bigint]]
+who = "Ajit Koti <ajitkoti@zer07labs.com>"
+criteria = "safe-to-deploy"
+delta = "0.7.6 -> 0.7.9"
+notes = """
+Scope: delta 0.7.6 -> 0.7.9 (10 files, +199/-34 per scripts/vet-facts.sh; 233 changed / 46747 src lines = 0.00, so delta per the #322 method rule); every hunk of the src/ and metadata diff read. Base 0.7.6 audited 2026-10-24 (delta, RUSTSEC-2026-0387).
+Source: crates.io tarball sha256 d811ea23fdfbcce2e2d5132344d471abdb8f901ac496a0893a3df92e70525e52 == Cargo.lock checksum (root and py/node/wasm binding locks); base 6bb08299a6046833a879ace115697f12fd2bd6c8d3e93c909ffc9e0738e7cae0 == crates.io index cksum.
+Why now: upstream yanked 0.7.5-0.7.8 (0.7.9 CHANGELOG: breaking NonZero<T> Mul blanket impl, #1373), which turned cargo deny's yanked check red on the binding locks.
+Change: mul_mod_special (Uint and BoxedUint) widens before adding 1 to the carry (carry can be Limb::MAX; previously overflowed) and handles c = 0 with a nonzero placeholder divisor plus a constant-time Limb::select of the wrapping product (#1368); safegcd/boxed no longer truncates the inverse to the input's precision (invert_odd_mod with a wider modulus, #1367); Montgomery mul carry bit taken from Choice::to_u8 instead of a wide mask (same value, 0/1); PrimeParams::new_vartime computes t = (p-1)/2^s once with shr_vartime (public input) (#1372); NonZero<T> ConstOne/One/Mul bounds tightened to T: Integer (API-only, #1373). New tests only otherwise.
+unsafe: 14 sites, the same 14 as 0.7.6; no unsafe line or adjacent hunk changed (non_zero.rs edits are imports and trait bounds, away from the line-120 cast). asm/SIMD: none. build.rs / proc-macro: none.
+Panics added (safe code): none; the LIMBS == 1 path dropped NonZero::new_unwrap on Limb::ZERO - c (which panicked for c = 0).
+New deps: none. ACDP features unchanged (getrandom, hybrid-array, rand_core, subtle, zeroize; alloc off, so the boxed/* hunks are not compiled). Workspace and node/wasm bindings build unchanged against 0.7.9.
+Advisories: cargo deny check clean after the bump, 2026-10-25.
+Not claimed: cryptographic correctness, constant-time behaviour, side-channel resistance.
+Method: Reviewed with Claude (Opus) assistance; worksheet in supply-chain/worksheets/crypto-bigint-0.7.9.md."""
+
 [[audits.crypto-common]]
 who = "Ajit Koti <ajitkoti@zer07labs.com>"
 criteria = "safe-to-deploy"

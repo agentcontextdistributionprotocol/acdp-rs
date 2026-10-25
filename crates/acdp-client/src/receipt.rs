@@ -347,3 +347,75 @@ pub async fn verify_lineage_head_receipt_value(
 
     Ok(receipt)
 }
+
+/// Verify an `acdp-event-receipt/1` value end-to-end (RFC-ACDP-0017
+/// §10.3) for the lifecycle event `raw_event` at position `index` of
+/// context `ctx_id`, whose origin registry is `origin_registry` and whose
+/// body was created at `created_at`:
+///
+/// 1. Closed parse (an unknown member is `invalid_receipt`).
+/// 2. Steps 2–6 and 9: [`EventReceipt::check_binding`] — registry DID,
+///    `ctx_id`, `event_id`, `index`, the recomputed `event_hash`, and
+///    `accepted_at` not before `created_at`.
+/// 3. Step 7: resolve the registry's receipt key (in `verificationMethod`;
+///    retired keys stay verifiable) and verify the signature over the
+///    receipt exactly as received.
+///
+/// Step 8 (cross-receipt `accepted_at` ordering) needs the neighbouring
+/// receipts and is the caller's. Failures are [`AcdpError::InvalidReceipt`]
+/// except DID-resolution transport failures, which keep their
+/// transient/permanent classification.
+///
+/// [`EventReceipt::check_binding`]: acdp_types::EventReceipt::check_binding
+#[allow(clippy::too_many_arguments)]
+pub async fn verify_event_receipt_value(
+    value: &serde_json::Value,
+    origin_registry: &str,
+    ctx_id: &CtxId,
+    raw_event: &serde_json::Value,
+    index: u64,
+    created_at: chrono::DateTime<chrono::Utc>,
+    resolver: &WebResolver,
+    since: std::time::Instant,
+) -> Result<(acdp_types::EventReceipt, ReceiptKeyStatus), AcdpError> {
+    use acdp_types::EventReceipt;
+    let receipt = EventReceipt::from_value(value)?;
+    receipt.check_binding(origin_registry, ctx_id, raw_event, index, created_at)?;
+    let key_id = &receipt.signature.key_id;
+    let (did_part, fragment) = key_id
+        .split_once('#')
+        .filter(|(did, _)| *did == receipt.registry_did)
+        .ok_or_else(|| {
+            AcdpError::InvalidReceipt(format!(
+                "event receipt signature.key_id '{key_id}' is not a DID URL under registry_did \
+                 '{}'",
+                receipt.registry_did
+            ))
+        })?;
+    let (doc, key_status) =
+        resolve_receipt_key_with_status(did_part, fragment, resolver, since).await?;
+    let method = doc
+        .find_by_fragment(fragment)
+        .expect("resolve_receipt_key_with_status guarantees the fragment");
+    let raw_hash = EventReceipt::preimage_hash_of_value(value)?;
+    match receipt.signature.algorithm.as_str() {
+        "ed25519" => {
+            let key = method
+                .ed25519_public_key_bytes()
+                .map_err(|e| AcdpError::InvalidReceipt(format!("receipt key extraction: {e}")))?;
+            receipt.verify_signature_against_hash(&raw_hash, Some(&key), None)?;
+        }
+        "ecdsa-p256" => {
+            let key = method
+                .ecdsa_p256_public_key_sec1()
+                .map_err(|e| AcdpError::InvalidReceipt(format!("receipt key extraction: {e}")))?;
+            receipt.verify_signature_against_hash(&raw_hash, None, Some(&key))?;
+        }
+        other => {
+            return Err(AcdpError::InvalidReceipt(format!(
+                "event receipt signature algorithm '{other}' is not supported"
+            )));
+        }
+    }
+    Ok((receipt, key_status))
+}

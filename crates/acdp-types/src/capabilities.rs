@@ -126,4 +126,46 @@ pub struct Limits {
         deserialize_with = "crate::serde_helpers::de_present"
     )]
     pub max_publish_per_minute: Option<u64>,
+
+    /// *(0.5.0, Draft)* How long `GET /changes` entries, and cursors
+    /// pointing at them, are retained, in seconds (≥ 2592000, 30 days).
+    /// MUST be present with `acdp-registry-changes` (RFC-ACDP-0018 §5.4,
+    /// §9).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::serde_helpers::de_present"
+    )]
+    pub change_retention_seconds: Option<u64>,
+
+    /// *(0.5.0, Draft)* Maximum total `ctx_id`/`lineage_id`/`agent_id`/
+    /// `kind` values in one `GET /changes` request or subscription filter
+    /// (≥ 100). MUST be present with `acdp-registry-changes`
+    /// (RFC-ACDP-0018 §5.1, §9).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::serde_helpers::de_present"
+    )]
+    pub max_change_filters: Option<u64>,
+
+    /// *(0.5.0, Draft)* Largest `GET /changes` `limit` the registry
+    /// accepts (≥ 100). MUST be present with `acdp-registry-changes`
+    /// (RFC-ACDP-0018 §5.1, §9).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::serde_helpers::de_present"
+    )]
+    pub max_changes_page: Option<u64>,
+
+    /// *(0.5.0, Draft)* Maximum change-hint subscriptions one requester
+    /// DID may hold (≥ 1). MUST be present with `acdp-registry-events`
+    /// (RFC-ACDP-0018 §8.1, §9).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::serde_helpers::de_present"
+    )]
+    pub max_subscriptions_per_requester: Option<u64>,
 }

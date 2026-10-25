@@ -846,6 +846,7 @@ mod tests {
         let _state = RegistryState {
             status: Status::Active,
             lifecycle_events: None,
+            event_receipts: None,
             extensions: Default::default(),
         };
 
@@ -919,6 +920,7 @@ mod tests {
         let _state = RegistryState {
             status: Status::Active,
             lifecycle_events: None,
+            event_receipts: None,
             extensions: Default::default(),
         };
 
@@ -986,6 +988,7 @@ mod tests {
         let _state = RegistryState {
             status: Status::Active,
             lifecycle_events: None,
+            event_receipts: None,
             extensions: Default::default(),
         };
 

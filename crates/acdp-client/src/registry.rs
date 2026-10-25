@@ -670,6 +670,40 @@ impl RegistryClient {
             .map(|(v, _)| v)
     }
 
+    // ── Changes feed (RFC-ACDP-0018) ─────────────────────────────────────────
+
+    /// One page of the registry's changes feed (`GET /changes`,
+    /// RFC-ACDP-0018 §5): the entries after `since` that match `filter`,
+    /// at most `limit` of them (the registry default, 100, when `None`).
+    ///
+    /// The response is checked against the closed schema (every entry,
+    /// cursor bounds, ascending `seq`), not verified: each entry is a
+    /// hint until [`crate::recall::verify_change`] passes. A cursor older
+    /// than the registry's retention is [`AcdpError::CursorExpired`]: the
+    /// consumer has missed an unknown set of entries, must re-verify every
+    /// watched context directly, then resume from [`crate::Since::Head`]
+    /// (§7 "Resync"). Body capped at 1 MB.
+    pub async fn changes(
+        &self,
+        since: &crate::recall::Since,
+        filter: &acdp_types::change::WatchFilter,
+        limit: Option<u32>,
+    ) -> Result<acdp_types::change::ChangesResponse, AcdpError> {
+        let url = format!("{}/changes", self.base);
+        let mut query = filter.query_pairs();
+        if let Some(s) = since.as_query() {
+            query.push(("since", s.to_owned()));
+        }
+        if let Some(l) = limit {
+            query.push(("limit", l.to_string()));
+        }
+        let resp = self.send_read(self.http.get(&url).query(&query)).await?;
+        let (value, _) = self
+            .parse_success::<serde_json::Value>(resp, MAX_CONTEXT_BYTES)
+            .await?;
+        acdp_types::change::ChangesResponse::from_value(&value)
+    }
+
     // ── Discovery ────────────────────────────────────────────────────────────
 
     /// Keyword search across the registry.

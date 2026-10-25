@@ -12,8 +12,8 @@ keywords    = ["acdp", "verification", "provenance", "audit", "evidence"]
 categories  = ["cryptography", "data-structures"]
 rust-version = "1.87"
 
-# Pure: no HTTP stack, no async runtime, no clock. The online collector
-# (`collect_evidence` / `verify_chain_online`) lives in acdp-client.
+# Pure: no HTTP stack, no async runtime, no clock. Callers collect the
+# evidence bundle themselves; there is no online collector yet.
 [dependencies]
 acdp-primitives = { path = "../acdp-primitives", version = "=0.16.1" }
 acdp-jcs        = { path = "../acdp-jcs", version = "=0.16.1" }

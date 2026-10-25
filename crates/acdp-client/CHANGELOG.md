@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-client-v0.15.1...acdp-client-v0.16.0) - 2026-10-25
+
+### Fixed
+
+- *(deps)* [**breaking**] crypto-bigint 0.7.6 + ctutils 0.4.5 + tokio 1.53.3 (RUSTSEC-2026-0385/0386/0387); MSRV 1.87 ([#407](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/407))
+
 ## [0.15.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-client-v0.15.0...acdp-client-v0.15.1) - 2026-10-18
 
 ### Fixed

@@ -356,7 +356,14 @@ impl Engine<'_, '_> {
                 )
             }
             Ok(_) | Err(Missing::Malformed) => invalid(None),
-            Err(Missing::NoEvidence) => invalid(pass.no_evidence_reason()),
+            // §7.5: `no_evidence_at_as_of` only when the registry's
+            // snapshots all postdate T; none at all is a bare invalid.
+            Err(Missing::NoEvidence) => match pass {
+                PassAt::AsOf(t) if self.keys.only_after(&r.registry_did, t) => {
+                    invalid(pass.no_evidence_reason())
+                }
+                _ => invalid(None),
+            },
         }
     }
 
@@ -602,18 +609,24 @@ impl Engine<'_, '_> {
         let registry_did = acdp_did::web::authority_to_did_web(&body.origin_registry);
         let n = pc.events.len();
 
-        // §10.3 steps 2–7, per receipt position.
+        // §10.3 steps 2–7 and 9, per receipt position. Step 9 (accepted
+        // at or after the context's created_at) is per-receipt, so a
+        // receipt failing it is absent before step 8 compares pairs.
         let mut accepted: Vec<Option<DateTime<Utc>>> = vec![None; n];
         for (j, (r, raw)) in pc.event_receipts.iter().enumerate() {
             if j >= n {
                 continue;
             }
-            let (event, raw_event) = &pc.events[j];
-            let ok = r.registry_did == registry_did
-                && r.ctx_id == body.ctx_id
-                && r.event_id == event.event_id
-                && r.index == j as u64
-                && EventReceipt::event_hash_of_value(raw_event).is_ok_and(|h| h == r.event_hash)
+            let (_, raw_event) = &pc.events[j];
+            let ok = r
+                .check_binding(
+                    &body.origin_registry,
+                    &body.ctx_id,
+                    raw_event,
+                    j as u64,
+                    body.created_at,
+                )
+                .is_ok()
                 && EventReceipt::preimage_hash_of_value(raw).is_ok_and(|hash| {
                     self.keys
                         .check(&r.signature, &hash, &registry_did, pass.t())
@@ -716,18 +729,22 @@ impl Engine<'_, '_> {
             reason: None,
         };
         let producer = body.agent_id.as_str();
+        // §7.9 scope. A registry-attested revocation must come from the
+        // node's origin registry or the registry that receipted it
+        // (RFC-ACDP-0014 §6); a verified receipt here is always minted by
+        // `did:web:<origin_registry>` (§7.5), so the two coincide.
         let node_registry = acdp_did::web::authority_to_did_web(&body.origin_registry);
         let in_scope: Vec<&AppliedRevocation> = revocations
             .iter()
             .filter(|a| {
                 let r = &a.revocation;
-                match r.trust_class {
-                    RevocationTrustClass::ProducerSigned => r.publisher.as_str() == producer,
-                    RevocationTrustClass::RegistryAttested => {
-                        r.revoked_key_controller.as_str() == producer
-                            && r.publisher.as_str() == node_registry
+                r.revoked_key_controller.as_str() == producer
+                    && match r.trust_class {
+                        RevocationTrustClass::ProducerSigned => r.publisher.as_str() == producer,
+                        RevocationTrustClass::RegistryAttested => {
+                            r.publisher.as_str() == node_registry
+                        }
                     }
-                }
             })
             .collect();
 
@@ -755,27 +772,28 @@ impl Engine<'_, '_> {
                     };
                     rank(a).cmp(&rank(b))
                 });
-            let Some(fixing) = fixing else {
-                return KeyRevocationStage {
-                    basis: Some(Basis::Registry),
-                    ..stage(KeyRevocationValue::NotRevoked)
+            if let Some(fixing) = fixing {
+                let value = match &basic.receipt {
+                    None => KeyRevocationValue::Unplaceable,
+                    Some(r) if r.key_status == KeyStatus::Historical => {
+                        KeyRevocationValue::Unplaceable
+                    }
+                    Some(r) if r.created_at < fixing.revocation.compromised_since => {
+                        KeyRevocationValue::PreCompromise
+                    }
+                    Some(_) => KeyRevocationValue::Revoked,
                 };
-            };
-            let value = match &basic.receipt {
-                None => KeyRevocationValue::Unplaceable,
-                Some(r) if r.key_status == KeyStatus::Historical => KeyRevocationValue::Unplaceable,
-                Some(r) if r.created_at < fixing.revocation.compromised_since => {
-                    KeyRevocationValue::PreCompromise
-                }
-                Some(_) => KeyRevocationValue::Revoked,
-            };
-            return KeyRevocationStage {
-                value,
-                revocation_ctx_id: Some(fixing.ctx_id.clone()),
-                basis: Some(Basis::Registry),
-                evidence_time: fixing.evidence_time.map(fmt_ts),
-                reason: None,
-            };
+                return KeyRevocationStage {
+                    value,
+                    revocation_ctx_id: Some(fixing.ctx_id.clone()),
+                    basis: Some(Basis::Registry),
+                    evidence_time: fixing.evidence_time.map(fmt_ts),
+                    reason: None,
+                };
+            }
+            // Revocations that name other keys prove nothing about this
+            // one: the bundle is untrusted and may omit the revoking
+            // context. Only discovery decides not-revoked (§7.9).
         }
 
         let deciding = self
@@ -884,10 +902,7 @@ fn finish(stages: Stages, undated: bool) -> Pass {
         });
     let unknown = matches!(
         s.presence.value,
-        PresenceValue::Withheld
-            | PresenceValue::Unresolved
-            | PresenceValue::Absent
-            | PresenceValue::Truncated
+        PresenceValue::Withheld | PresenceValue::Unresolved | PresenceValue::Absent
     ) || s.key.as_ref().is_some_and(|x| x.value == KeyValue::Unknown)
         || s.key_revocation
             .as_ref()

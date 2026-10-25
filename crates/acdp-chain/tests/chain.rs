@@ -1031,6 +1031,23 @@ fn chain_009_f_wrong_registry_is_absent() {
     assert_receipt0_absent(&v);
 }
 
+#[test]
+fn chain_009_g_accepted_before_created_at_is_absent() {
+    // §10.3 step 9: B was created 09-02; a receipt accepting e0 on 09-01
+    // is treated as absent (not invalid).
+    let v = run(
+        &['a'],
+        &chain_009_bundle(|e0, e1| {
+            vec![
+                event_receipt('b', e0, 0, "2026-09-01T00:00:00.000Z"),
+                event_receipt('b', e1, 1, "2026-09-06T00:00:00.000Z"),
+            ]
+        }),
+        &Options::as_of(t()),
+    );
+    assert_receipt0_absent(&v);
+}
+
 // ── chain-010 ────────────────────────────────────────────────────────────────
 
 #[test]
@@ -1118,6 +1135,125 @@ fn chain_010_f_timeout() {
         v.chain.latest >= Verdict::Unknown,
         "an incomplete walk is at best unknown"
     );
+}
+
+// ── 5f rulings on RFC-ACDP-0017 (spec 093279a) ──────────────────────────────
+
+#[test]
+fn receipt_without_registry_snapshot_is_invalid_without_reason() {
+    // §7.5: no registry snapshot at all is a bare `invalid`, in both passes.
+    let mut e = chain_001_bundle();
+    e.did_documents = None;
+    let v = run(&['a'], &e, &Options::as_of(t()));
+    for p in [as_of(node(&v, 'a')), &node(&v, 'a').latest] {
+        let r = p.stages.registry_receipt.as_ref().unwrap();
+        assert_eq!(
+            (r.value, r.reason.as_deref()),
+            (ReceiptValue::Invalid, None)
+        );
+    }
+}
+
+#[test]
+fn receipt_with_registry_snapshot_only_after_t_lacks_evidence_as_of() {
+    let mut e = chain_001_bundle();
+    e.did_documents = None;
+    add_snapshot(
+        &mut e,
+        REGISTRY_DID,
+        registry_doc(),
+        "2026-10-02T00:00:00.000Z",
+    );
+    let v = run(&['a'], &e, &Options::as_of(t()));
+    let a = node(&v, 'a');
+    let r = as_of(a).stages.registry_receipt.as_ref().unwrap();
+    assert_eq!(
+        (r.value, r.reason.as_deref()),
+        (ReceiptValue::Invalid, Some("no_evidence_at_as_of"))
+    );
+    assert_eq!(
+        a.latest.stages.registry_receipt.as_ref().unwrap().value,
+        ReceiptValue::Ok
+    );
+}
+
+#[test]
+fn revocation_naming_another_key_does_not_prove_not_revoked() {
+    // §7.9: an in-scope revocation of key-2 says nothing about key-1;
+    // with no discovery record key-1's revocation state is unknown.
+    let k1 = Signer::web(KEY1, "key-1");
+    let mut e = bundle();
+    put(
+        &mut e,
+        'a',
+        receipted(&k1, 'a', &[], "2026-09-20T00:00:00.000Z"),
+    );
+    put(
+        &mut e,
+        'e',
+        revocation(
+            &k1,
+            'e',
+            &KEY2,
+            "2026-09-01T00:00:00.000Z",
+            "2026-09-25T00:00:00.000Z",
+        ),
+    );
+    add_snapshot(
+        &mut e,
+        WEB_PRODUCER,
+        did_doc(
+            WEB_PRODUCER,
+            &[("key-1", KEY1), ("key-2", KEY2)],
+            &["key-1", "key-2"],
+        ),
+        "2026-09-15T00:00:00.000Z",
+    );
+    let v = run(&['a'], &e, &Options::as_of(t()));
+    let a = node(&v, 'a');
+    for p in [as_of(a), &a.latest] {
+        assert_eq!(
+            p.stages.key_revocation.as_ref().unwrap().value,
+            KeyRevocationValue::Unknown
+        );
+    }
+    add_discovery(&mut e, WEB_PRODUCER, discovery("2026-09-30T00:00:00.000Z"));
+    let v = run(&['a'], &e, &Options::as_of(t()));
+    let kr = node(&v, 'a').latest.stages.key_revocation.clone().unwrap();
+    assert_eq!(
+        (kr.value, kr.basis),
+        (KeyRevocationValue::NotRevoked, Some(Basis::Observed))
+    );
+}
+
+#[test]
+fn conflicting_pinned_snapshots_are_invalid_options() {
+    let snap = |seed: [u8; 32]| {
+        PinnedSnapshot::new(
+            WEB_PRODUCER,
+            did_doc(WEB_PRODUCER, &[("key-1", seed)], &["key-1"]),
+            "2026-09-20T00:00:00.000Z",
+        )
+    };
+    let mut pinned = Pinned::default();
+    pinned.snapshots = vec![snap(KEY1), snap(KEY1)];
+    assert!(
+        pinned.check().is_ok(),
+        "an exact duplicate is just deduplicated"
+    );
+    pinned.snapshots = vec![snap(KEY1), snap(KEY2)];
+    let err = verify_chain(
+        &[ctx('a')],
+        &chain_007_bundle(true),
+        &Options::as_of(t()).with_pinned(pinned),
+    )
+    .unwrap_err();
+    assert!(matches!(err, ChainError::InvalidOptions(_)));
+}
+
+#[test]
+fn pinned_null_is_empty() {
+    assert_eq!(Pinned::from_value(&Value::Null).unwrap(), Pinned::default());
 }
 
 // ── options and bundle posture ───────────────────────────────────────────────

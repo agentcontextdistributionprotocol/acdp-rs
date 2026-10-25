@@ -99,6 +99,15 @@ impl BundleKeys {
             .max_by_key(|c| (c.time, c.pinned, c.index))
     }
 
+    /// True when the bundle (or pin set) has snapshots for `did` but
+    /// every one is dated after `at`: the evidence exists, just not as
+    /// of `at`.
+    pub(crate) fn only_after(&self, did: &str, at: DateTime<Utc>) -> bool {
+        self.by_did
+            .get(did)
+            .is_some_and(|c| !c.is_empty() && c.iter().all(|c| c.time > at))
+    }
+
     /// The DID document chosen for `did` in a pass, with its basis and
     /// evidence time. `None` when there is no evaluable snapshot.
     pub(crate) fn document(

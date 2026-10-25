@@ -223,8 +223,6 @@ value_enum!(
         Unresolved = "unresolved",
         /// Neither carried nor listed in `omitted`.
         Absent = "absent",
-        /// Reserved by the schema.
-        Truncated = "truncated",
         /// On a `derived_from` cycle.
         Cycle = "cycle",
         /// Receipted after T.

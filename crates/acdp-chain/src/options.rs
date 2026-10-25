@@ -115,10 +115,15 @@ pub struct Pinned {
 }
 
 impl Pinned {
-    /// Parse the JSON form, closed (§6.3). An empty array member is
+    /// Parse the JSON form, closed (§6.3); `null` is the empty pin set.
+    /// An empty array member is
     /// rejected here, as the schema's `minItems: 1` requires; build the
     /// struct directly to have empties dropped instead.
     pub fn from_value(value: &Value) -> Result<Self, ChainError> {
+        // `pinned: null` is equivalent to absent or `{}` (§6.3).
+        if value.is_null() {
+            return Ok(Pinned::default());
+        }
         let obj = value
             .as_object()
             .ok_or_else(|| options("pinned must be a JSON object"))?;
@@ -145,6 +150,21 @@ impl Pinned {
 
     /// Check every member's form.
     pub fn check(&self) -> Result<(), ChainError> {
+        // One DID pinned twice at one instant must carry one document;
+        // two different documents leave §6.2 selection undefined.
+        let mut at: std::collections::BTreeMap<(&str, &str), &Map<String, Value>> =
+            std::collections::BTreeMap::new();
+        for s in &self.snapshots {
+            if let Some(prev) = at.insert((&s.did, &s.instant), &s.document) {
+                if prev != &s.document {
+                    return Err(options(format!(
+                        "pinned snapshots for '{}' at {} carry different documents \
+                         (RFC-ACDP-0017 §6.3)",
+                        s.did, s.instant
+                    )));
+                }
+            }
+        }
         for s in &self.snapshots {
             if !is_did(&s.did) || s.did.starts_with("did:key:") {
                 return Err(options(format!(
@@ -182,15 +202,9 @@ impl Pinned {
             v
         }
         let mut snapshots = self.snapshots.clone();
-        // A full-object tiebreak keeps the order total when one DID is
-        // pinned twice at one instant with different documents.
-        snapshots.sort_by_cached_key(|s| {
-            (
-                s.did.clone(),
-                s.instant.clone(),
-                acdp_jcs::canonicalize(&s.document).unwrap_or_default(),
-            )
-        });
+        // `check` rejects one DID pinned at one instant with two
+        // documents, so (did, instant) orders totally.
+        snapshots.sort_by(|a, b| (&a.did, &a.instant).cmp(&(&b.did, &b.instant)));
         snapshots.dedup();
         Pinned {
             snapshots,

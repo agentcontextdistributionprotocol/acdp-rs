@@ -117,6 +117,51 @@ impl EventReceipt {
         ))
     }
 
+    /// RFC-ACDP-0017 §10.3 steps 2–6 and 9: the receipt binds the
+    /// lifecycle event at `index` of the context `ctx_id`, served from
+    /// `origin_registry` and created at `created_at`. The signature
+    /// (step 7) and the cross-receipt `accepted_at` ordering (step 8) are
+    /// separate: see [`Self::verify_signature_against_hash`]. A receipt
+    /// failing any step is treated as absent (§10.3).
+    pub fn check_binding(
+        &self,
+        origin_registry: &str,
+        ctx_id: &CtxId,
+        raw_event: &serde_json::Value,
+        index: u64,
+        created_at: DateTime<Utc>,
+    ) -> Result<(), AcdpError> {
+        let fail = |m: String| Err(AcdpError::InvalidReceipt(m));
+        let expected_did = acdp_did::web::authority_to_did_web(origin_registry);
+        if self.registry_did != expected_did {
+            return fail(format!(
+                "event receipt registry_did '{}' ≠ '{expected_did}' (§10.3 step 2)",
+                self.registry_did
+            ));
+        }
+        if &self.ctx_id != ctx_id {
+            return fail("event receipt ctx_id ≠ the context's (§10.3 step 3)".into());
+        }
+        if raw_event.get("event_id").and_then(|v| v.as_str()) != Some(self.event_id.as_str()) {
+            return fail("event receipt event_id ≠ the event's (§10.3 step 4)".into());
+        }
+        if self.index != index {
+            return fail(format!(
+                "event receipt index {} ≠ position {index} (§10.3 step 5)",
+                self.index
+            ));
+        }
+        if Self::event_hash_of_value(raw_event)? != self.event_hash {
+            return fail("event receipt event_hash does not recompute (§10.3 step 6)".into());
+        }
+        if self.accepted_at < created_at {
+            return fail(
+                "event receipt accepted_at precedes the context's created_at (§10.3 step 9)".into(),
+            );
+        }
+        Ok(())
+    }
+
     /// Preimage hash from the RAW wire JSON (the value minus
     /// `signature`). Verifiers MUST hash the receipt as received.
     pub fn preimage_hash_of_value(value: &serde_json::Value) -> Result<ContentHash, AcdpError> {
@@ -261,6 +306,117 @@ mod tests {
             parsed.event_hash,
             EventReceipt::event_hash_of_value(&event()).unwrap()
         );
+    }
+
+    #[test]
+    fn check_binding_covers_steps_2_to_6_and_9() {
+        let ctx = CtxId::parse(CTX).unwrap();
+        let created = DateTime::parse_from_rfc3339("2026-09-01T00:00:00.000Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let r = signer()
+            .mint_event_receipt(&ctx, &event(), 0, accepted())
+            .unwrap();
+        r.check_binding("registry.example.com", &ctx, &event(), 0, created)
+            .unwrap();
+        // Step 2: another registry.
+        assert!(r
+            .check_binding("other.example.com", &ctx, &event(), 0, created)
+            .is_err());
+        // Step 3: another context.
+        let other =
+            CtxId::parse("acdp://registry.example.com/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+                .unwrap();
+        assert!(r
+            .check_binding("registry.example.com", &other, &event(), 0, created)
+            .is_err());
+        // Step 5: another position.
+        assert!(r
+            .check_binding("registry.example.com", &ctx, &event(), 1, created)
+            .is_err());
+        // Steps 4 and 6: another event.
+        let mut changed = event();
+        changed["occurred_at"] = "2026-10-03T00:00:00.001Z".into();
+        assert!(r
+            .check_binding("registry.example.com", &ctx, &changed, 0, created)
+            .is_err());
+        changed = event();
+        changed["event_id"] = "018f6d0a-7b2e-4c4d-9e1f-3a5b7c9d1e30".into();
+        assert!(r
+            .check_binding("registry.example.com", &ctx, &changed, 0, created)
+            .is_err());
+        // Step 9: accepted before the context was created.
+        let later = accepted() + chrono::Duration::days(1);
+        assert!(r
+            .check_binding("registry.example.com", &ctx, &event(), 0, later)
+            .is_err());
+    }
+
+    #[test]
+    fn registry_state_event_receipts_round_trip() {
+        use crate::body::RegistryState;
+        let r = signer()
+            .mint_event_receipt(&CtxId::parse(CTX).unwrap(), &event(), 0, accepted())
+            .unwrap();
+        let mut state: RegistryState =
+            serde_json::from_value(serde_json::json!({"status": "active"})).unwrap();
+        assert!(state.event_receipts().is_none());
+        state.set_event_receipts(vec![r.clone()]).unwrap();
+        let wire = serde_json::to_value(&state).unwrap();
+        assert_eq!(
+            wire["event_receipts"][0]["receipt_type"],
+            EVENT_RECEIPT_TYPE
+        );
+        let back: RegistryState = serde_json::from_value(wire).unwrap();
+        assert_eq!(back.event_receipts().unwrap().unwrap(), vec![r]);
+        // Omitted, never `[]`.
+        state.set_event_receipts(vec![]).unwrap();
+        assert!(serde_json::to_value(&state)
+            .unwrap()
+            .get("event_receipts")
+            .is_none());
+        // A malformed element surfaces as InvalidReceipt.
+        let bad: RegistryState = serde_json::from_value(
+            serde_json::json!({"status": "active", "event_receipts": [{"x": 1}]}),
+        )
+        .unwrap();
+        assert!(matches!(
+            bad.event_receipts(),
+            Some(Err(AcdpError::InvalidReceipt(_)))
+        ));
+    }
+
+    /// Regression: a fresh context from a lifecycle registry carries no
+    /// `lifecycle_events` (RFC-ACDP-0013 §4.1 omits the empty array), and
+    /// that means not retracted, not unknown.
+    #[test]
+    fn retraction_absent_events_from_lifecycle_registry_is_not_retracted() {
+        use crate::body::RegistryState;
+        let fresh: RegistryState =
+            serde_json::from_value(serde_json::json!({"status": "active"})).unwrap();
+        assert_eq!(fresh.retraction(true), Some(false));
+        assert_eq!(fresh.retraction(false), None);
+
+        let retracted_event = {
+            let mut e = event();
+            e["signature"] = serde_json::json!({
+                "algorithm": "ed25519",
+                "key_id": "did:web:registry.example.com#receipt-key-1",
+                "value": "AA=="
+            });
+            e
+        };
+        let state: RegistryState = serde_json::from_value(serde_json::json!({
+            "status": "active",
+            "lifecycle_events": [retracted_event]
+        }))
+        .unwrap();
+        assert_eq!(state.retraction(true), Some(true));
+        assert_eq!(state.retraction(false), Some(true));
+
+        let by_status: RegistryState =
+            serde_json::from_value(serde_json::json!({"status": "retracted"})).unwrap();
+        assert_eq!(by_status.retraction(false), Some(true));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use crate::anchor::AnchorEntry;
 use crate::data_ref::DataRef;
 use crate::serde_helpers::de_present;
+use acdp_primitives::error::AcdpError;
 use acdp_primitives::primitives::*;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -293,6 +294,56 @@ pub struct RegistryState {
 }
 
 impl RegistryState {
+    /// The `event_receipts` member (RFC-ACDP-0017 §10.2): registry-signed
+    /// acceptance receipts parallel to [`Self::lifecycle_events`],
+    /// carried in [`Self::extensions`] so the struct stays
+    /// semver-compatible. `None` when absent; each element is parsed with
+    /// the closed [`EventReceipt::from_value`](crate::EventReceipt::from_value).
+    pub fn event_receipts(&self) -> Option<Result<Vec<crate::EventReceipt>, AcdpError>> {
+        let v = self.extensions.get(EVENT_RECEIPTS)?;
+        Some(match v.as_array() {
+            Some(items) => items.iter().map(crate::EventReceipt::from_value).collect(),
+            None => Err(AcdpError::InvalidReceipt(
+                "registry_state.event_receipts is not an array".into(),
+            )),
+        })
+    }
+
+    /// Set (or, with an empty vector, remove) `event_receipts`. Like
+    /// `lifecycle_events`, the member is omitted rather than emitted as
+    /// `[]`.
+    pub fn set_event_receipts(
+        &mut self,
+        receipts: Vec<crate::EventReceipt>,
+    ) -> Result<(), AcdpError> {
+        if receipts.is_empty() {
+            self.extensions.remove(EVENT_RECEIPTS);
+        } else {
+            self.extensions
+                .insert(EVENT_RECEIPTS.into(), serde_json::to_value(receipts)?);
+        }
+        Ok(())
+    }
+
+    /// Retraction as a consumer can know it (RFC-ACDP-0013 §4.1, §7.1):
+    /// `Some(true)` retracted, `Some(false)` not retracted, `None`
+    /// unknown.
+    ///
+    /// A registry advertising `acdp-registry-lifecycle` MUST omit
+    /// `lifecycle_events` when there are none, so for such a registry an
+    /// absent member means no events: not retracted. Only a registry
+    /// that does not advertise lifecycle leaves the state unknown.
+    pub fn retraction(&self, registry_advertises_lifecycle: bool) -> Option<bool> {
+        if self.status.is_retracted() {
+            return Some(true);
+        }
+        match &self.lifecycle_events {
+            Some(_) => Some(self.is_retracted()),
+            None if registry_advertises_lifecycle => Some(false),
+            None => None,
+        }
+    }
+
     /// The context's **retraction state** (RFC-ACDP-0013 §7.1), derived
     /// from [`Self::lifecycle_events`]: retracted iff the last
     /// `retracted`/`republished` event in array order is `retracted`.
@@ -303,6 +354,9 @@ impl RegistryState {
             .is_some_and(crate::lifecycle::retraction_state)
     }
 }
+
+/// The `registry_state` member carrying event receipts.
+const EVENT_RECEIPTS: &str = "event_receipts";
 
 // ── Full retrieval envelope ───────────────────────────────────────────────────
 

@@ -323,6 +323,25 @@ async fn rec_006_f_out_of_scope_revocation_changes_nothing() {
         other => panic!("expected a verified revocation, got {other:?}"),
     }
 
+    // Served and entry receipts agree under JCS but the signature is
+    // forged: the served receipt must itself verify (RFC-ACDP-0010 §8).
+    let mut forged = serde_json::to_value(&receipt).unwrap();
+    let sig = forged["signature"]["value"].as_str().unwrap().to_owned();
+    let flipped = if sig.starts_with('A') { "B" } else { "A" };
+    forged["signature"]["value"] = json!(format!("{flipped}{}", &sig[1..]));
+    w.tamper(rev.body.ctx_id.as_str(), |v| {
+        v["registry_receipt"] = forged.clone()
+    });
+    let mut wire = serde_json::to_value(&in_scope).unwrap();
+    wire["registry_receipt"] = forged;
+    assert!(matches!(
+        rejected(&verify(&w, &Change::from_value(&wire).unwrap(), None).await),
+        AcdpError::InvalidReceipt(_)
+    ));
+    w.tamper(rev.body.ctx_id.as_str(), |v| {
+        v["registry_receipt"] = serde_json::to_value(&receipt).unwrap()
+    });
+
     // The entry claims the revocation affects another producer.
     let other = AgentDid::new("did:web:other.example.com");
     let out_of_scope = Change::key_revocation(1058, other, &receipt).unwrap();

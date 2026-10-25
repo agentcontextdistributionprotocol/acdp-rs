@@ -337,7 +337,8 @@ impl ChangeVerdict {
 /// - **`key_revocation`** — the revocation context is retrieved and
 ///   verified under RFC-ACDP-0014 §5 (including the historical-key arm)
 ///   or §6 (a registry-attested one must be published by this registry);
-///   the served receipt must equal the entry's; and the revocation must
+///   the served receipt must verify under RFC-ACDP-0010 §8 and equal the
+///   entry's under JCS; and the revocation must
 ///   speak for the entry's `agent_id` (§7 producer scope).
 ///
 /// `Ok(Rejected)` is a final verdict. `Err` means the entry could not be
@@ -630,23 +631,48 @@ async fn verify_key_revocation(
             format!("the revocation is in lineage {}", ctx.body.lineage_id),
         ));
     }
-    let revocation =
-        verify_revocation_candidate(&ctx, client, resolver, std::time::Instant::now()).await?;
+    let since = std::time::Instant::now();
+    let revocation = verify_revocation_candidate(&ctx, client, resolver, since).await?;
     if revocation.trust_class == RevocationTrustClass::RegistryAttested {
         let caps = client.capabilities().await?;
         revocation.cross_check_registry_binding(&authority, &caps.registry_did)?;
     }
     RegistryReceipt::from_value(raw_receipt)?;
-    let matches_entry = match &ctx.registry_receipt {
-        Some(served) => jcs_equal(served, raw_receipt)?,
-        None => false,
+    let Some(served) = ctx.registry_receipt.as_ref() else {
+        return Err(reject(
+            change,
+            "the revocation is served without a registry_receipt",
+        ));
     };
-    if !matches_entry {
+    if !jcs_equal(served, raw_receipt)? {
         return Err(reject(
             change,
             "the entry's registry_receipt is not the receipt served with the revocation",
         ));
     }
+    // The served receipt verifies under RFC-ACDP-0010 §8 on every arm
+    // (the producer-signed §5 path need not touch it), so JCS equality
+    // above makes the entry's copy verified too (RFC-ACDP-0018 §7 step 3).
+    // `content_hash` was recomputed and checked by the candidate pipeline.
+    let body = &ctx.body;
+    let producer_fp = acdp_crypto::fingerprint::fingerprint_for_key_id_since(
+        &body.signature.key_id,
+        &body.signature.algorithm,
+        resolver,
+        since,
+    )
+    .await?;
+    crate::receipt::verify_receipt_value_since(
+        served,
+        &body.ctx_id,
+        body,
+        &body.content_hash,
+        &producer_fp,
+        &authority,
+        resolver,
+        since,
+    )
+    .await?;
     let revocation = revocation.sourced(RevocationSource::Discovered { authority });
     if !revocation.speaks_for(change.agent_id()) {
         return Err(reject(

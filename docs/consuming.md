@@ -888,8 +888,8 @@ What `verify_change` checks, by kind:
 |---|---|
 | all | `recorded_at` and `ctx_id` agree with the evidence (`Change::check_consistency`), before any fetch. |
 | `lifecycle` | The event (RFC-ACDP-0013 §5) and its event receipt (RFC-ACDP-0017 §10.3, `verify_event_receipt_value`) both verify. The retraction state is re-derived over the **full** event list. A `HeldContext` stands in for re-retrieval only when it holds every earlier event. Otherwise the context is re-retrieved, and `lifecycle_events[index]` must equal the entry's event under JCS. |
-| `superseded` | `superseded_by` is retrieved and verified with its receipt required. Its `supersedes`, `lineage_id` and `agent_id` must be the entry's, and its receipt must be the entry's. |
-| `key_revocation` | The revocation is retrieved and verified under RFC-ACDP-0014 §5/§6, including the historical-key arm. A registry-attested revocation must be published by this registry. It must also speak for the entry's `agent_id` (§7 producer scope). |
+| `superseded` | `superseded_by` is retrieved and verified with its receipt required. Its `supersedes`, `lineage_id` and `agent_id` must be the entry's, and its verified receipt must equal the entry's under JCS. |
+| `key_revocation` | The revocation is retrieved and verified under RFC-ACDP-0014 §5/§6, including the historical-key arm. A registry-attested revocation must be published by this registry. The served receipt must verify under RFC-ACDP-0010 §8 and equal the entry's under JCS. The revocation must also speak for the entry's `agent_id` (§7 producer scope). |
 
 On `AcdpError::CursorExpired`, the consumer has missed an unknown set of
 entries. It must re-verify every watched context directly and then call

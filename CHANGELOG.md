@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.16.0...acdp-v0.16.1) - 2026-10-25
+
+### Added
+
+- *(chain)* acdp-chain — RFC-ACDP-0017 offline as-of chain verification ([#417](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/417))
+
 ## [0.16.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.15.1...acdp-v0.16.0) - 2026-10-25
 
 ### Fixed

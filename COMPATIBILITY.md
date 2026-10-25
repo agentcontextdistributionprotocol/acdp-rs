@@ -15,7 +15,7 @@ not by this page. This page covers the Rust API.
   documented under, including the historical `acdp::{types, crypto, did,
   client, registry, ...}` paths.
 - Cargo features, their names, and what the default feature set contains.
-- The minimum supported Rust version (MSRV), currently **1.86**.
+- The minimum supported Rust version (MSRV), currently **1.87**.
 
 Not covered:
 

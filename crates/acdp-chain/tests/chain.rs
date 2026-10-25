@@ -1217,7 +1217,8 @@ fn kats_reproduce() {
             std::fs::write(&path, &text).unwrap();
         }
         let pinned = std::fs::read_to_string(&path)
-            .unwrap_or_else(|_| panic!("{} missing; run with ACDP_UPDATE_KATS=1", path.display()));
+            .unwrap_or_else(|_| panic!("{} missing; run with ACDP_UPDATE_KATS=1", path.display()))
+            .replace("\r\n", "\n");
         assert_eq!(pinned, text, "{id} {scenario} drifted from its KAT");
         // The pinned evidence, parsed back, re-verifies to the same digests.
         let file: Value = serde_json::from_str(&pinned).unwrap();

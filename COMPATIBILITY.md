@@ -1,8 +1,8 @@
 # Compatibility promise
 
 This page says what a version number of the `acdp` crates promises, what
-counts as a breaking change, and how one ships. CI enforces it (see
-[How it is enforced](#how-it-is-enforced)).
+counts as a breaking change, and how one ships. See
+[How it is checked](#how-it-is-checked) for what CI does.
 
 Wire format and protocol semantics are owned by the ACDP specification and
 its [`VERSIONING.md`](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/VERSIONING.md),
@@ -25,6 +25,22 @@ Not covered:
 - The `acdp` CLI's human-readable output.
 - The language bindings (`bindings/`). They are versioned and released on
   their own.
+
+## Pre-adoption: breaking changes allowed in any minor release
+
+The crates have no external dependents yet. Until that changes, **any
+minor release may contain breaking changes**, and nothing is deprecated
+first: a cleaner API wins over keeping an old one. Breaking changes still
+never ship in a patch release, they are still marked with `!`, and the
+changelog still says what to change.
+
+`cargo-semver-checks` reports breaks on every PR, but only as advice: it
+does not block a merge. The auto-trait guard is different and stays
+required: a public future losing `Send` is a correctness bug for async
+consumers, not a compatibility question.
+
+When the crates gain external dependents, this section will be removed
+and the deprecation rules below will apply again.
 
 ## Version numbers
 
@@ -90,10 +106,13 @@ Not breaking:
 
 If `cargo-semver-checks` reports something that is not actually a break
 (for example, an item moved to another crate and re-exported at the same
-path), a maintainer adds the `semver-checks-override` label and says why in
-the PR description.
+path), say so in the PR description. The report does not block the merge.
 
 ## Deprecation
+
+Suspended while the crates are pre-adoption (see above): a public item
+can be removed or changed in the next minor release without a
+deprecation period. Once there are external dependents, this applies:
 
 Before a public item is removed, it is marked `#[deprecated]` with a note
 naming its replacement. It stays for at least **one full minor release
@@ -110,12 +129,12 @@ The MSRV only moves in a minor release, never in a patch. A new MSRV is
 a Rust release that has been stable for at least six months. CI builds the
 whole workspace on the MSRV toolchain.
 
-## How it is enforced
+## How it is checked
 
 | Check | Where | What it catches |
 |---|---|---|
-| `cargo-semver-checks` (required) | [`.github/workflows/semver.yml`](.github/workflows/semver.yml), decision in [`scripts/semver-gate.sh`](scripts/semver-gate.sh) | API breaks against the last release on crates.io, including auto-trait changes on public types. An undeclared break fails the PR. |
-| Auto-trait guard | [`tests/auto_traits.rs`](tests/auto_traits.rs), [`tests/send_futures.rs`](tests/send_futures.rs) | A public future losing `Send`, or a public type losing `Send`/`Sync`. `cargo-semver-checks` cannot see futures. Also run in the default `client` build. |
+| `cargo-semver-checks` (advisory) | [`.github/workflows/semver.yml`](.github/workflows/semver.yml) | API breaks against the last release on crates.io, including auto-trait changes on public types. Reported as a warning and in the job summary; it never fails the PR. |
+| Auto-trait guard (required) | [`tests/auto_traits.rs`](tests/auto_traits.rs), [`tests/send_futures.rs`](tests/send_futures.rs), run by the `test` jobs in `ci.yml` | A public future losing `Send`, or a public type losing `Send`/`Sync`. `cargo-semver-checks` cannot see futures. Also run in the default `client` build. |
 | MSRV (required) | `ci.yml`, `msrv` job | Code that needs a newer compiler. |
 | release-plz `semver_check` | [`release-plz.toml`](release-plz.toml) | Raises the release's version bump if a break got through anyway. |
 

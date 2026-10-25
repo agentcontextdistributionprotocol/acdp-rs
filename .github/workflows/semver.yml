@@ -1,14 +1,14 @@
 name: semver
 
-# cargo-semver-checks gate (COMPATIBILITY.md). Its own workflow, not a job
-# in ci.yml, so retitling a PR (adding `!`) or adding the override label
-# re-runs only this gate instead of the whole CI.
+# cargo-semver-checks report (COMPATIBILITY.md). ADVISORY: it never fails a
+# PR and is not a required check. While the crates are pre-adoption,
+# breaking changes may ship in any minor release; this report says which
+# ones a PR contains so the `!` marker and changelog note can be added.
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 
 permissions:
   contents: read
@@ -22,22 +22,15 @@ concurrency:
 
 jobs:
   semver:
-    # BLOCKING and a required check. An undeclared break fails the PR; a
-    # declared one (`feat!:` title, a `!`/BREAKING CHANGE commit since the
-    # last release tag, or the `semver-checks-override` label for a
-    # verified false positive) passes with a warning. The decision lives
-    # in scripts/semver-gate.sh; COMPATIBILITY.md is the policy.
+    # Advisory: a detected break is reported as a warning and in the job
+    # summary, never as a failure. COMPATIBILITY.md is the policy.
     name: cargo-semver-checks
     runs-on: ubuntu-latest
     outputs:
       status: ${{ steps.semver-checks.outputs.status }}
       unsupported: ${{ steps.semver-checks.outputs.unsupported }}
     steps:
-      # Full history and tags: the gate looks for breaking-change markers
-      # since the last release tag.
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           toolchain: stable
@@ -66,10 +59,10 @@ jobs:
       # (a third party's logging side effect, not ours to depend on).
       - run: cargo semver-checks --version
       # Compares every published workspace crate's public API against its
-      # latest crates.io release and fails when a change requires a semver
-      # bump the current version numbers don't carry. release-plz derives
-      # the bump from Conventional Commits; this job catches the case
-      # where an API break rides a commit that wasn't marked breaking.
+      # latest crates.io release and reports any change that requires a
+      # semver bump the current version numbers don't carry. release-plz
+      # derives the bump from Conventional Commits; this report flags an
+      # API break riding a commit that wasn't marked breaking.
       #
       # Deliberately left on `stable` (not pinned): release-plz's own
       # semver check, which sets the release's version bump, also runs on
@@ -85,8 +78,8 @@ jobs:
       # checks' own exit status from under `tee` (whose own exit status
       # would otherwise win). `status`/`unsupported` go to $GITHUB_OUTPUT so
       # the semver-tool-health job can classify the real numeric exit code,
-      # and the gate step below decides pass/fail from it. This step itself
-      # always succeeds so the gate, not the raw exit code, is the verdict.
+      # and the report step below summarizes it. This step itself always
+      # succeeds: the report is advisory.
       - name: cargo semver-checks --workspace
         id: semver-checks
         run: |
@@ -99,24 +92,22 @@ jobs:
             echo "unsupported=false" >> "$GITHUB_OUTPUT"
           fi
           echo "status=$s" >> "$GITHUB_OUTPUT"
-      - name: Semver gate self-test
-        run: scripts/test-semver-gate.sh
-      - name: Block undeclared breaking changes
+      - name: Report
         env:
           STATUS: ${{ steps.semver-checks.outputs.status }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: |
-          VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "acdp") | .version')
-          export VERSION
-          scripts/semver-gate.sh
+          case "$STATUS" in
+            0)   msg="cargo-semver-checks: no semver-incompatible change." ;;
+            100) msg="cargo-semver-checks found a breaking API change (see the log). Mark the PR title with \`!\` and add a changelog note (COMPATIBILITY.md)."
+                 echo "::warning::$msg" ;;
+            *)   msg="cargo-semver-checks exited with status $STATUS: no API verdict; see semver-tool-health." ;;
+          esac
+          echo "$msg" | tee -a "$GITHUB_STEP_SUMMARY"
 
-  # Kept separate from the `semver` job above so a red run says which of
-  # two things is wrong. `semver` fails on an undeclared API break (or a
-  # tool failure); this job fails only when the TOOL itself is broken — it
-  # can't parse the rustdoc it was given, or exits abnormally — never on a
-  # genuine detected API break, which is treated as this job's success
-  # case. A silently broken tool once reported a false "compatible" on
+  # Advisory like `semver` (not a required check). It goes red only when
+  # the TOOL itself is broken — it can't parse the rustdoc it was given, or
+  # exits abnormally — never on a genuine detected API break, which is
+  # treated as this job's success case. A silently broken tool once reported a false "compatible" on
   # every run for months (see release-plz.yml's
   # MarcoIeni/release-plz-action comment for the incident).
   #
@@ -124,8 +115,8 @@ jobs:
   # `cargo semver-checks --workspace` a second time — that used to mean
   # generating rustdoc for every workspace crate twice (current + baseline)
   # and a second rust-cache entry for no extra signal. `needs: [semver]` +
-  # `if: ${{ !cancelled() }}` means this still runs when `semver` "fails"
-  # (i.e. on any detected break); it needs no checkout, toolchain,
+  # `if: ${{ !cancelled() }}` means this still runs if `semver` fails
+  # (e.g. the runner died mid-run); it needs no checkout, toolchain,
   # rust-cache, or install-action of its own. Not `always()`: the
   # `cancel-in-progress: true` concurrency group above makes a superseded
   # run routine on every follow-up push to a PR, and a tool-health tripwire

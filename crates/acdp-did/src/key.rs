@@ -211,6 +211,7 @@ pub fn did_key_document(did: &str) -> Result<crate::DidDocument, AcdpError> {
             public_key_multibase,
         }],
         assertion_method: vec![crate::AssertionMethodRef::Id(vm_id)],
+        services: Vec::new(),
     })
 }
 

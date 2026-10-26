@@ -6,5 +6,7 @@
 //! validation, computes `content_hash`, then signs.
 
 pub mod builder;
+#[cfg(feature = "keyless")]
+pub mod keyless;
 
 pub use builder::{Producer, RequestBuilder};

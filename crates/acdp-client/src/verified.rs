@@ -130,6 +130,13 @@ pub struct VerificationPolicy {
     /// [`LogInclusionPolicy::Ignore`], because cosignatures can only be
     /// checked against a checkpoint the consumer verified itself.
     pub witness_quorum: Option<WitnessQuorumPolicy>,
+
+    /// Which registries are accepted as attesters of keyless keys
+    /// (RFC-ACDP-0021 §11, 0.5.0 Draft). The default accepts none, so a
+    /// keyless-signed body fails closed with `untrusted_attester`. Read
+    /// only in builds with the `keyless` feature; without it every
+    /// keyless-signed body fails closed in key resolution.
+    pub keyless: crate::keyless::KeylessPolicy,
 }
 
 impl Default for VerificationPolicy {
@@ -144,6 +151,7 @@ impl Default for VerificationPolicy {
             require_did_web_for_v0_1_0: true,
             log_inclusion: LogInclusionPolicy::Ignore,
             witness_quorum: None,
+            keyless: crate::keyless::KeylessPolicy::default(),
         }
     }
 }
@@ -867,6 +875,8 @@ impl VerificationPolicy {
             // Likewise RFC-ACDP-0012/0015 (0.4.0): transparency inert.
             log_inclusion: LogInclusionPolicy::Ignore,
             witness_quorum: None,
+            // And RFC-ACDP-0021 (0.5.0): no attester accepted.
+            keyless: crate::keyless::KeylessPolicy::default(),
         }
     }
 
@@ -975,6 +985,16 @@ struct Retrieved {
 }
 
 type VerifyRetrievedResult = Result<Retrieved, AcdpError>;
+
+/// What the receipt, revocation and signature phases established.
+pub(crate) struct KeyPhases {
+    pub(crate) key_status: KeyAuthorization,
+    pub(crate) verified_receipt: Option<acdp_types::receipt::RegistryReceipt>,
+    pub(crate) receipt_key_status: Option<acdp_types::receipt::ReceiptKeyStatus>,
+    pub(crate) receipt_registry_key_fingerprint: Option<String>,
+    pub(crate) receipt_verdict: Option<Result<(), AcdpError>>,
+    pub(crate) revocation: RevocationAssessment,
+}
 
 impl Retrieved {
     /// Copy the verdicts onto a report.
@@ -1259,146 +1279,192 @@ impl VerifiedContext {
         let since = std::time::Instant::now();
         let verifier = Verifier::new(resolver).fresh_since(since);
         verifier.verify_context_hash(ctx)?;
-
-        // ── Receipt phase (RFC-ACDP-0010) ───────────────────────────
-        // Verified BEFORE the signature phase because the historical-
-        // key path is gated on a verified receipt.
         let serving_authority = client
             .authority()
             .unwrap_or_else(|| expected_ctx_id.authority().to_string());
-        let receipt_outcome = match (policy.receipts, &ctx.registry_receipt) {
-            (ReceiptPolicy::Ignore, _)
-            | (ReceiptPolicy::VerifyIfPresent | ReceiptPolicy::VerifyAndReport, None) => None,
-            (ReceiptPolicy::Require, None) => {
-                return Err(AcdpError::InvalidReceipt(
-                    "policy requires a registry receipt but the response carries none \
+
+        // ── Keyless signatures (RFC-ACDP-0021 §8.1) ─────────────────
+        // A keyless key id is never resolved through the DID document:
+        // RFC-ACDP-0021 §8.1 replaces the receipt, revocation and
+        // signature phases below. Without the `keyless` feature it fails
+        // closed here, as an unknown key does.
+        let phases = if acdp_types::keyless::is_keyless_key_id(&ctx.body.signature.key_id) {
+            #[cfg(feature = "keyless")]
+            {
+                super::keyless::verify(
+                    client,
+                    resolver,
+                    ctx,
+                    expected_ctx_id,
+                    &serving_authority,
+                    &policy.keyless,
+                    &policy.revocations,
+                    since,
+                )
+                .await?
+            }
+            #[cfg(not(feature = "keyless"))]
+            {
+                return Err(AcdpError::KeyResolution(format!(
+                    "signature.key_id '{}' is a keyless key id (RFC-ACDP-0021); this build \
+                     has no keyless support, so the key cannot be resolved",
+                    ctx.body.signature.key_id
+                )));
+            }
+        } else {
+            // ── Receipt phase (RFC-ACDP-0010) ───────────────────────────
+            // Verified BEFORE the signature phase because the historical-
+            // key path is gated on a verified receipt.
+            let receipt_outcome = match (policy.receipts, &ctx.registry_receipt) {
+                (ReceiptPolicy::Ignore, _)
+                | (ReceiptPolicy::VerifyIfPresent | ReceiptPolicy::VerifyAndReport, None) => None,
+                (ReceiptPolicy::Require, None) => {
+                    return Err(AcdpError::InvalidReceipt(
+                        "policy requires a registry receipt but the response carries none \
                      (registry without the acdp-registry-receipts profile, or a \
                      pre-receipts context)"
-                        .into(),
-                ));
-            }
-            (_, Some(value)) => {
-                let fingerprint = acdp_crypto::fingerprint::fingerprint_for_key_id_since(
-                    &ctx.body.signature.key_id,
-                    &ctx.body.signature.algorithm,
-                    resolver,
-                    since,
-                )
-                .await?;
-                let verdict = super::receipt::verify_receipt_placed(
-                    value,
-                    expected_ctx_id,
-                    &ctx.body,
-                    &ctx.body.content_hash,
-                    &fingerprint,
-                    &serving_authority,
-                    resolver,
-                    since,
-                )
-                .await;
-                match verdict {
-                    Ok(placed) => Some(Ok(placed)),
-                    // RFC-ACDP-0010 §8 (0.5.0): reported separately, then
-                    // treated exactly as an absent receipt below.
-                    Err(e) if policy.receipts == ReceiptPolicy::VerifyAndReport => Some(Err(e)),
-                    Err(e) => return Err(e),
+                            .into(),
+                    ));
                 }
+                (_, Some(value)) => {
+                    let fingerprint = acdp_crypto::fingerprint::fingerprint_for_key_id_since(
+                        &ctx.body.signature.key_id,
+                        &ctx.body.signature.algorithm,
+                        resolver,
+                        since,
+                    )
+                    .await?;
+                    let verdict = super::receipt::verify_receipt_placed(
+                        value,
+                        expected_ctx_id,
+                        &ctx.body,
+                        &ctx.body.content_hash,
+                        &fingerprint,
+                        &serving_authority,
+                        resolver,
+                        since,
+                    )
+                    .await;
+                    match verdict {
+                        Ok(placed) => Some(Ok(placed)),
+                        // RFC-ACDP-0010 §8 (0.5.0): reported separately, then
+                        // treated exactly as an absent receipt below.
+                        Err(e) if policy.receipts == ReceiptPolicy::VerifyAndReport => Some(Err(e)),
+                        Err(e) => return Err(e),
+                    }
+                }
+            };
+            let (
+                verified_receipt,
+                receipt_key_status,
+                receipt_registry_key_fingerprint,
+                receipt_verdict,
+            ) = match receipt_outcome {
+                None => (None, None, None, None),
+                Some(Ok(placed)) => (
+                    Some(placed.receipt),
+                    Some(placed.key_status),
+                    Some(placed.registry_key_fingerprint),
+                    Some(Ok(())),
+                ),
+                Some(Err(e)) => (None, None, None, Some(Err(e))),
+            };
+
+            // ── Revocation phase (RFC-ACDP-0014 §7/§8) ──────────────────
+            // `crate::revocation_verdict` gathers `known` + cached facts +
+            // (when configured) §8 discovery, scopes them to this producer
+            // (0.5.0 "Producer scope"), and decides the verdict. Cached facts
+            // are read before discovery runs, so they survive any failure an
+            // attacker can induce on this call (anti-rollback). Runs after the
+            // receipt phase because §7 step 1 accepts ONLY a receipt-attested
+            // publish time — and under the strict profile only one from a
+            // *current* receipt key. Discovered revocation bodies are verified
+            // with `Verifier::verify_body`, never `verify_retrieved`, so this
+            // does not recurse.
+            //
+            // Discovery puts a Tokio time-driver requirement on this path
+            // (`total_timeout`), gated behind `discover: Some`.
+            let gathered = super::revocation_verdict::gather(
+                client,
+                resolver,
+                &ctx.body.agent_id,
+                &policy.revocations,
+            )
+            .await;
+            let fingerprint = if gathered.has_in_scope() {
+                Some(
+                    acdp_crypto::fingerprint::fingerprint_for_key_id_since(
+                        &ctx.body.signature.key_id,
+                        &ctx.body.signature.algorithm,
+                        resolver,
+                        since,
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            };
+            let revocation = super::revocation_verdict::decide(
+                gathered,
+                fingerprint.as_deref(),
+                verified_receipt
+                    .as_ref()
+                    .zip(receipt_key_status)
+                    .map(|(r, status)| (r.created_at, status)),
+                policy.revocations.accept_historical_receipt_key_for_pre_t,
+            )
+            .enforce()?;
+
+            // ── Signature phase ──────────────────────────────────────────
+            // Standard path enforces assertionMethod membership. A
+            // KeyNotAuthorized failure falls back to the historical path
+            // only under AcceptWithReceipt AND a verified receipt — the
+            // receipt's key_fingerprint (already cross-checked against this
+            // exact key above) is what attests publish-time authorization.
+            let key_status = match revocation.pre_compromise() {
+                // Pre-compromise (§7 step 2): the signature is verified
+                // under the RFC-ACDP-0010 §10 historical rule — the key may
+                // legitimately have left assertionMethod (and SHOULD, §9),
+                // and even a key still in assertionMethod MUST NOT be
+                // reported as fully current once revoked. did:key material
+                // cannot rotate, so it takes the plain envelope path.
+                true => {
+                    if ctx.body.agent_id.as_str().starts_with("did:key:") {
+                        verifier.verify_body_signature(&ctx.body).await?;
+                    } else {
+                        verifier.verify_body_signature_historical(&ctx.body).await?;
+                    }
+                    KeyAuthorization::HistoricallyAuthorizedPreCompromise
+                }
+                false => match verifier.verify_body_signature(&ctx.body).await {
+                    Ok(()) => KeyAuthorization::CurrentlyAuthorized,
+                    Err(AcdpError::KeyNotAuthorized(_))
+                        if policy.historical_keys == HistoricalKeyPolicy::AcceptWithReceipt
+                            && verified_receipt.is_some() =>
+                    {
+                        verifier.verify_body_signature_historical(&ctx.body).await?;
+                        KeyAuthorization::HistoricallyAuthorized
+                    }
+                    Err(e) => return Err(e),
+                },
+            };
+            KeyPhases {
+                key_status,
+                verified_receipt,
+                receipt_key_status,
+                receipt_registry_key_fingerprint,
+                receipt_verdict,
+                revocation,
             }
         };
-        let (
+        let KeyPhases {
+            key_status,
             verified_receipt,
             receipt_key_status,
             receipt_registry_key_fingerprint,
             receipt_verdict,
-        ) = match receipt_outcome {
-            None => (None, None, None, None),
-            Some(Ok(placed)) => (
-                Some(placed.receipt),
-                Some(placed.key_status),
-                Some(placed.registry_key_fingerprint),
-                Some(Ok(())),
-            ),
-            Some(Err(e)) => (None, None, None, Some(Err(e))),
-        };
-
-        // ── Revocation phase (RFC-ACDP-0014 §7/§8) ──────────────────
-        // `crate::revocation_verdict` gathers `known` + cached facts +
-        // (when configured) §8 discovery, scopes them to this producer
-        // (0.5.0 "Producer scope"), and decides the verdict. Cached facts
-        // are read before discovery runs, so they survive any failure an
-        // attacker can induce on this call (anti-rollback). Runs after the
-        // receipt phase because §7 step 1 accepts ONLY a receipt-attested
-        // publish time — and under the strict profile only one from a
-        // *current* receipt key. Discovered revocation bodies are verified
-        // with `Verifier::verify_body`, never `verify_retrieved`, so this
-        // does not recurse.
-        //
-        // Discovery puts a Tokio time-driver requirement on this path
-        // (`total_timeout`), gated behind `discover: Some`.
-        let gathered = super::revocation_verdict::gather(
-            client,
-            resolver,
-            &ctx.body.agent_id,
-            &policy.revocations,
-        )
-        .await;
-        let fingerprint = if gathered.has_in_scope() {
-            Some(
-                acdp_crypto::fingerprint::fingerprint_for_key_id_since(
-                    &ctx.body.signature.key_id,
-                    &ctx.body.signature.algorithm,
-                    resolver,
-                    since,
-                )
-                .await?,
-            )
-        } else {
-            None
-        };
-        let revocation = super::revocation_verdict::decide(
-            gathered,
-            fingerprint.as_deref(),
-            verified_receipt
-                .as_ref()
-                .zip(receipt_key_status)
-                .map(|(r, status)| (r.created_at, status)),
-            policy.revocations.accept_historical_receipt_key_for_pre_t,
-        )
-        .enforce()?;
-
-        // ── Signature phase ──────────────────────────────────────────
-        // Standard path enforces assertionMethod membership. A
-        // KeyNotAuthorized failure falls back to the historical path
-        // only under AcceptWithReceipt AND a verified receipt — the
-        // receipt's key_fingerprint (already cross-checked against this
-        // exact key above) is what attests publish-time authorization.
-        let key_status = match revocation.pre_compromise() {
-            // Pre-compromise (§7 step 2): the signature is verified
-            // under the RFC-ACDP-0010 §10 historical rule — the key may
-            // legitimately have left assertionMethod (and SHOULD, §9),
-            // and even a key still in assertionMethod MUST NOT be
-            // reported as fully current once revoked. did:key material
-            // cannot rotate, so it takes the plain envelope path.
-            true => {
-                if ctx.body.agent_id.as_str().starts_with("did:key:") {
-                    verifier.verify_body_signature(&ctx.body).await?;
-                } else {
-                    verifier.verify_body_signature_historical(&ctx.body).await?;
-                }
-                KeyAuthorization::HistoricallyAuthorizedPreCompromise
-            }
-            false => match verifier.verify_body_signature(&ctx.body).await {
-                Ok(()) => KeyAuthorization::CurrentlyAuthorized,
-                Err(AcdpError::KeyNotAuthorized(_))
-                    if policy.historical_keys == HistoricalKeyPolicy::AcceptWithReceipt
-                        && verified_receipt.is_some() =>
-                {
-                    verifier.verify_body_signature_historical(&ctx.body).await?;
-                    KeyAuthorization::HistoricallyAuthorized
-                }
-                Err(e) => return Err(e),
-            },
-        };
+            revocation,
+        } = phases;
 
         if !policy.allow_unknown_status {
             if let Some(other) = ctx.registry_state.status.as_other() {

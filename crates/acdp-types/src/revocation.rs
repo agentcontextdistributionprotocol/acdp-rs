@@ -530,6 +530,7 @@ mod tests {
             metadata,
             schema_uri: None,
             anchors: None,
+            key_attestation: None,
         }
     }
 

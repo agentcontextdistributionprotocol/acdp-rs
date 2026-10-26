@@ -607,9 +607,25 @@ impl AcdpError {
     ///
     /// Codes the library does not yet recognize are returned as
     /// [`AcdpError::Registry`] for forward compatibility.
+    ///
+    /// A `details.reason` that is an RFC-ACDP-0021 registry token is
+    /// kept as a `keyless:<token>: ` message prefix, which
+    /// [`crate::keyless::KeylessReason::of`] reads back (§13.3: no new
+    /// code, so no new variant).
     pub fn from_wire_error(wire: crate::wire_error::WireError) -> Self {
         let code = wire.error.code.as_str();
-        let msg = wire.error.message.clone();
+        let keyless = wire
+            .error
+            .details
+            .as_ref()
+            .and_then(|d| d.get("reason"))
+            .and_then(serde_json::Value::as_str)
+            .and_then(crate::keyless::KeylessReason::parse)
+            .filter(|r| r.is_registry_token());
+        let msg = match keyless {
+            Some(reason) => reason.tag(&wire.error.message),
+            None => wire.error.message.clone(),
+        };
 
         match code {
             "invalid_signature" => AcdpError::InvalidSignature(msg),
@@ -802,6 +818,40 @@ mod tests {
                 message: message.into(),
                 details,
             },
+        }
+    }
+
+    #[test]
+    fn keyless_details_reason_is_kept_on_the_existing_variant() {
+        use crate::keyless::KeylessReason;
+        let e = AcdpError::from_wire_error(wire(
+            "key_not_authorized",
+            "token audience",
+            Some(json!({"reason": "audience_mismatch"})),
+        ));
+        assert!(matches!(e, AcdpError::KeyNotAuthorized(_)));
+        assert_eq!(KeylessReason::of(&e), Some(KeylessReason::AudienceMismatch));
+        let e = AcdpError::from_wire_error(wire(
+            "not_authorized",
+            "lineage owned by another workload",
+            Some(json!({"reason": "keyless_identity_mismatch"})),
+        ));
+        assert!(matches!(e, AcdpError::NotAuthorized(_)));
+        assert_eq!(
+            KeylessReason::of(&e),
+            Some(KeylessReason::KeylessIdentityMismatch)
+        );
+        // Consumer-only tokens and unknown reasons are not registry tokens.
+        for reason in ["untrusted_attester", "something_else"] {
+            let e = AcdpError::from_wire_error(wire(
+                "key_not_authorized",
+                "m",
+                Some(json!({ "reason": reason })),
+            ));
+            assert_eq!(
+                e.to_string(),
+                AcdpError::KeyNotAuthorized("m".into()).to_string()
+            );
         }
     }
 

@@ -116,6 +116,17 @@ pub struct PublishRequest {
         skip_serializing_if = "Option::is_none"
     )]
     pub anchors: Option<Vec<AnchorEntry>>,
+    /// The key attestation a keyless signature rests on (RFC-ACDP-0021
+    /// §6.2, 0.5.0 Draft): present exactly when `signature.key_id` is a
+    /// keyless key id (`#acdp-kl-…`). Producer-signed. A stored body
+    /// carries it among its extension fields; read it back with
+    /// [`crate::body::Body::key_attestation`].
+    #[serde(
+        default,
+        deserialize_with = "de_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub key_attestation: Option<crate::keyless::KeyAttestationRef>,
 }
 
 /// Successful publish response (HTTP 201).

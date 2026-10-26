@@ -24,6 +24,9 @@ pub struct Producer {
     agent_id: AgentDid,
     /// DID URL of the signing key, e.g. `did:web:example.com#key-1`.
     key_id: String,
+    /// The key attestation every request carries when the key is a
+    /// keyless key (RFC-ACDP-0021 §6.2); see `Producer::keyless`.
+    key_attestation: Option<acdp_types::keyless::KeyAttestationRef>,
 }
 
 impl Producer {
@@ -48,6 +51,7 @@ impl Producer {
             signing_key: AcdpSigningKey::Ed25519(signing_key),
             agent_id,
             key_id: key_id.into(),
+            key_attestation: None,
         }
     }
 
@@ -66,6 +70,7 @@ impl Producer {
             signing_key: AcdpSigningKey::P256(signing_key),
             agent_id,
             key_id: key_id.into(),
+            key_attestation: None,
         }
     }
 
@@ -91,6 +96,7 @@ impl Producer {
             signing_key: AcdpSigningKey::Ed25519(signing_key),
             agent_id: AgentDid::new(did),
             key_id,
+            key_attestation: None,
         }
     }
 
@@ -105,7 +111,49 @@ impl Producer {
             signing_key: AcdpSigningKey::P256(signing_key),
             agent_id: AgentDid::new(did),
             key_id,
+            key_attestation: None,
         })
+    }
+
+    /// Create a producer that signs with a keyless key (RFC-ACDP-0021,
+    /// 0.5.0 Draft): an ephemeral key a registry attested for the
+    /// controller. `attestation` is the attestation's metadata and
+    /// `reference` names it; the attestation is usually obtained with
+    /// [`crate::keyless::EphemeralKey`] and the client's
+    /// `request_key_attestation`.
+    ///
+    /// The producer's `agent_id` is the attestation's `controller` and its
+    /// key id the attested `<controller>#acdp-kl-<hex>`; every request it
+    /// builds carries `key_attestation`. Fails when `signing_key` is not
+    /// the attested key or its algorithm differs.
+    ///
+    /// The window is short (at most an hour): requests built after
+    /// `not_after` are refused by the registry (`outside_attestation_window`).
+    #[cfg(feature = "keyless")]
+    pub fn keyless(
+        signing_key: AcdpSigningKey,
+        attestation: &acdp_types::keyless::KeyAttestation,
+        reference: acdp_types::keyless::KeyAttestationRef,
+    ) -> Result<Self, AcdpError> {
+        let key = crate::keyless::EphemeralKey::from_key(signing_key);
+        if key.fingerprint()? != attestation.key_fingerprint
+            || key.algorithm() != attestation.algorithm
+        {
+            return Err(AcdpError::SchemaViolation(
+                "the signing key is not the key the attestation attests".into(),
+            ));
+        }
+        Ok(Self {
+            signing_key: key.into_inner(),
+            agent_id: AgentDid::new(attestation.controller.clone()),
+            key_id: attestation.key_id.clone(),
+            key_attestation: Some(reference),
+        })
+    }
+
+    /// The signing key id.
+    pub fn key_id(&self) -> &str {
+        &self.key_id
     }
 
     /// Start building a new first-version publish request.
@@ -521,6 +569,9 @@ impl<'a> RequestBuilder<'a> {
         if let Some(v) = &self.anchors {
             pc.insert("anchors".into(), json!(v));
         }
+        if let Some(v) = &self.producer.key_attestation {
+            pc.insert("key_attestation".into(), json!(v));
+        }
 
         let producer_content_value = Value::Object(pc);
 
@@ -560,6 +611,7 @@ impl<'a> RequestBuilder<'a> {
             metadata: self.metadata,
             schema_uri: self.schema_uri,
             anchors: self.anchors,
+            key_attestation: self.producer.key_attestation.clone(),
             lineage_id: self.expected_lineage_id,
         };
         // Final schema-conformance check before emission.

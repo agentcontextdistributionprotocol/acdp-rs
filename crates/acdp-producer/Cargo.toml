@@ -12,6 +12,11 @@ keywords    = ["acdp", "producer", "publish", "agent", "context"]
 categories  = ["web-programming", "cryptography"]
 rust-version = "1.87"
 
+[features]
+# RFC-ACDP-0021 keyless signing (0.5.0 Draft): ephemeral keys, the
+# attestation request and its proof of possession, `Producer::keyless`.
+keyless = []
+
 [dependencies]
 acdp-primitives = { path = "../acdp-primitives", version = "=0.17.3" }
 acdp-types      = { path = "../acdp-types", version = "=0.17.3" }

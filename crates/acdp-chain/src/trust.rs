@@ -66,6 +66,26 @@ impl TrustOptions {
     }
 }
 
+/// Local trust policy beyond RFC-ACDP-0020's requirements. The default
+/// is exactly the RFC.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct TrustPolicy {
+    /// Also refuse a list version whose issuer-key revocation status is
+    /// `unknown` in the pass (no discovery evidence for the issuer).
+    /// §5.2 step 5 refuses only on an applied revocation and allows this
+    /// as local policy.
+    pub refuse_unknown_issuer_revocation: bool,
+}
+
+impl TrustPolicy {
+    /// Set [`Self::refuse_unknown_issuer_revocation`].
+    pub fn refuse_unknown_issuer_revocation(mut self, refuse: bool) -> Self {
+        self.refuse_unknown_issuer_revocation = refuse;
+        self
+    }
+}
+
 /// The trust step's result.
 #[derive(Debug, Clone)]
 pub struct ChainTrust {
@@ -86,6 +106,7 @@ pub(crate) struct Run<'e, 'p, 'a> {
     pub passes: &'e [PassAt],
     pub basics: &'e BTreeMap<(usize, &'a str), Basic>,
     pub revocations: &'e [Vec<AppliedRevocation>],
+    pub policy: TrustPolicy,
 }
 
 fn type_str(t: &acdp_types::primitives::ContextType) -> String {
@@ -97,7 +118,7 @@ fn type_str(t: &acdp_types::primitives::ContextType) -> String {
 
 /// §5.2 step 1 and step 5 as the pass sees the list's own stages, with
 /// the same strictness RFC-ACDP-0017 applies to a revocation body.
-fn verifies(pass: &Pass) -> (bool, bool) {
+fn verifies(pass: &Pass, policy: TrustPolicy) -> (bool, bool) {
     let s = &pass.stages;
     let ok = s.presence.value == PresenceValue::Present
         && s.identity
@@ -109,17 +130,17 @@ fn verifies(pass: &Pass) -> (bool, bool) {
         && s.signature
             .as_ref()
             .is_some_and(|c| c.value == SignatureValue::Ok);
-    // Step 5 rejects on an applied revocation only: with no discovery
-    // evidence (`unknown`) the key is not revoked as far as the pass can
-    // tell. `unplaceable` (a revocation that applies but cannot be placed
-    // against the list) refuses, as the key stage does.
+    // Step 5 refuses on an applied revocation only (`revoked`, or
+    // `unplaceable`: one that applies but cannot be placed against the
+    // list). `unknown` (no discovery evidence) passes unless local policy
+    // refuses it.
     let key = s.key.as_ref().map(|k| k.value);
     let revoked = matches!(key, Some(KeyValue::Revoked | KeyValue::Unplaceable))
         || s.key_revocation.as_ref().is_some_and(|k| {
             matches!(
                 k.value,
                 KeyRevocationValue::Revoked | KeyRevocationValue::Unplaceable
-            )
+            ) || (policy.refuse_unknown_issuer_revocation && k.value == KeyRevocationValue::Unknown)
         });
     let located = matches!(
         key,
@@ -144,7 +165,7 @@ impl Run<'_, '_, '_> {
             }
             let basic = &self.basics[&(i, *key)];
             let (pass_obj, _) = self.engine.full(pc, basic, &self.revocations[i], pass);
-            let (ok, revoked) = verifies(&pass_obj);
+            let (ok, revoked) = verifies(&pass_obj, self.policy);
             if !ok {
                 continue;
             }

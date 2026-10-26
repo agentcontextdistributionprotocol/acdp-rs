@@ -1297,6 +1297,17 @@ async fn trust_list_pins_the_registry_receipt_key() {
         .expect("fetch list");
 
     let pin = IssuerPin::new(stored.body.agent_id.as_str(), "tenant-acme.production");
+    // The default fetch runs no revocation discovery, so the issuer key's
+    // status is unknown: refused only under the opt-in local policy.
+    let mut strict = TrustLists::new(vec![pin.clone()]).refuse_unknown_issuer_revocation(true);
+    assert_eq!(
+        strict
+            .add_verified(&fetched, &h.resolver)
+            .await
+            .unwrap_err()
+            .step,
+        5
+    );
     let mut lists = TrustLists::new(vec![pin.clone()]);
     assert_eq!(lists.add_verified(&fetched, &h.resolver).await, Ok(1));
     let series = (pin.issuer.clone(), pin.list_id.clone());

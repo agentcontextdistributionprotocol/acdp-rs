@@ -376,3 +376,38 @@ fn trust_005_g_did_web_issuer_as_of_t() {
     );
     assert!(as_of.all_trusted());
 }
+
+#[test]
+fn unknown_issuer_revocation_passes_unless_local_policy_refuses() {
+    // The bundle has no discovery for the list issuer: its key_revocation
+    // stage is `unknown`. §5.2 step 5 (spec 25f8d3a) refuses only on an
+    // applied revocation, so the list is used.
+    let e = reparse(&with_golden_list());
+    let (_, trust) =
+        verify_chain_with_trust(&roots(), &e, &Options::default(), &trust_options()).unwrap();
+    assert_eq!(trust.latest.lists[0].status, ListStatus::Used);
+
+    // Local policy may refuse it; the verdict stays the same.
+    let strict = TrustPolicy::default().refuse_unknown_issuer_revocation(true);
+    let (v, trust) =
+        verify_chain_with_trust_policy(&roots(), &e, &Options::default(), &trust_options(), strict)
+            .unwrap();
+    assert_eq!(
+        (trust.latest.lists[0].status, trust.latest.lists[0].reason),
+        (ListStatus::Invalid, Some(TrustReason::NoValidVersion))
+    );
+    assert_eq!(v, verify_chain(&roots(), &e, &Options::default()).unwrap());
+
+    // With a complete discovery for the issuer, strict policy uses it.
+    let mut e = with_golden_list();
+    add_discovery(&mut e, ISSUER, discovery("2026-10-26T06:00:00.000Z"));
+    let (_, trust) = verify_chain_with_trust_policy(
+        &roots(),
+        &reparse(&e),
+        &Options::default(),
+        &trust_options(),
+        strict,
+    )
+    .unwrap();
+    assert_eq!(trust.latest.lists[0].status, ListStatus::Used);
+}

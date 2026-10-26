@@ -54,7 +54,7 @@ pub use evidence::{
     DiscoveryRecord, Evidence, Omitted, OmittedReason, EVIDENCE_VERSION,
 };
 pub use options::{Limits, Options, Pinned, PinnedSnapshot};
-pub use trust::{ChainTrust, TrustOptions};
+pub use trust::{ChainTrust, TrustOptions, TrustPolicy};
 pub use verdict::*;
 
 use crate::evidence::OmittedReason as Reason;
@@ -105,7 +105,25 @@ pub fn verify_chain_with_trust<S: AsRef<str>>(
     options: &Options,
     trust: &TrustOptions,
 ) -> Result<(ChainVerdict, ChainTrust), ChainError> {
-    let (verdict, report) = run(roots, evidence, options, &mut || false, Some(trust))?;
+    verify_chain_with_trust_policy(roots, evidence, options, trust, TrustPolicy::default())
+}
+
+/// [`verify_chain_with_trust`] under a local [`TrustPolicy`] stricter
+/// than RFC-ACDP-0020 requires.
+pub fn verify_chain_with_trust_policy<S: AsRef<str>>(
+    roots: &[S],
+    evidence: &Evidence,
+    options: &Options,
+    trust: &TrustOptions,
+    policy: TrustPolicy,
+) -> Result<(ChainVerdict, ChainTrust), ChainError> {
+    let (verdict, report) = run(
+        roots,
+        evidence,
+        options,
+        &mut || false,
+        Some((trust, policy)),
+    )?;
     Ok((verdict, report.expect("trust options were given")))
 }
 
@@ -114,7 +132,7 @@ fn run<S: AsRef<str>>(
     evidence: &Evidence,
     options: &Options,
     should_stop: &mut dyn FnMut() -> bool,
-    trust: Option<&TrustOptions>,
+    trust: Option<(&TrustOptions, TrustPolicy)>,
 ) -> Result<(ChainVerdict, Option<ChainTrust>), ChainError> {
     options.check()?;
     let roots: Vec<String> = roots.iter().map(|r| r.as_ref().to_string()).collect();
@@ -273,13 +291,14 @@ fn run<S: AsRef<str>>(
     };
     verdict.as_of_digest = as_of_projection(&verdict).map(|p| jcs_digest(&p));
     verdict.verdict_digest = verdict_digest(&verdict);
-    let trust = trust.map(|opts| {
+    let trust = trust.map(|(opts, policy)| {
         trust::Run {
             engine: &engine,
             parsed: &parsed,
             passes: &passes,
             basics: &basics,
             revocations: &revocations,
+            policy,
         }
         .evaluate(&verdict, opts)
     });

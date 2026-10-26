@@ -957,6 +957,14 @@ The `TrustReport` (§8) is deterministic:
 - `issuer`, `list_id` and `entry_index` appear only when an entry decided.
 - `report_digest` is SHA-256 over the JCS of the report without it.
 
+Step 5 of §5.2 refuses a list only on an applied revocation of the issuer's
+key, meaning `revoked` or `unplaceable` (spec 25f8d3a). An `unknown` status
+(no discovery evidence, the usual offline case) does not refuse it. Refusing
+`unknown` is local policy, and both entry points support it:
+`TrustLists::refuse_unknown_issuer_revocation(true)` online, and
+`verify_chain_with_trust_policy` with
+`TrustPolicy::default().refuse_unknown_issuer_revocation(true)` for bundles.
+
 The trust step never changes the chain verdict. Refusing a chain because of
 an untrusted node is consumer policy, for example `TrustReport::all_trusted`.
 

@@ -57,6 +57,7 @@ pub struct TrustLists {
     pins: Vec<IssuerPin>,
     floors: BTreeMap<Series, u64>,
     versions: Vec<Vec<ListVersion>>,
+    refuse_unknown_issuer_revocation: bool,
 }
 
 fn series(pin: &IssuerPin) -> Series {
@@ -78,7 +79,17 @@ impl TrustLists {
             pins,
             floors: BTreeMap::new(),
             versions,
+            refuse_unknown_issuer_revocation: false,
         }
+    }
+
+    /// Local policy: also refuse, in [`Self::add_verified`], a list whose
+    /// issuer-key revocation status is unknown (an `Unknown` verdict, or no
+    /// complete RFC-ACDP-0014 discovery). RFC-ACDP-0020 §5.2 step 5 refuses only
+    /// on an applied revocation and allows this as local policy.
+    pub fn refuse_unknown_issuer_revocation(mut self, refuse: bool) -> Self {
+        self.refuse_unknown_issuer_revocation = refuse;
+        self
     }
 
     /// Restore the floors persisted by an earlier run (§5.3).
@@ -175,11 +186,18 @@ impl TrustLists {
                 issuer_events.push(ev);
             }
         }
-        let revoked = matches!(
-            list.revocation_verdict(),
-            RevocationVerdict::Revoked { effect, .. }
-                if *effect != acdp_primitives::revocation::RevocationEffect::PreCompromise
+        // §5.2 step 5: only an applied revocation refuses; an incomplete
+        // discovery (unknown) refuses only under local policy.
+        let verdict = list.revocation_verdict();
+        let unknown = matches!(
+            verdict,
+            RevocationVerdict::Unknown { .. }
+                | RevocationVerdict::NotRevoked {
+                    complete: false,
+                    ..
+                }
         );
+        let revoked = verdict.is_refusal() || (self.refuse_unknown_issuer_revocation && unknown);
         let ty = context_type(&body.context_type);
         let candidate = VerifiedListBody {
             agent_id: body.agent_id.as_str(),

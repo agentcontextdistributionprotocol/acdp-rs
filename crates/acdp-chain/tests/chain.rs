@@ -67,28 +67,6 @@ fn paths(p: &[&[char]]) -> Vec<Vec<String>> {
 
 // ── chain-001 ────────────────────────────────────────────────────────────────
 
-pub fn chain_001_bundle() -> Evidence {
-    let p = Signer::did_key();
-    let mut e = bundle();
-    put(
-        &mut e,
-        'a',
-        receipted(&p, 'a', &['b', 'c'], "2026-09-03T00:00:00.000Z"),
-    );
-    put(
-        &mut e,
-        'b',
-        receipted(&p, 'b', &['c'], "2026-09-02T00:00:00.000Z"),
-    );
-    put(
-        &mut e,
-        'c',
-        receipted(&p, 'c', &[], "2026-09-01T00:00:00.000Z"),
-    );
-    add_discovery(&mut e, KEY_PRODUCER, discovery("2026-09-30T00:00:00.000Z"));
-    e
-}
-
 #[test]
 fn chain_001_a_clean_dag_did_key_both_passes() {
     let v = run(&['a'], &chain_001_bundle(), &Options::as_of(t()));

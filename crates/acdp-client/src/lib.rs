@@ -19,6 +19,7 @@ pub mod revocation;
 pub mod revocation_cache;
 pub mod revocation_verdict;
 pub mod transparency;
+pub mod trust;
 pub mod verified;
 pub mod witness;
 

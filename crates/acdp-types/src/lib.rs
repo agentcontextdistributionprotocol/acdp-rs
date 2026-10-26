@@ -22,6 +22,7 @@ pub mod publish;
 pub mod receipt;
 pub mod revocation;
 pub mod search;
+pub mod trust_list;
 
 // `primitives` / `serde_helpers` / `wire_error` live in acdp-primitives;
 // re-export so the historical `crate::types::*` paths keep resolving in the

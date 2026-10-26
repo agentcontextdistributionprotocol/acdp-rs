@@ -171,6 +171,40 @@ pub async fn verify_receipt_value_with_status_since(
     resolver: &WebResolver,
     since: std::time::Instant,
 ) -> Result<(RegistryReceipt, ReceiptKeyStatus), AcdpError> {
+    verify_receipt_placed(
+        value,
+        expected_ctx_id,
+        body,
+        recomputed_body_hash,
+        producer_key_fingerprint,
+        serving_authority,
+        resolver,
+        since,
+    )
+    .await
+    .map(|v| (v.receipt, v.key_status))
+}
+
+/// A receipt that verified, with what verifying it established.
+pub(crate) struct PlacedReceipt {
+    pub receipt: RegistryReceipt,
+    pub key_status: ReceiptKeyStatus,
+    /// The RFC-ACDP-0010 §6 fingerprint of the registry key that signed
+    /// the receipt (RFC-ACDP-0020 §6.1's receipt input).
+    pub registry_key_fingerprint: String,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn verify_receipt_placed(
+    value: &serde_json::Value,
+    expected_ctx_id: &CtxId,
+    body: &acdp_types::body::Body,
+    recomputed_body_hash: &ContentHash,
+    producer_key_fingerprint: &str,
+    serving_authority: &str,
+    resolver: &WebResolver,
+    since: std::time::Instant,
+) -> Result<PlacedReceipt, AcdpError> {
     let receipt = RegistryReceipt::from_value(value)?;
 
     // §8 step 6: canonical millisecond byte form, checked on the RAW
@@ -238,8 +272,17 @@ pub async fn verify_receipt_value_with_status_since(
             )));
         }
     }
+    let registry_key_fingerprint = acdp_crypto::fingerprint::fingerprint_verification_method(
+        method,
+        &receipt.signature.algorithm,
+    )
+    .map_err(|e| AcdpError::InvalidReceipt(format!("receipt key fingerprint: {e}")))?;
 
-    Ok((receipt, key_status))
+    Ok(PlacedReceipt {
+        receipt,
+        key_status,
+        registry_key_fingerprint,
+    })
 }
 
 /// Verify a `lineage_head_receipt` value end-to-end per the

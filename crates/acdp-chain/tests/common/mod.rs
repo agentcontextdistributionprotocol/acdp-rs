@@ -306,3 +306,27 @@ pub fn put(e: &mut Evidence, id: char, ce: ContextEvidence) {
 pub fn reparse(e: &Evidence) -> Evidence {
     Evidence::from_slice(&serde_json::to_vec(e).unwrap()).unwrap()
 }
+
+/// chain-001: A → {B, C}, B → C, all did:key and receipted, with a
+/// complete discovery for the producer.
+pub fn chain_001_bundle() -> Evidence {
+    let p = Signer::did_key();
+    let mut e = bundle();
+    put(
+        &mut e,
+        'a',
+        receipted(&p, 'a', &['b', 'c'], "2026-09-03T00:00:00.000Z"),
+    );
+    put(
+        &mut e,
+        'b',
+        receipted(&p, 'b', &['c'], "2026-09-02T00:00:00.000Z"),
+    );
+    put(
+        &mut e,
+        'c',
+        receipted(&p, 'c', &[], "2026-09-01T00:00:00.000Z"),
+    );
+    add_discovery(&mut e, KEY_PRODUCER, discovery("2026-09-30T00:00:00.000Z"));
+    e
+}

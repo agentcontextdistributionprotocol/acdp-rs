@@ -35,6 +35,8 @@
 
 mod error;
 mod evidence;
+#[cfg(feature = "keyless")]
+mod keyless;
 mod keys;
 mod options;
 mod stages;
@@ -149,6 +151,8 @@ fn run<S: AsRef<str>>(
         keys: BundleKeys::new(&parsed, &pinned),
         pinned,
         require_attested_events: options.require_attested_events,
+        #[cfg(feature = "keyless")]
+        keyless_attesters: options.keyless_attesters.clone(),
     };
 
     let walk = walk::walk(&roots, &parsed, options.limits, should_stop);

@@ -968,6 +968,83 @@ key, meaning `revoked` or `unplaceable` (spec 25f8d3a). An `unknown` status
 The trust step never changes the chain verdict. Refusing a chain because of
 an untrusted node is consumer policy, for example `TrustReport::all_trusted`.
 
+## Keyless-signed bodies (RFC-ACDP-0021, Draft)
+
+A keyless body is signed by a short-lived key that a registry attested
+for a workload identity (an OIDC token or a SPIFFE SVID). The key id is
+`<controller>#acdp-kl-<hex>`, and the body pins the attestation by
+`key_attestation: {ctx_id, content_hash}`. The attestation itself is an
+ordinary registry-signed context of type `acdp:key-attestation`.
+
+Support is behind the **`keyless`** feature. Every build fails closed:
+
+- `DidDocument::find_by_fragment` never returns an `acdp-kl-` method, and
+  the RFC-ACDP-0001 §5.11 verifiers (`acdp::verify`) refuse a keyless key
+  id with `KeyResolution`.
+- Without the feature, `VerifiedContext::fetch` refuses a keyless body the
+  same way, and `acdp-chain` reports `key: unresolvable` and
+  `signature: unresolvable`, so the node is refused (`kl-007`, `kl-008` E).
+
+With the feature, `VerifiedContext` verifies a keyless body by RFC-ACDP-0021
+§8.1 instead of §5.11. The attestation is fetched from the serving
+registry, and the body's own receipt is required whatever `ReceiptPolicy`
+says, because it is the only time that places the signature in the
+attestation window. The client module docs (`acdp::client::keyless`) list
+the order of the checks.
+
+**Which attesters you accept (§11).** The default accepts none, so a
+default policy refuses every keyless body with `untrusted_attester`
+(`kl-006` A). Accept registries by name, by a trust list, or both:
+
+```rust,ignore
+use acdp::client::{KeylessPolicy, KeylessTrust, VerificationPolicy};
+
+let policy = VerificationPolicy {
+    keyless: KeylessPolicy::attesters(["did:web:registry.example.com"])
+        // optional: also accept any attester a trust list makes `trusted`
+        .with_trust_lists(KeylessTrust::at(&trust_lists, chrono::Utc::now(), None)),
+    ..VerificationPolicy::default()
+};
+```
+
+**Outcomes.** A keyless body that verifies gets one of the three existing
+`KeyAuthorization` values:
+
+| Outcome | When |
+|---|---|
+| `CurrentlyAuthorized` | The controller's current DID document lists the identity in its `AcdpKeylessSigning` service. |
+| `HistoricallyAuthorized` | It no longer lists it. Removing an identity does not reach back (§9.1). |
+| `HistoricallyAuthorizedPreCompromise` | An RFC-ACDP-0014 revocation of the attested fingerprint is dated after the receipt. |
+
+`KeyAuthorization`, `RevocationTrustClass` and `AcdpError` gain no
+variants. A refusal reuses an existing error variant, and its §8.1 reason
+token rides on the message. Read it with `KeylessReason::of(&err)`:
+
+| Token | Variant |
+|---|---|
+| `attestation_invalid` | `KeyResolution` |
+| `attestation_mismatch`, `untrusted_attester`, `unplaceable`, `outside_attestation_window` | `KeyNotAuthorized` |
+| `attestation_withdrawn` | `KeyNotAuthorized` (a retracted attestation counts as a revocation from `not_before`, §9.2) |
+| `invalid_signature` | `InvalidSignature` |
+| `revoked` | `KeyRevoked` |
+| `controller_unreachable` | `KeyResolutionUnreachable` (transient) |
+
+The registry-side tokens of `POST /key-attestations` (`issuer_not_accepted`,
+`pop_invalid`, …) come back on the wire error and parse the same way.
+
+**Limitation.** Client-side revocation gathering never applies a revocation
+signed by a keyless key, even an org-wide one (§9.3 allows org-wide).
+`acdp-chain` applies org-wide ones.
+
+**Chains (§10).** `acdp-chain` with the `keyless` feature reads the
+attestation from the bundle's `contexts`, like a revocation body. Set the
+accepted attesters with `Options::with_keyless_attesters`. The `key` stage
+is `current` or `historical_receipt_attested` with basis `registry`. An
+attestation missing from the bundle gives `unresolvable` in the latest
+pass and `unknown` (`no_evidence_at_as_of`) in the as-of pass. An admitted
+retraction of the attestation shows up in the `key_revocation` stage as
+`revoked`.
+
 ## Fetching data references
 
 A verified context tells you *where* its data lives; fetching that data is a

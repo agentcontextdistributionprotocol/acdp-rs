@@ -192,8 +192,19 @@ impl Body {
             schema_uri: req.schema_uri.clone(),
             anchors: req.anchors.clone(),
             // The publish schema is CLOSED (deny_unknown_fields), so a
-            // fresh body starts with no extension fields.
-            extensions: Default::default(),
+            // fresh body's only extension field is the RFC-ACDP-0021
+            // `key_attestation` member, which `Body` has no typed field
+            // for (read it with `Body::key_attestation`).
+            extensions: req
+                .key_attestation
+                .iter()
+                .map(|r| {
+                    (
+                        crate::keyless::KEY_ATTESTATION_FIELD.to_string(),
+                        serde_json::json!(r),
+                    )
+                })
+                .collect(),
         }
     }
 }

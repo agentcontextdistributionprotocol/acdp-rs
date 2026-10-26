@@ -26,6 +26,7 @@ MSRV is **1.87**. The crate is `#![forbid(unsafe_code)]`.
 | `client` | ✓ | `reqwest`, `tokio`, `rustls`, `lru` | an **agent or consumer** retrieving and verifying contexts. |
 | *(none)* | — | `serde`, `sha2`, `ed25519-dalek`, `p256` | building or signing contexts **offline**, or embedding in a binding (HTTP done by the host). |
 | `server` | ✗ | validation + store traits | implementing a **registry**. |
+| `keyless` | ✗ | — | RFC-ACDP-0021 keyless signing (Draft): `producer::keyless`, `RegistryClient::request_key_attestation`, keyless verification in `VerifiedContext` and `acdp-chain`. Without it, keyless-signed bodies are refused. |
 | `tracing` | ✗ | `tracing` | you want `#[instrument]` spans on async ops. |
 | `test-transport` | ✗ | test-only constructors (`SsrfPolicy::allow_test_loopback`, `RegistryClient::with_test_transport`, …) | driving an in-process mock registry from **tests**. Never enable in production builds. |
 

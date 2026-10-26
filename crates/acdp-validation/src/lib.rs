@@ -236,6 +236,14 @@ pub fn validate_publish_request(req: &PublishRequest) -> Result<(), AcdpError> {
         validate_anchors(anchors)?;
     }
 
+    if let Some(ka) = &req.key_attestation {
+        ka.validate()?;
+    }
+    acdp_types::keyless::check_key_attestation_presence(
+        &req.signature.key_id,
+        req.key_attestation.is_some(),
+    )?;
+
     validate_signature_length(&req.signature.algorithm, &req.signature.value)?;
     validate_did_key_key_id_form(&req.signature.key_id)?;
     ContentHash::parse(req.content_hash.as_str())?;
@@ -384,6 +392,13 @@ fn validate_body_inner(
     if let Some(anchors) = &body.anchors {
         validate_anchors(anchors)?;
     }
+
+    // RFC-ACDP-0021 §6.2: a stored body carries `key_attestation` among
+    // its extension fields.
+    acdp_types::keyless::check_key_attestation_presence(
+        &body.signature.key_id,
+        body.key_attestation()?.is_some(),
+    )?;
 
     validate_signature_length(&body.signature.algorithm, &body.signature.value)?;
     if resolve_keys {

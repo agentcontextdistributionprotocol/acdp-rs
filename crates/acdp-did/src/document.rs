@@ -4,6 +4,11 @@ use acdp_primitives::error::AcdpError;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
 
+/// The `verificationMethod` fragment prefix RFC-ACDP-0021 §4.2 reserves
+/// for keyless key ids. No DID document may list a method under it, and
+/// [`DidDocument::find_by_fragment`] never returns one.
+pub const KEYLESS_FRAGMENT_PREFIX: &str = "acdp-kl-";
+
 /// A minimal DID document (subset sufficient for ACDP §5.11).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DidDocument {
@@ -14,6 +19,12 @@ pub struct DidDocument {
 
     #[serde(rename = "assertionMethod", default)]
     pub assertion_method: Vec<AssertionMethodRef>,
+
+    /// The `service` entries, kept as JSON. ACDP reads one service type,
+    /// RFC-ACDP-0021's `AcdpKeylessSigning` (see
+    /// `acdp_types::keyless::ListedIdentities`).
+    #[serde(rename = "service", default, skip_serializing_if = "Vec::is_empty")]
+    pub services: Vec<serde_json::Value>,
 }
 
 impl DidDocument {
@@ -38,7 +49,16 @@ impl DidDocument {
     /// Compares the fragment for equality rather than `ends_with`: a
     /// loose suffix match would let an unlisted `…#evil-key-1` satisfy a
     /// lookup for `key-1` (authorization-scope escalation within a DID).
+    ///
+    /// A fragment under [`KEYLESS_FRAGMENT_PREFIX`] never resolves, even
+    /// when the document lists a method for it (RFC-ACDP-0021 §4.2):
+    /// keyless key ids are resolved through their key attestation, never
+    /// through RFC-ACDP-0001 §5.11, so a pre-listed method cannot make a
+    /// verifier accept what a keyless-aware verifier would refuse.
     pub fn find_by_fragment(&self, fragment: &str) -> Option<&VerificationMethod> {
+        if fragment.starts_with(KEYLESS_FRAGMENT_PREFIX) {
+            return None;
+        }
         self.verification_methods
             .iter()
             .find(|m| Self::fragment_of(&m.id) == Some(fragment))
@@ -353,6 +373,7 @@ mod tests {
                 public_key_multibase: None,
             }],
             assertion_method: vec![AssertionMethodRef::Id("did:web:example.com#key-1".into())],
+            services: vec![],
         };
         assert!(doc.is_assertion_method("did:web:example.com#key-1"));
         assert!(!doc.is_assertion_method("did:web:example.com#key-2"));
@@ -370,6 +391,7 @@ mod tests {
                 public_key_multibase: None,
             }],
             assertion_method: vec![AssertionMethodRef::Id("#key-1".into())],
+            services: vec![],
         };
         assert!(doc.is_assertion_method("did:web:example.com#key-1"));
     }
@@ -386,9 +408,31 @@ mod tests {
                 public_key_multibase: None,
             }],
             assertion_method: vec![],
+            services: vec![],
         };
         assert!(doc.find_by_fragment("key-1").is_some());
         assert!(doc.find_by_fragment("key-2").is_none());
+    }
+
+    #[test]
+    fn keyless_fragment_never_resolves() {
+        // RFC-ACDP-0021 §4.2 / kl-007 B: a listed acdp-kl- method is
+        // refused, not used.
+        let id = "did:web:example.com#acdp-kl-f7b7676c94df7e8fd9998e38f9fff04d8588b00d1801764e3f1877a3feae4477";
+        let doc = DidDocument {
+            id: "did:web:example.com".into(),
+            verification_methods: vec![VerificationMethod {
+                id: id.into(),
+                method_type: "Ed25519VerificationKey2020".into(),
+                controller: "did:web:example.com".into(),
+                public_key_jwk: None,
+                public_key_multibase: None,
+            }],
+            assertion_method: vec![AssertionMethodRef::Id(id.into())],
+            services: vec![],
+        };
+        let frag = id.split_once('#').unwrap().1;
+        assert!(doc.find_by_fragment(frag).is_none());
     }
 
     #[test]
@@ -405,6 +449,7 @@ mod tests {
                 public_key_multibase: None,
             }],
             assertion_method: vec![],
+            services: vec![],
         };
         assert!(doc.find_by_fragment("key-1").is_none());
         assert!(doc.find_by_fragment("evil-key-1").is_some());
@@ -417,6 +462,7 @@ mod tests {
             id: "did:web:example.com".into(),
             verification_methods: vec![],
             assertion_method: vec![AssertionMethodRef::Id("#key-1".into())],
+            services: vec![],
         };
         assert!(doc.is_assertion_method("did:web:example.com#key-1"));
         assert!(!doc.is_assertion_method("did:web:example.com#evil-key-1"));

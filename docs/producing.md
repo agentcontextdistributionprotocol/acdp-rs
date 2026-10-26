@@ -214,6 +214,36 @@ builder.omit_acdp_version()   // drops the field, matching the 0.1.x wire form
 > round-trip tests will surprise you. New lineages should keep the explicit
 > default.
 
+## Keyless signing (RFC-ACDP-0021, Draft)
+
+With the `keyless` feature, a workload with no long-lived key can sign
+under its OIDC or SPIFFE identity:
+
+```rust,ignore
+use acdp::producer::keyless::EphemeralKey;
+use acdp::types::keyless::IdentityDescriptor;
+
+let key = EphemeralKey::generate();
+// The token's `aud` must be the registry DID; it SHOULD carry
+// cnf.jkt = key.jwk()?.thumbprint()?.
+let req = key.attestation_request(
+    "did:web:agents.example.com:ci",          // controller
+    "did:web:registry.example.com",           // registry
+    IdentityDescriptor::oidc(issuer, subject, token),
+    None,                                     // default TTL (600 s)
+)?;
+let attestation = client.request_key_attestation(&req).await?;
+let producer = key.into_producer(&attestation.body)?;
+let publish = producer.publish_request().title("…").build()?;
+client.publish(&publish).await?;               // same registry, inside the window
+```
+
+The controller's DID document must list the identity in an
+`AcdpKeylessSigning` service. The registry must advertise
+`acdp-registry-keyless` and `acdp_version` 0.5.0 or later. The key never
+leaves the process. `build()` adds `key_attestation` to the request, and
+the field is covered by `content_hash`.
+
 ## What you get back
 
 `build()` returns a `PublishRequest` with `content_hash` and `signature`

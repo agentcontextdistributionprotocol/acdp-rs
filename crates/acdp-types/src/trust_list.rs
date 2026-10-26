@@ -115,7 +115,7 @@ pub struct TrustScope {
     pub types: Option<Vec<String>>,
 }
 
-mod ms {
+pub(crate) mod ms {
     use chrono::{DateTime, Utc};
     use serde::{Deserialize, Deserializer, Serializer};
 

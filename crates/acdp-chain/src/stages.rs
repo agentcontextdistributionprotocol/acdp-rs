@@ -69,6 +69,9 @@ pub(crate) struct Basic {
     pub key: KeyStage,
     /// The fingerprint of the located producer key.
     pub fingerprint: Option<String>,
+    /// A keyless node's attestation, when it checked (RFC-ACDP-0021).
+    #[cfg(feature = "keyless")]
+    pub keyless: Option<crate::keyless::Attested>,
 }
 
 impl Basic {
@@ -93,6 +96,9 @@ pub(crate) struct Engine<'p, 'a> {
     pub keys: BundleKeys,
     pub pinned: Pinned,
     pub require_attested_events: bool,
+    /// RFC-ACDP-0021 §11 accepted attesters.
+    #[cfg(feature = "keyless")]
+    pub keyless_attesters: Vec<String>,
 }
 
 /// What the full evaluation of one present node in one pass yields,
@@ -104,7 +110,7 @@ pub(crate) struct PassFacts {
 }
 
 impl Engine<'_, '_> {
-    fn registry_basis(&self, registry_did: &str) -> Basis {
+    pub(crate) fn registry_basis(&self, registry_did: &str) -> Basis {
         if self.pinned.registries.iter().any(|d| d == registry_did) {
             Basis::Pinned
         } else {
@@ -118,12 +124,23 @@ impl Engine<'_, '_> {
         let recomputed = acdp_crypto::compute_content_hash(pc.raw_body).ok();
         let hash_ok = recomputed.as_ref() == Some(&body.content_hash);
 
-        let check = self.keys.check(
-            &body.signature,
-            &body.content_hash,
-            body.agent_id.as_str(),
-            pass.t(),
-        );
+        // RFC-ACDP-0021 §10: a keyless key is located by its attestation.
+        #[cfg(feature = "keyless")]
+        let attested = acdp_types::keyless::is_keyless_key_id(&body.signature.key_id)
+            .then(|| self.keyless_attested(body, pass));
+        let check = match () {
+            #[cfg(feature = "keyless")]
+            () if attested.is_some() => match attested.as_ref().unwrap() {
+                Ok(a) => Ok(a.key_check()),
+                Err(m) => Err(*m),
+            },
+            () => self.keys.check(
+                &body.signature,
+                &body.content_hash,
+                body.agent_id.as_str(),
+                pass.t(),
+            ),
+        };
         let fingerprint = check.as_ref().ok().and_then(|c| c.fingerprint.clone());
 
         let (receipt_stage, receipt) =
@@ -258,6 +275,15 @@ impl Engine<'_, '_> {
                 (Some(signature), key_stage)
             }
         };
+        #[cfg(feature = "keyless")]
+        let (signature, key_stage, keyless) = match attested {
+            Some(Ok(a)) => {
+                let (signature, key_stage) = self.keyless_stages(body, &a, receipt.as_ref(), pass);
+                let placed = key_stage.value != KeyValue::Unresolvable;
+                (signature, key_stage, placed.then_some(a))
+            }
+            _ => (signature, key_stage, None),
+        };
 
         Basic {
             presence,
@@ -276,6 +302,8 @@ impl Engine<'_, '_> {
             receipt,
             key: key_stage,
             fingerprint,
+            #[cfg(feature = "keyless")]
+            keyless,
         }
     }
 
@@ -403,6 +431,12 @@ impl Engine<'_, '_> {
             if !strict || !dated {
                 continue;
             }
+            // RFC-ACDP-0021 §9.3: only an org-wide keyless key may sign a
+            // revocation.
+            #[cfg(feature = "keyless")]
+            if b.keyless.as_ref().is_some_and(|a| !a.attestation.org_wide) {
+                continue;
+            }
             let Ok(revocation) = KeyRevocation::from_body(&pc.body) else {
                 continue;
             };
@@ -443,6 +477,12 @@ impl Engine<'_, '_> {
         }
         let log = self.log(pc, basic, pass);
         let (retraction, facts) = self.retraction(pc, pass);
+        #[cfg(feature = "keyless")]
+        let revocations = &[
+            revocations,
+            self.attestation_retraction(basic, pass).as_slice(),
+        ]
+        .concat();
         let key_revocation = self.key_revocation(&pc.body, basic, revocations, pass);
         let mut key = basic.key.clone();
         if matches!(
@@ -615,7 +655,11 @@ impl Engine<'_, '_> {
     }
 
     /// §7.8 with §10.3 event-receipt verification.
-    fn retraction(&self, pc: &ParsedContext<'_>, pass: PassAt) -> (RetractionStage, PassFacts) {
+    pub(crate) fn retraction(
+        &self,
+        pc: &ParsedContext<'_>,
+        pass: PassAt,
+    ) -> (RetractionStage, PassFacts) {
         let body = &pc.body;
         let registry_did = acdp_did::web::authority_to_did_web(&body.origin_registry);
         let n = pc.events.len();

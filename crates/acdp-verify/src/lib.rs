@@ -216,6 +216,22 @@ pub async fn verify_publish_request_signature(
     .await
 }
 
+/// RFC-ACDP-0021 §4.2 / §8.1: a keyless key id (`#acdp-kl-…`) is never
+/// resolved through RFC-ACDP-0001 §5.11, so the DID-document paths refuse
+/// it before any fetch. Keyless-aware consumers verify it through its key
+/// attestation instead (`acdp_client`, feature `keyless`); everyone else
+/// fails closed here, exactly as for an unknown key (`kl-007` A, D).
+#[cfg(feature = "client")]
+fn refuse_keyless_fragment(key_id: &str, fragment: &str) -> Result<(), AcdpError> {
+    if fragment.starts_with(acdp_did::KEYLESS_FRAGMENT_PREFIX) {
+        return Err(AcdpError::KeyResolution(format!(
+            "signature.key_id '{key_id}' is a keyless key id: it resolves only through its \
+             key attestation (RFC-ACDP-0021), never through the DID document"
+        )));
+    }
+    Ok(())
+}
+
 /// Steps 1–7 of RFC-ACDP-0001 §5.11 — the part of body verification that
 /// operates only on the signature envelope and is identical for stored
 /// `Body` values and incoming `PublishRequest` values. Caller is responsible
@@ -240,6 +256,7 @@ async fn verify_signature_envelope(
             "signature.key_id '{key_id}' has an empty '#fragment'"
         )));
     }
+    refuse_keyless_fragment(key_id, fragment)?;
 
     // Step 2: DID portion MUST equal agent_id
     if did_part != agent_id.as_str() {
@@ -510,6 +527,7 @@ pub async fn verify_body_signature_historical_since(
     let (did_part, fragment) = key_id.split_once('#').ok_or_else(|| {
         AcdpError::KeyResolution(format!("signature.key_id '{key_id}' has no '#fragment'"))
     })?;
+    refuse_keyless_fragment(key_id, fragment)?;
     if did_part != body.agent_id.as_str() {
         return Err(AcdpError::KeyNotAuthorized(format!(
             "key_id DID '{did_part}' ≠ agent_id '{}'",

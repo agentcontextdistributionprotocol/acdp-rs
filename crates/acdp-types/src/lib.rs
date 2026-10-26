@@ -15,6 +15,7 @@ pub mod change;
 pub mod cosignature;
 pub mod data_ref;
 pub mod event_receipt;
+pub mod keyless;
 pub mod lifecycle;
 pub mod log;
 pub mod profile;

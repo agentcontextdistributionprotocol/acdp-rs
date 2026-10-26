@@ -54,6 +54,8 @@ const BODY_FIELD_NAMES: &[&str] = &[
     "metadata",
     "schema_uri",
     "anchors",
+    // RFC-ACDP-0021 §6.3.
+    "key_attestation",
 ];
 
 /// Validate a raw lifecycle request body against the closed

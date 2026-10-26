@@ -157,6 +157,11 @@ const KNOWN_FAMILIES: &[&str] = &[
     "fed",
     "fp",
     "idem",
+    // RFC-ACDP-0021 (keyless signing): bound by name in `tests/keyless.rs`
+    // (`kl_fixtures_each_have_tests`); kl-001 runs byte for byte there,
+    // the consumer scenarios in `tests/keyless_verify.rs` and kl-008 in
+    // `crates/acdp-chain/tests/keyless.rs`.
+    "kl",
     "lc",
     "lhr",
     "lin",

@@ -46,6 +46,17 @@ client  = ["dep:acdp-client", "acdp-primitives/reqwest", "acdp-server?/client"]
 server  = ["dep:acdp-server"]
 # `acdp::client::blocking`: synchronous facade with per-call deadlines.
 blocking = ["client", "acdp-client/blocking"]
+# RFC-ACDP-0021 keyless signing (0.5.0 Draft): ephemeral keys attested
+# by a registry (`producer::keyless`, `Producer::keyless`), the
+# `/key-attestations` client calls and §8.1 consumer verification
+# (`client`), and the RFC-ACDP-0017 key stage for keyless nodes
+# (`chain`). Without it every keyless-signed body fails closed, exactly
+# as for an unknown key.
+keyless = [
+    "acdp-producer/keyless",
+    "acdp-client?/keyless",
+    "acdp-chain/keyless",
+]
 tracing = [
     "acdp-did/tracing",
     "acdp-client?/tracing",
@@ -91,6 +102,11 @@ required-features = ["client", "test-transport"]
 # Receipt end-to-end tests (RFC-ACDP-0010) drive the in-process TLS
 # registry harness: `client` for the resolver/RegistryClient, `server`
 # for RegistryServer + InMemoryStore.
+[[test]]
+name              = "keyless_verify"
+path              = "tests/keyless_verify.rs"
+required-features = ["client", "test-transport", "keyless"]
+
 [[test]]
 name              = "receipts"
 path              = "tests/receipts.rs"

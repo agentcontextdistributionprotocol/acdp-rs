@@ -11,6 +11,7 @@
 //! crate, which re-exports everything here.
 
 pub mod error;
+pub mod keyless;
 pub mod limits;
 pub mod primitives;
 pub mod revocation;

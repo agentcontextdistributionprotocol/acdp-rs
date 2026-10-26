@@ -739,6 +739,66 @@ impl RegistryClient {
     }
 }
 
+// ── Keyless signing (RFC-ACDP-0021, 0.5.0 Draft) ─────────────────────────────
+
+#[cfg(feature = "keyless")]
+impl RegistryClient {
+    /// `POST /key-attestations` (RFC-ACDP-0021 §5.1): ask the registry to
+    /// attest an ephemeral key. Returns the attestation's full retrieval
+    /// representation, including its `registry_receipt`; pass its body to
+    /// `acdp_producer::keyless::EphemeralKey::into_producer`.
+    ///
+    /// Refusals keep their `details.reason`: read it with
+    /// [`acdp_types::keyless::KeylessReason::of`].
+    pub async fn request_key_attestation(
+        &self,
+        req: &acdp_types::keyless::KeyAttestationRequest,
+    ) -> Result<FullContext, AcdpError> {
+        req.validate()?;
+        let url = format!("{}/key-attestations", self.base);
+        let resp = self
+            .http
+            .post(&url)
+            .header("Content-Type", "application/acdp+json")
+            .json(req)
+            .send()
+            .await?;
+        self.parse_success(resp, MAX_CONTEXT_BYTES)
+            .await
+            .map(|(v, _)| v)
+    }
+
+    /// `GET /key-attestations` (RFC-ACDP-0021 §5.4): the attestations the
+    /// registry minted for `controller`, newest first, optionally for one
+    /// identity. A controller uses it to find every key attested for a
+    /// leaked identity and revoke each (§9.3).
+    pub async fn list_key_attestations(
+        &self,
+        controller: &str,
+        identity: Option<&acdp_types::keyless::WorkloadIdentity>,
+        cursor: Option<&str>,
+    ) -> Result<acdp_types::keyless::KeyAttestationList, AcdpError> {
+        use acdp_types::keyless::WorkloadIdentity;
+        let mut query: Vec<(&str, &str)> = vec![("controller", controller)];
+        match identity {
+            Some(WorkloadIdentity::Oidc { issuer, subject }) => {
+                query.push(("issuer", issuer));
+                query.push(("subject", subject));
+            }
+            Some(WorkloadIdentity::Spiffe { subject }) => query.push(("subject", subject)),
+            None => {}
+        }
+        if let Some(c) = cursor {
+            query.push(("cursor", c));
+        }
+        let url = format!("{}/key-attestations", self.base);
+        let resp = self.send_read(self.http.get(&url).query(&query)).await?;
+        self.parse_success(resp, MAX_CONTEXT_BYTES)
+            .await
+            .map(|(v, _)| v)
+    }
+}
+
 /// Classify a registry document that does not deserialize (not JSON, a
 /// closed-shape object with an undefined field, a `null` in a non-nullable
 /// slot, a missing required field) as `schema_violation`. RFC-ACDP-0007 §3.3.1:

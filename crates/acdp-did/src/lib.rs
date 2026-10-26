@@ -8,7 +8,7 @@ pub mod document;
 pub mod key;
 pub mod web;
 
-pub use document::{AssertionMethodRef, DidDocument, VerificationMethod};
+pub use document::{AssertionMethodRef, DidDocument, VerificationMethod, KEYLESS_FRAGMENT_PREFIX};
 pub use key::{
     did_key_document, did_key_from_ed25519, did_key_from_p256_sec1, did_key_url, resolve_did_key,
     resolve_did_key_url, DidKeyMaterial,

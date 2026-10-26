@@ -15,8 +15,8 @@ use acdp::crypto::{canonicalize, compute_content_hash, derive_lineage_id, Signin
 use acdp::did::DidDocument;
 use acdp::types::keyless::{
     classify, is_keyless_key_id, may_supersede, pop_preimage, token_hash, IdentityNow, Jwk,
-    KeyAttestation, KeyAttestationRef, KeylessFacts, KeylessReason, KeylessSigner, KeylessStatus,
-    ReceiptFacts, WorkloadIdentity,
+    KeyAttestation, KeylessFacts, KeylessReason, KeylessSigner, KeylessStatus, ReceiptFacts,
+    WorkloadIdentity,
 };
 use acdp::types::{Body, CtxId};
 use acdp::AcdpError;
@@ -264,7 +264,12 @@ fn kl_001_keyless_body_from_the_producer() {
     );
     assert_eq!(
         req.key_attestation,
-        Some(serde_json::from_value::<KeyAttestationRef>(pc["key_attestation"].clone()).unwrap())
+        Some(
+            serde_json::from_value::<acdp::types::keyless::KeyAttestationRef>(
+                pc["key_attestation"].clone()
+            )
+            .unwrap()
+        )
     );
 
     // The member survives materialization and reads back typed.

@@ -909,6 +909,57 @@ feed's **own** cursor and never the hint's `head_cursor`. Registries sign
 with `sign_hint`. `SubscriptionRequest`, `Subscription` and `ChangeHint`
 are the closed wire types.
 
+## Registry trust lists (RFC-ACDP-0020, Draft)
+
+A trust list is a signed body of type `acdp:trust-list`. Its issuer is a DID
+the consumer pins in configuration. The list names the registries the
+consumer relies on, the receipt keys and profiles each must have, and which
+bodies each is trusted for. Only the `trusted` outcome permits reliance. The
+pure logic is in `acdp::types::trust_list` and has three parts, run in this
+order:
+
+1. **Version validity (§5.2).** `TrustList::from_metadata` parses and checks
+   the closed `acdp-trust-list/1` object. That includes `registry_did` being
+   exactly `did:web:` followed by `origin`, which invalidates the whole
+   version if it fails. `validate_list_version` adds the pin checks: issuer,
+   `list_id`, the optional `issuer_key_fingerprints`, and a revoked issuer
+   key.
+2. **Selection (§5.4).** `select_version` applies a fixed check order:
+   `no_valid_version`, then `rollback`, `equivocation`, `retracted` and
+   `list_window`. The floor (`advance_floor`) counts retracted versions. In
+   the as-of pass, only versions issued by T are held.
+3. **Evaluation (§6.2).** `evaluate` checks the body and returns an outcome:
+   - The `ctx_id` authority must equal `origin_registry`.
+   - Each entry is checked in this order: the receipt's registry DID, the
+     receipt requirement, the pinned receipt key, the profiles, the window,
+     then the scope.
+   - When several lists apply, the best outcome wins (lists in the usable,
+     expired and invalid states compete). Ties go to the lower
+     `(issuer, list_id)`.
+
+The receipt input is the RFC-ACDP-0010 §6 fingerprint of the **registry key
+that signed the receipt**. `VerifiedContext::receipt_registry_key_fingerprint`
+returns it. It is not the receipt's `key_fingerprint` member, which names the
+producer's key.
+
+Three places run it:
+
+| Where | Entry point | Notes |
+|---|---|---|
+| Online | `client::trust::TrustLists` | `add_verified` takes a list fetched with `VerifiedContext::fetch`; issuer-signed retractions are read from `registry_state`. `add_offline` takes a did:key list carried out of band. `evaluate` / `report` cover the latest pass. Persist `floors()`. `BlockingClient::add_trust_list` does the fetch and the add in one call. |
+| Out of band | `verify::trust::verify_list_offline` | A did:key list, as a retrieved body or a signed publish request (§7). |
+| Evidence bundle | `chain::verify_chain_with_trust` | Reads lists from the bundle's `contexts`. Each pass verifies them with its own evidence: as-of DID documents, admitted issuer retractions and applied revocations. Each pass yields one `acdp-trust-report/1`, bound by `verdict_digest`. The verdict is identical to `verify_chain`'s. A node's receipt counts only when that pass's `registry_receipt` stage is `ok`. |
+
+The `TrustReport` (§8) is deterministic:
+
+- `lists` is sorted by `(issuer, list_id)`; `nodes` is sorted by `ctx_id`.
+- `serial` and `content_hash` appear only for `used` and `expired` lists.
+- `issuer`, `list_id` and `entry_index` appear only when an entry decided.
+- `report_digest` is SHA-256 over the JCS of the report without it.
+
+The trust step never changes the chain verdict. Refusing a chain because of
+an untrusted node is consumer policy, for example `TrustReport::all_trusted`.
+
 ## Fetching data references
 
 A verified context tells you *where* its data lives; fetching that data is a

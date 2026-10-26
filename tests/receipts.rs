@@ -1225,3 +1225,105 @@ async fn report_rejects_invalid_receipt_under_default_policy() {
     .expect_err("fetch_report must reject a tampered receipt under the default policy");
     assert!(matches!(err, AcdpError::InvalidReceipt(_)), "got {err:?}");
 }
+
+// ── RFC-ACDP-0020: a trust list pins the registry's receipt key ─────────────
+
+/// The trust-list receipt input is the fingerprint of the registry key
+/// that signed the receipt, not the receipt's `key_fingerprint` member
+/// (the producer's key). A list fetched and verified online is held
+/// with its floor, and a body is trusted only under the pinned key.
+#[tokio::test]
+async fn trust_list_pins_the_registry_receipt_key() {
+    use acdp::client::trust::TrustLists;
+    use acdp::crypto::fingerprint::fingerprint_ed25519;
+    use acdp::types::trust_list::{IssuerPin, TrustOutcome, TrustReason};
+
+    let producer_key = SigningKey::from_bytes(&[7u8; 32]);
+    let producer_pub = producer_key.verifying_key_bytes();
+    let registry_pub = SigningKey::from_bytes(&[0x11u8; 32]).verifying_key_bytes();
+    let h = start_harness(&registry_pub, &producer_pub).await;
+    let (ctx_id, ctx_json, _) = publish_with_receipts(&h, producer_key).await;
+    h.serve_context(ctx_json);
+    let client = h.client();
+    let body = VerifiedContext::fetch(&client, &h.resolver, &ctx_id)
+        .await
+        .expect("fetch + verify");
+    let registry_fp = fingerprint_ed25519(&registry_pub);
+    assert_eq!(
+        body.receipt_registry_key_fingerprint(),
+        Some(registry_fp.as_str())
+    );
+    assert_ne!(
+        body.verified_receipt().unwrap().key_fingerprint,
+        registry_fp,
+        "the receipt's key_fingerprint names the producer key"
+    );
+
+    // A did:key issuer's list, published to and fetched from the registry.
+    let issuer = Producer::new_did_key(SigningKey::from_bytes(&[0x42; 32]));
+    let list = |serial: u64, pinned: &str| {
+        issuer
+            .publish_request()
+            .title("Trust list")
+            .context_type(ContextType::Custom("acdp:trust-list".into()))
+            .visibility(Visibility::Public)
+            .metadata(serde_json::json!({
+                "trust_list_version": "acdp-trust-list/1",
+                "list_id": "tenant-acme.production",
+                "serial": serial,
+                "issued_at": "2026-10-26T00:00:00.000Z",
+                "valid_from": "2026-01-01T00:00:00.000Z",
+                "valid_until": "2099-01-01T00:00:00.000Z",
+                "entries": [{
+                    "registry_did": REGISTRY_DID,
+                    "origin": REGISTRY_AUTHORITY,
+                    "receipt_key_fingerprints": [pinned],
+                    "required_profiles": ["acdp-registry-receipts"]
+                }]
+            }))
+            .build()
+            .expect("list")
+    };
+    let server =
+        RegistryServer::try_new(InMemoryStore::new(), caps(), REGISTRY_AUTHORITY).expect("server");
+    let resp = server
+        .publish_verified(&list(7, &registry_fp), None, &h.resolver)
+        .await
+        .expect("publish list");
+    let stored = server.store().get(&resp.ctx_id).unwrap().unwrap();
+    h.serve_context(serde_json::to_value(&stored).unwrap());
+    let fetched = VerifiedContext::fetch(&client, &h.resolver, &resp.ctx_id)
+        .await
+        .expect("fetch list");
+
+    let pin = IssuerPin::new(stored.body.agent_id.as_str(), "tenant-acme.production");
+    let mut lists = TrustLists::new(vec![pin.clone()]);
+    assert_eq!(lists.add_verified(&fetched, &h.resolver).await, Ok(1));
+    let series = (pin.issuer.clone(), pin.list_id.clone());
+    assert_eq!(lists.floors()[&series], 7);
+    let now = chrono::Utc::now();
+    let node = lists.evaluate(&body, now, None);
+    assert_eq!(
+        (node.outcome, node.entry_index),
+        (TrustOutcome::Trusted, Some(0))
+    );
+
+    // Serial 8 pins another key: the body is refused under it.
+    let other = fingerprint_ed25519(&SigningKey::from_bytes(&[0x12; 32]).verifying_key_bytes());
+    let raw8 = serde_json::to_value(list(8, &other)).unwrap();
+    assert_eq!(lists.add_offline(&raw8, &[], false), Ok(1));
+    let node = lists.evaluate(&body, now, None);
+    assert_eq!(
+        (node.outcome, node.reason),
+        (
+            TrustOutcome::UntrustedRegistry,
+            Some(TrustReason::ReceiptKeyUnpinned)
+        )
+    );
+    // C supplied without the receipts profile.
+    let node = lists.evaluate(&body, now, Some(&["acdp-registry-core".to_string()]));
+    assert!(node.profiles_checked);
+    let report = lists.report(&[&body], now, &Default::default());
+    assert_eq!(report.lists[0].serial, Some(8));
+    assert_eq!(report.compute_digest(), report.report_digest);
+}

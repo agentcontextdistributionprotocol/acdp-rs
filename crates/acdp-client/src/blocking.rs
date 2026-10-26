@@ -66,9 +66,11 @@ use acdp_primitives::error::AcdpError;
 use acdp_types::body::{Body, FullContext};
 use acdp_types::change::{Change, ChangesResponse, WatchFilter};
 use acdp_types::primitives::{CtxId, LineageId};
+use acdp_types::trust_list::ListRejected;
 use serde_json::Value;
 
 use crate::recall::{verify_change, ChangeVerdict, HeldContext, Since};
+use crate::trust::TrustLists;
 use crate::{CrossRegistryResolver, RegistryClient, VerificationPolicy, VerifiedContext};
 
 /// Default number of runtime worker threads (see
@@ -274,6 +276,31 @@ impl BlockingClient {
             )
             .await
         })
+    }
+
+    /// [`VerifiedContext::fetch_with_policy`] then
+    /// [`TrustLists::add_verified`]: fetch a trust-list version, verify
+    /// it, and hold it (RFC-ACDP-0020 §5.2). The outer error is a fetch
+    /// or verification failure; the inner one is the §5.2 rejection of
+    /// a body that verified but is not a valid version of any pin.
+    /// `lists` is updated only when the call completes in time.
+    pub fn add_trust_list(
+        &self,
+        lists: &mut TrustLists,
+        ctx_id: &CtxId,
+        policy: &VerificationPolicy,
+        deadline: Instant,
+    ) -> Result<Result<usize, ListRejected>, AcdpError> {
+        let (ctx_id, policy, mut owned) = (ctx_id.clone(), policy.clone(), lists.clone());
+        let (owned, held) = self.run(deadline, |c| async move {
+            let list =
+                VerifiedContext::fetch_with_policy(c.client(), c.resolver(), &ctx_id, &policy)
+                    .await?;
+            let held = owned.add_verified(&list, c.resolver()).await;
+            Ok((owned, held))
+        })?;
+        *lists = owned;
+        Ok(held)
     }
 
     /// [`CrossRegistryResolver::resolve`]: resolve and verify a context at

@@ -39,6 +39,7 @@ mod keys;
 mod options;
 mod stages;
 mod syntax;
+mod trust;
 mod verdict;
 mod walk;
 
@@ -53,6 +54,7 @@ pub use evidence::{
     DiscoveryRecord, Evidence, Omitted, OmittedReason, EVIDENCE_VERSION,
 };
 pub use options::{Limits, Options, Pinned, PinnedSnapshot};
+pub use trust::{ChainTrust, TrustOptions};
 pub use verdict::*;
 
 use crate::evidence::OmittedReason as Reason;
@@ -85,6 +87,35 @@ pub fn verify_chain_with_budget<S: AsRef<str>>(
     options: &Options,
     should_stop: &mut dyn FnMut() -> bool,
 ) -> Result<ChainVerdict, ChainError> {
+    run(roots, evidence, options, should_stop, None).map(|(v, _)| v)
+}
+
+/// [`verify_chain`] plus the optional RFC-ACDP-0020 trust step (§7, §8).
+///
+/// Trust-list bodies are read from the same bundle's `contexts`: every
+/// `acdp:trust-list` body whose issuer is pinned in `trust`, verified
+/// with that pass's evidence (as-of DID documents, admitted issuer
+/// retractions, applied revocations). Each pass yields one
+/// `acdp-trust-report/1` bound to the verdict by `verdict_digest`. The
+/// verdict is exactly what [`verify_chain`] returns: the trust step
+/// never changes it.
+pub fn verify_chain_with_trust<S: AsRef<str>>(
+    roots: &[S],
+    evidence: &Evidence,
+    options: &Options,
+    trust: &TrustOptions,
+) -> Result<(ChainVerdict, ChainTrust), ChainError> {
+    let (verdict, report) = run(roots, evidence, options, &mut || false, Some(trust))?;
+    Ok((verdict, report.expect("trust options were given")))
+}
+
+fn run<S: AsRef<str>>(
+    roots: &[S],
+    evidence: &Evidence,
+    options: &Options,
+    should_stop: &mut dyn FnMut() -> bool,
+    trust: Option<&TrustOptions>,
+) -> Result<(ChainVerdict, Option<ChainTrust>), ChainError> {
     options.check()?;
     let roots: Vec<String> = roots.iter().map(|r| r.as_ref().to_string()).collect();
     if roots.is_empty() {
@@ -242,7 +273,17 @@ pub fn verify_chain_with_budget<S: AsRef<str>>(
     };
     verdict.as_of_digest = as_of_projection(&verdict).map(|p| jcs_digest(&p));
     verdict.verdict_digest = verdict_digest(&verdict);
-    Ok(verdict)
+    let trust = trust.map(|opts| {
+        trust::Run {
+            engine: &engine,
+            parsed: &parsed,
+            passes: &passes,
+            basics: &basics,
+            revocations: &revocations,
+        }
+        .evaluate(&verdict, opts)
+    });
+    Ok((verdict, trust))
 }
 
 /// `verdict_digest` (§9.2): the verdict without both digests.

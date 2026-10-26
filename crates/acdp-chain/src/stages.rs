@@ -50,6 +50,9 @@ pub(crate) struct VerifiedReceipt {
     pub key_status: KeyStatus,
     pub basis: Basis,
     pub key_fingerprint: String,
+    /// The RFC-ACDP-0010 §6 fingerprint of the registry key that signed
+    /// the receipt (RFC-ACDP-0020 §6.1's receipt input).
+    pub registry_key_fingerprint: Option<String>,
 }
 
 /// The stages that do not depend on key revocation: what a revocation
@@ -354,6 +357,7 @@ impl Engine<'_, '_> {
                         key_status,
                         basis,
                         key_fingerprint: r.key_fingerprint.clone(),
+                        registry_key_fingerprint: c.fingerprint.clone(),
                     }),
                 )
             }
@@ -723,6 +727,29 @@ impl Engine<'_, '_> {
             },
             facts,
         )
+    }
+
+    /// RFC-ACDP-0020 §5.3: whether the events this pass admits withdraw
+    /// the body by the producer's own signed `retracted` event. Only
+    /// producer-actor events that verify count; a registry-actor
+    /// retraction never withdraws a trust list.
+    pub(crate) fn producer_retracted(&self, pc: &ParsedContext<'_>, pass: PassAt) -> bool {
+        let (stage, _) = self.retraction(pc, pass);
+        let Some(n) = stage.events_admitted else {
+            return false;
+        };
+        let body = &pc.body;
+        let events: Vec<LifecycleEvent> = pc.events[..n as usize]
+            .iter()
+            .filter(|(e, raw)| {
+                e.actor == body.agent_id && {
+                    let (signed, authorized, _) = self.event_status(body, e, raw, pass);
+                    signed && authorized
+                }
+            })
+            .map(|(e, _)| e.clone())
+            .collect();
+        retraction_state(&events)
     }
 
     /// §7.9: RFC-ACDP-0014 §7–§8 over what the pass admits.

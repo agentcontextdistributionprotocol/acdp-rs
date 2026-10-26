@@ -918,6 +918,9 @@ pub struct VerifiedContext {
     /// `verified_receipt` (0.5.0). `None` exactly when `verified_receipt`
     /// is `None`.
     receipt_key_status: Option<acdp_types::receipt::ReceiptKeyStatus>,
+    /// The RFC-ACDP-0010 §6 fingerprint of the registry key that signed
+    /// `verified_receipt`. `None` exactly when `verified_receipt` is.
+    receipt_registry_key_fingerprint: Option<String>,
     /// The receipt verdict, reported separately from the body verdict
     /// (RFC-ACDP-0010 §8, 0.5.0). `None` when no receipt was evaluated.
     receipt_verdict: Option<Result<(), AcdpError>>,
@@ -964,6 +967,7 @@ struct Retrieved {
     key_status: KeyAuthorization,
     verified_receipt: Option<acdp_types::receipt::RegistryReceipt>,
     receipt_key_status: Option<acdp_types::receipt::ReceiptKeyStatus>,
+    receipt_registry_key_fingerprint: Option<String>,
     receipt_verdict: Option<Result<(), AcdpError>>,
     lineage_binding: acdp_verify::LineageBinding,
     revocation: RevocationAssessment,
@@ -1002,6 +1006,7 @@ impl Retrieved {
             key_status: self.key_status,
             verified_receipt: self.verified_receipt,
             receipt_key_status: self.receipt_key_status,
+            receipt_registry_key_fingerprint: self.receipt_registry_key_fingerprint,
             receipt_verdict: self.receipt_verdict,
             lineage_binding: self.lineage_binding,
             verified_head_receipt: None,
@@ -1280,7 +1285,7 @@ impl VerifiedContext {
                     since,
                 )
                 .await?;
-                let verdict = super::receipt::verify_receipt_value_with_status_since(
+                let verdict = super::receipt::verify_receipt_placed(
                     value,
                     expected_ctx_id,
                     &ctx.body,
@@ -1300,10 +1305,20 @@ impl VerifiedContext {
                 }
             }
         };
-        let (verified_receipt, receipt_key_status, receipt_verdict) = match receipt_outcome {
-            None => (None, None, None),
-            Some(Ok((receipt, status))) => (Some(receipt), Some(status), Some(Ok(()))),
-            Some(Err(e)) => (None, None, Some(Err(e))),
+        let (
+            verified_receipt,
+            receipt_key_status,
+            receipt_registry_key_fingerprint,
+            receipt_verdict,
+        ) = match receipt_outcome {
+            None => (None, None, None, None),
+            Some(Ok(placed)) => (
+                Some(placed.receipt),
+                Some(placed.key_status),
+                Some(placed.registry_key_fingerprint),
+                Some(Ok(())),
+            ),
+            Some(Err(e)) => (None, None, None, Some(Err(e))),
         };
 
         // ── Revocation phase (RFC-ACDP-0014 §7/§8) ──────────────────
@@ -1425,6 +1440,7 @@ impl VerifiedContext {
             key_status,
             verified_receipt,
             receipt_key_status,
+            receipt_registry_key_fingerprint,
             receipt_verdict,
             lineage_binding,
             revocation,
@@ -1768,6 +1784,14 @@ impl VerifiedContext {
     /// [`ReceiptKeyStatus::Historical`]: acdp_types::receipt::ReceiptKeyStatus::Historical
     pub fn receipt_key_status(&self) -> Option<acdp_types::receipt::ReceiptKeyStatus> {
         self.receipt_key_status
+    }
+
+    /// The RFC-ACDP-0010 §6 fingerprint of the registry key that signed
+    /// [`Self::verified_receipt`] — the receipt input of RFC-ACDP-0020
+    /// §6.1, which is not the receipt's `key_fingerprint` member (that
+    /// names the producer's key). `None` exactly when no receipt verified.
+    pub fn receipt_registry_key_fingerprint(&self) -> Option<&str> {
+        self.receipt_registry_key_fingerprint.as_deref()
     }
 
     /// The registry-receipt verdict, reported separately from the body

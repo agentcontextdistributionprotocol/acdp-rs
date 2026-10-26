@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.2](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-client-v0.17.1...acdp-client-v0.17.2) - 2026-10-26
+
+### Added
+
+- *(client)* blocking facade with per-call deadlines ([#449](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/449))
+
 ## [0.17.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-client-v0.17.0...acdp-client-v0.17.1) - 2026-10-26
 
 ### Fixed

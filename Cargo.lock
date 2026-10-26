@@ -83,6 +83,7 @@ dependencies = [
  "acdp-crypto",
  "acdp-did",
  "acdp-primitives",
+ "acdp-producer",
  "acdp-safe-http",
  "acdp-types",
  "acdp-validation",

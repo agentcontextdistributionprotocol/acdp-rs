@@ -339,14 +339,25 @@ pub(crate) async fn gather(
         }
     }
 
+    (gathered.in_scope, gathered.hints) = scope(all, agent_id);
+    gathered
+}
+
+/// RFC-ACDP-0014 §7 producer scope: split revocations into those that
+/// speak for `agent_id` and out-of-scope hints (deduplicated).
+fn scope(
+    all: Vec<SourcedRevocation>,
+    agent_id: &AgentDid,
+) -> (Vec<SourcedRevocation>, Vec<SourcedRevocation>) {
+    let (mut in_scope, mut hints) = (Vec::new(), Vec::new());
     for r in all {
         if r.speaks_for(agent_id) {
-            gathered.in_scope.push(r);
-        } else if !gathered.hints.contains(&r) {
-            gathered.hints.push(r);
+            in_scope.push(r);
+        } else if !hints.contains(&r) {
+            hints.push(r);
         }
     }
-    gathered
+    (in_scope, hints)
 }
 
 /// Decide the verdict for `signing_key_fingerprint` (`None` when there is
@@ -492,4 +503,150 @@ pub(crate) fn decide_known(
         receipt_placement,
         accept_historical_receipt_key,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acdp_types::primitives::{ContextType, CtxId, Visibility};
+    use serde_json::{json, Value};
+
+    fn spec_dir() -> Option<std::path::PathBuf> {
+        let candidates = [
+            std::env::var("ACDP_SPEC_DIR")
+                .ok()
+                .map(std::path::PathBuf::from),
+            Some(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../agentcontextdistributionprotocol"),
+            ),
+        ];
+        candidates
+            .into_iter()
+            .flatten()
+            .find(|p| p.join("schemas/conformance").exists())
+    }
+
+    /// One `rev-007` member as acdp would hold it after discovery: built
+    /// as a publish request and parsed by `KeyRevocation`, which applies
+    /// the §4/§10 type rule and derives the trust class. `None` when acdp
+    /// would not treat it as a revocation at all.
+    fn member(m: &Value) -> Option<SourcedRevocation> {
+        let agent = AgentDid::new(m["agent_id"].as_str().unwrap());
+        let mut meta = json!({ "revoked_key_fingerprint": m["revoked_key_fingerprint"] });
+        for k in ["compromised_since", "revoked_key_controller"] {
+            if let Some(v) = m.get(k) {
+                meta[k] = v.clone();
+            }
+        }
+        let req = acdp_producer::Producer::new(
+            acdp_crypto::SigningKey::from_bytes(&[0x42; 32]),
+            agent.clone(),
+            format!("{agent}#key-9"),
+        )
+        .publish_request()
+        .title("rev-007 member")
+        .context_type(serde_json::from_value::<ContextType>(m["type"].clone()).ok()?)
+        .visibility(Visibility::Public)
+        .metadata(meta)
+        .build()
+        .ok()?;
+        let mut r = KeyRevocation::from_publish_request(&req).ok()?;
+        r.ctx_id = Some(CtxId(m["ctx_id"].as_str().unwrap().to_owned()));
+        Some(r.sourced(RevocationSource::Discovered {
+            authority: "registry.example.com".into(),
+        }))
+    }
+
+    /// rev-007 (spec aa9701c): every known-answer vector through `scope`
+    /// and `decide`, the code `find_revocations_verdict` and
+    /// `VerifiedContext` run.
+    #[test]
+    fn rev_007_classification_known_answers() {
+        let Some(spec) = spec_dir() else {
+            assert!(
+                std::env::var("ACDP_REQUIRE_CONFORMANCE").is_err(),
+                "ACDP_REQUIRE_CONFORMANCE is set but the spec checkout was not found"
+            );
+            eprintln!("ACDP spec not found; skipping rev-007");
+            return;
+        };
+        let path = spec.join("schemas/conformance/rev-007-classification-known-answers.json");
+        let fixture: Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("rev-007 fixture")).unwrap();
+        let mut disagreements = Vec::new();
+        for v in fixture["vectors"].as_array().unwrap() {
+            let i = &v["input"];
+            let agent = AgentDid::new(i["context"]["agent_id"].as_str().unwrap());
+            let fp = i["context"]["key_fingerprint"].as_str().unwrap();
+            let all = i["revocations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(member)
+                .collect();
+            let (in_scope, hints) = scope(all, &agent);
+            let unknown = i["unknown_lookups"].as_u64().unwrap() > 0;
+            let discovery = if unknown {
+                Err(AcdpError::RevocationUnknown {
+                    reason: UnknownReason::Transient,
+                    source: Box::new(AcdpError::Http("lookup failed".into())),
+                    detail: "rev-007 unknown lookup".into(),
+                })
+            } else {
+                Ok(DiscoveryOutcome {
+                    producer_signed: in_scope.len(),
+                    registry_attested: Some(0),
+                })
+            };
+            let placement = match &i["receipt"] {
+                r if r.is_null() || r["verified"] == false => None,
+                r => Some((
+                    r["created_at"].as_str().unwrap().parse().unwrap(),
+                    match r["key_status"].as_str().unwrap() {
+                        "current" => ReceiptKeyStatus::Current,
+                        _ => ReceiptKeyStatus::Historical,
+                    },
+                )),
+            };
+            let gathered = Gathered {
+                in_scope,
+                hints,
+                complete: !unknown,
+                registry_attested_checked: !unknown,
+                discovery: Some(discovery),
+                observed_at: None,
+                on_failure: DiscoveryFailurePolicy::FailClosed,
+            };
+            let got = match decide(gathered, Some(fp), placement, false).verdict {
+                RevocationVerdict::Revoked {
+                    effect,
+                    boundary,
+                    revocation,
+                    ..
+                } => json!({
+                    "key_revocation": match effect {
+                        RevocationEffect::PreCompromise => "pre-compromise",
+                        RevocationEffect::Revoked => "revoked",
+                        _ => "unplaceable",
+                    },
+                    "boundary": fmt_ms(boundary),
+                    "revocation_ctx_id": revocation.ctx_id.map(|c| c.0),
+                }),
+                RevocationVerdict::NotRevoked { .. } => json!({
+                    "key_revocation": "not-revoked", "boundary": null, "revocation_ctx_id": null
+                }),
+                RevocationVerdict::Unknown { .. } => json!({
+                    "key_revocation": "unknown", "boundary": null, "revocation_ctx_id": null
+                }),
+            };
+            if got != v["expected"] {
+                disagreements.push(format!(
+                    "{}: acdp {got}, expected {}",
+                    v["name"], v["expected"]
+                ));
+            }
+        }
+        assert!(disagreements.is_empty(), "{}", disagreements.join("\n"));
+    }
 }

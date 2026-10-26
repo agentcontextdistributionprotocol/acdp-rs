@@ -1,5 +1,5 @@
-//! Offline, as-of chain verification for ACDP (RFC-ACDP-0017, 0.5.0
-//! Draft).
+//! Offline, as-of chain verification for ACDP (RFC-ACDP-0017, Final
+//! at 0.5.0; §10–§11 remain Draft).
 //!
 //! [`verify_chain`] walks a context's `derived_from` DAG inside an
 //! [`Evidence`] bundle and answers two questions about every node:

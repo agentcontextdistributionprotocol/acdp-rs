@@ -1506,6 +1506,58 @@ fn latest_pass_admits_a_historical_producer_key_only_with_a_receipt() {
     );
 }
 
+#[test]
+fn chain_011_a_cross_implementation_vectors_reproduce() {
+    // chain-011: the 27 edge vectors on which acdp-chain 0.17.1 and
+    // acdp-verifier-py agreed byte for byte. They live in the spec
+    // checkout, so this runs only when it is found.
+    let Some(spec) = common::schema::spec_dir() else {
+        assert!(
+            std::env::var("ACDP_REQUIRE_CONFORMANCE").is_err(),
+            "ACDP_REQUIRE_CONFORMANCE is set but the spec checkout was not found"
+        );
+        eprintln!("ACDP spec not found; skipping chain-011");
+        return;
+    };
+    let read = |rel: &str| -> Value {
+        let path = spec.join(rel);
+        serde_json::from_slice(
+            &std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display())),
+        )
+        .unwrap()
+    };
+    let fixture = read("schemas/conformance/chain-011-cross-implementation-edge-vectors.json");
+    let vectors = fixture["vectors"].as_array().expect("chain-011 vectors");
+    assert_eq!(vectors.len(), 27);
+    for v in vectors {
+        let name = v["name"].as_str().unwrap();
+        let o = &v["options"];
+        let mut options = match o["as_of"].as_str() {
+            Some(s) => Options::as_of(at(s)),
+            None => Options::default(),
+        };
+        options = options
+            .with_limits(serde_json::from_value(o["limits"].clone()).unwrap())
+            .with_pinned(Pinned::from_value(&o["pinned"]).unwrap())
+            .with_require_attested_events(o["require_attested_events"].as_bool().unwrap());
+        let roots: Vec<String> = serde_json::from_value(v["roots"].clone()).unwrap();
+        let evidence = Evidence::from_value(&read(v["evidence"].as_str().unwrap()))
+            .unwrap_or_else(|e| panic!("{name}: evidence rejected: {e}"));
+        let got = verify_chain(&roots, &evidence, &options)
+            .unwrap_or_else(|e| panic!("{name}: {e}"))
+            .to_value();
+        let expected = read(v["verdict"].as_str().unwrap());
+        assert_eq!(
+            acdp_jcs::canonicalize_value(&got),
+            acdp_jcs::canonicalize_value(&expected),
+            "{name}: verdict bytes differ"
+        );
+        for k in ["evidence_digest", "as_of_digest", "verdict_digest"] {
+            assert_eq!(got[k], v[k], "{name}: {k}");
+        }
+    }
+}
+
 // ── KATs (chain-001 A, chain-002 A, chain-003 A, chain-010 A) ───────────────
 
 /// Known-answer vectors for the cross-implementation digests (§9.3,

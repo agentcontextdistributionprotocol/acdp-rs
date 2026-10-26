@@ -1,7 +1,7 @@
 # acdp-chain
 
 Offline, as-of chain verification over evidence bundles (RFC-ACDP-0017,
-0.5.0 Draft) for the Agent Context Distribution Protocol (ACDP).
+Final at 0.5.0; §10–§11 remain Draft) for the Agent Context Distribution Protocol (ACDP).
 
 `verify_chain(roots, &evidence, &options)` walks a context's `derived_from`
 DAG inside an `acdp-evidence/1` bundle and reports, for every node, what was

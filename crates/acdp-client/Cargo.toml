@@ -13,6 +13,9 @@ categories  = ["web-programming::http-client", "cryptography"]
 rust-version = "1.87"
 
 [features]
+# `acdp_client::blocking`: a synchronous facade with a per-call deadline
+# that runs on its own tokio runtime thread.
+blocking = ["tokio/rt", "tokio/rt-multi-thread", "tokio/sync"]
 tracing = ["dep:tracing", "acdp-did/tracing"]
 # Opts into the SSRF-relaxed test-only constructors
 # (`RegistryClient::{with_root_cert_pem, with_test_transport,

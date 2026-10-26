@@ -985,6 +985,51 @@ a stale one, and a rebinding answer is refused at connect time. The cache
 holds at most `MAX_CACHED_CLIENTS` (256) built clients and evicts the
 oldest first. Clients passed to `seed_client` are never evicted.
 
+## Calling from synchronous code
+
+With the `blocking` feature, `acdp::client::blocking::BlockingClient` runs
+the async client on its own small tokio runtime and gives every call a hard
+deadline. It is for code that cannot be async: a sync trait impl, a plugin
+host, a thread pool.
+
+```rust,ignore
+use std::time::{Duration, Instant};
+use acdp::client::blocking::BlockingClient;
+
+let c = BlockingClient::new(RegistryClient::new(url)?, WebResolver::new())?;
+let deadline = Instant::now() + Duration::from_millis(500);
+let ctx = c.fetch_verified(&ctx_id, &VerificationPolicy::default(), deadline)?;
+```
+
+| Method | Wraps |
+|---|---|
+| `retrieve` | `RegistryClient::retrieve` (unverified) |
+| `fetch_verified` / `fetch_current_verified` | `VerifiedContext::fetch_with_policy` / `fetch_current_with_policy` |
+| `resolve` | `CrossRegistryResolver::resolve` (after `with_cross_registry`) |
+| `changes` | `RegistryClient::changes` (one feed page; entries are hints) |
+| `verify_change` | `recall::verify_change`; `held` is copied |
+| `run` | any other async call, as `|c| async move { … }` |
+
+- **Deadline.** Each method takes a `std::time::Instant`. When it passes,
+  the call returns `AcdpError::DeadlineExceeded` and the in-flight work is
+  cancelled. No partial result is returned. A deadline already in the past
+  fails before any request. `DeadlineExceeded` is transient: for
+  `verify_change` it means *not decided*, so leave the entry unprocessed
+  and retry.
+- **Inside a runtime.** Calling from a tokio runtime does not panic. On a
+  multi-threaded runtime the facade uses `block_in_place` while it waits.
+  On a current-thread runtime it blocks that thread; the work itself runs
+  on the facade's own threads, so it cannot deadlock. Async code should
+  still call the async API directly.
+- **Threads.** `BlockingClient` is `Clone + Send + Sync`. Clones share one
+  runtime (default 2 workers; `with_worker_threads` to change). The
+  runtime shuts down on its own thread when the last clone is dropped,
+  so dropping it inside async code is safe.
+- **Own clients.** Give the facade its own `RegistryClient`,
+  `WebResolver` and `CrossRegistryResolver`. Don't share instances that
+  another runtime also uses: pooled connections belong to the runtime that
+  opened them.
+
 ## Publishing from the client
 
 The producer ([Producing contexts](producing.md)) builds the request; the

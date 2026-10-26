@@ -64,6 +64,7 @@ across the sibling repositories live in
 cargo add acdp                          # client (default)
 cargo add acdp --no-default-features    # types/crypto only, no HTTP
 cargo add acdp --features server        # add the publish validator
+cargo add acdp --features blocking      # sync facade with per-call deadlines
 ```
 
 ## Conformance

@@ -7,6 +7,8 @@
 //! §4.1), and DataRef fetching with hash verification.
 
 pub mod auth;
+#[cfg(feature = "blocking")]
+pub mod blocking;
 pub mod cross_registry;
 pub mod data_ref;
 pub mod log;

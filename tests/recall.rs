@@ -514,3 +514,145 @@ async fn rec_007_e_receiver_pulls_its_own_cursor() {
     assert!(feed.on_hint(&foreign).await.is_err());
     assert_eq!(w.changes_queries().len(), 1);
 }
+
+// ── acdp::client::blocking: the sync facade over the same paths ──────────────
+
+#[cfg(feature = "blocking")]
+mod blocking {
+    use super::*;
+    use acdp::client::blocking::BlockingClient;
+    use std::time::{Duration as StdDuration, Instant};
+
+    fn assert_send_sync<T: Send + Sync + 'static>() {}
+
+    #[test]
+    fn facade_types_are_send_sync() {
+        assert_send_sync::<BlockingClient>();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn resolve_needs_a_cross_registry_resolver() {
+        let (w, ctx, ..) = retracted_world().await;
+        let err = facade(&w).resolve(&ctx.body.ctx_id, soon()).unwrap_err();
+        assert!(matches!(err, AcdpError::SchemaViolation(_)), "{err:?}");
+        assert_eq!(w.retrievals_of(ctx.body.ctx_id.as_str()), 0);
+    }
+
+    fn facade(w: &World) -> BlockingClient {
+        BlockingClient::new(w.client(), w.resolver()).expect("facade")
+    }
+
+    fn soon() -> Instant {
+        Instant::now() + StdDuration::from_secs(10)
+    }
+
+    /// Retrieve, verify and verify_change through the facade.
+    fn exercise(c: &BlockingClient, ctx: &FullContext, change: &Change) {
+        let id = &ctx.body.ctx_id;
+        assert_eq!(c.retrieve(id, soon()).unwrap().body.ctx_id, *id);
+        let verified = c
+            .fetch_verified(id, &VerificationPolicy::default(), soon())
+            .unwrap();
+        assert_eq!(verified.body().ctx_id, *id);
+        let held = HeldContext {
+            body: &ctx.body,
+            events: &[],
+        };
+        for held in [None, Some(held)] {
+            match c
+                .verify_change(change, held, &VerificationPolicy::default(), soon())
+                .unwrap()
+            {
+                ChangeVerdict::Verified(ChangeEffect::Lifecycle { retracted, .. }) => {
+                    assert!(retracted)
+                }
+                other => panic!("expected a verified lifecycle effect, got {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn from_a_plain_thread() {
+        let (w, ctx, e0, r0) = retracted_world().await;
+        let change = lifecycle_change(&ctx, &e0, &r0);
+        let c = facade(&w);
+        tokio::task::spawn_blocking(move || exercise(&c, &ctx, &change))
+            .await
+            .unwrap();
+    }
+
+    /// Called directly on a multi-threaded runtime's worker: no panic, and
+    /// dropping the last clone there does not drop the facade's runtime
+    /// in async context.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn inside_a_multi_thread_runtime() {
+        let (w, ctx, e0, r0) = retracted_world().await;
+        let change = lifecycle_change(&ctx, &e0, &r0);
+        let c = facade(&w);
+        exercise(&c, &ctx, &change);
+        drop(c);
+    }
+
+    /// Called from inside a current-thread runtime (where
+    /// `block_in_place` is unavailable): no panic.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn inside_a_current_thread_runtime() {
+        let (w, ctx, e0, r0) = retracted_world().await;
+        let change = lifecycle_change(&ctx, &e0, &r0);
+        let c = facade(&w);
+        tokio::task::spawn_blocking(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async move {
+                exercise(&c, &ctx, &change);
+                drop(c);
+            });
+        })
+        .await
+        .unwrap();
+    }
+
+    /// A registry that accepts the connection and never answers: the call
+    /// fails closed at the deadline, not at the client's 30 s timeout.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn deadline_fails_closed() {
+        let (w, ctx, ..) = retracted_world().await;
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = silent.local_addr().unwrap();
+        let hung = acdp::client::RegistryClient::with_test_endpoint(
+            &format!("https://{REGISTRY_AUTHORITY}"),
+            addr,
+            &w.tls.root_cert_pem,
+        )
+        .unwrap();
+        let c = BlockingClient::new(hung, w.resolver()).unwrap();
+        let id = ctx.body.ctx_id.clone();
+        let (err, took) = tokio::task::spawn_blocking(move || {
+            let start = Instant::now();
+            let err = c
+                .fetch_verified(
+                    &id,
+                    &VerificationPolicy::default(),
+                    start + StdDuration::from_millis(300),
+                )
+                .unwrap_err();
+            (err, start.elapsed())
+        })
+        .await
+        .unwrap();
+        drop(silent);
+        assert!(matches!(err, AcdpError::DeadlineExceeded(_)), "{err:?}");
+        assert!(err.is_transient());
+        assert!(took < StdDuration::from_secs(3), "took {took:?}");
+
+        // A deadline already past fails before any request is made.
+        let c = facade(&w);
+        let before = w.retrievals_of(ctx.body.ctx_id.as_str());
+        let past = Instant::now() - StdDuration::from_millis(1);
+        let err = c.retrieve(&ctx.body.ctx_id, past).unwrap_err();
+        assert!(matches!(err, AcdpError::DeadlineExceeded(_)), "{err:?}");
+        assert_eq!(w.retrievals_of(ctx.body.ctx_id.as_str()), before);
+    }
+}

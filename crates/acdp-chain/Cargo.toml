@@ -38,7 +38,7 @@ thiserror  = "2"
 # Build real signed bodies for the chain-001..010 behavioral tests.
 # PATH-ONLY (no version): acdp-producer is not a normal dependency, so
 # release-plz may publish acdp-chain first (same rule as acdp-verify).
-acdp-producer = { path = "../acdp-producer" }
+acdp-producer = { path = "../acdp-producer", features = ["keyless"] }
 base64        = "0.23"
 
 [lints.rust]

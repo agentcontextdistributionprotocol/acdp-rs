@@ -216,11 +216,6 @@ pub async fn verify_publish_request_signature(
     .await
 }
 
-/// Steps 1–7 of RFC-ACDP-0001 §5.11 — the part of body verification that
-/// operates only on the signature envelope and is identical for stored
-/// `Body` values and incoming `PublishRequest` values. Caller is responsible
-/// for hash recomputation (step 0).
-#[cfg(feature = "client")]
 /// RFC-ACDP-0021 §4.2 / §8.1: a keyless key id (`#acdp-kl-…`) is never
 /// resolved through RFC-ACDP-0001 §5.11, so the DID-document paths refuse
 /// it before any fetch. Keyless-aware consumers verify it through its key
@@ -237,6 +232,11 @@ fn refuse_keyless_fragment(key_id: &str, fragment: &str) -> Result<(), AcdpError
     Ok(())
 }
 
+/// Steps 1–7 of RFC-ACDP-0001 §5.11 — the part of body verification that
+/// operates only on the signature envelope and is identical for stored
+/// `Body` values and incoming `PublishRequest` values. Caller is responsible
+/// for hash recomputation (step 0).
+#[cfg(feature = "client")]
 async fn verify_signature_envelope(
     agent_id: &AgentDid,
     signature: &Signature,

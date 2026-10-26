@@ -245,6 +245,12 @@ pub struct Options {
     pub pinned: Option<Pinned>,
     /// §6.4. Defaults to `true`.
     pub require_attested_events: bool,
+    /// RFC-ACDP-0021 §11: the registry DIDs accepted as keyless
+    /// attesters. Empty (the default) accepts none, so every keyless node
+    /// is refused. Not part of `options_digest`, which covers `pinned`
+    /// only.
+    #[cfg(feature = "keyless")]
+    pub keyless_attesters: Vec<String>,
 }
 
 impl Default for Options {
@@ -254,6 +260,8 @@ impl Default for Options {
             limits: Limits::DEFAULT,
             pinned: None,
             require_attested_events: true,
+            #[cfg(feature = "keyless")]
+            keyless_attesters: Vec::new(),
         }
     }
 }
@@ -285,8 +293,24 @@ impl Options {
         self
     }
 
+    /// Accept these registries as keyless attesters (RFC-ACDP-0021 §11).
+    #[cfg(feature = "keyless")]
+    pub fn with_keyless_attesters<S: Into<String>>(
+        mut self,
+        attesters: impl IntoIterator<Item = S>,
+    ) -> Self {
+        self.keyless_attesters = attesters.into_iter().map(Into::into).collect();
+        self
+    }
+
     pub(crate) fn check(&self) -> Result<(), ChainError> {
         self.limits.check()?;
+        #[cfg(feature = "keyless")]
+        for d in &self.keyless_attesters {
+            if !is_did(d) {
+                return Err(options(format!("keyless attester '{d}' is not a DID")));
+            }
+        }
         if let Some(t) = self.as_of {
             if parse_ts(&fmt_ts(t)) != Some(t) {
                 return Err(options(

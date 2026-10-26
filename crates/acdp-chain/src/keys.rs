@@ -139,6 +139,11 @@ impl BundleKeys {
             .split_once('#')
             .filter(|(did, frag)| *did == expected_did && !frag.is_empty())
             .ok_or(Missing::Malformed)?;
+        // RFC-ACDP-0021 §6.2: a keyless key id never resolves through a
+        // DID document; keyless nodes take the `keyless` path or none.
+        if fragment.starts_with(acdp_did::KEYLESS_FRAGMENT_PREFIX) {
+            return Err(Missing::Malformed);
+        }
         if did.starts_with("did:key:") {
             let material = acdp_did::key::resolve_did_key_url(&signature.key_id)
                 .map_err(|_| Missing::Malformed)?;

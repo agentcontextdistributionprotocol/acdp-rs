@@ -508,7 +508,10 @@ fn kl_fixtures_each_have_tests() {
             "keyless::kl_007_b_reserved_fragment_is_refused, keyless_verify::kl_007_*",
         ),
         ("kl-008", "acdp-chain keyless::kl_008_*"),
-        ("kl-009", "keyless_verify::kl_009_*"),
+        (
+            "kl-009",
+            "keyless_verify::*kl_009_*, acdp-chain keyless::kl_009_f_non_org_wide_keyless_revocation_not_applied",
+        ),
     ];
     let Some(root) = spec_root() else {
         return;

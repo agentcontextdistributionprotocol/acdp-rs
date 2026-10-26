@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "acdp"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "acdp-chain",
  "acdp-client",
@@ -21,7 +21,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-chain"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "acdp-crypto",
  "acdp-did",
@@ -40,7 +40,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-client"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "acdp-crypto",
  "acdp-did",
@@ -64,7 +64,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-crypto"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "acdp-did",
  "acdp-jcs",
@@ -85,7 +85,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-did"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "acdp-primitives",
  "acdp-safe-http",
@@ -102,7 +102,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-jcs"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "acdp-primitives",
  "serde",
@@ -127,7 +127,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-primitives"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "chrono",
  "reqwest",
@@ -139,7 +139,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-producer"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "acdp-crypto",
  "acdp-did",
@@ -154,7 +154,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-safe-http"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "acdp-primitives",
  "reqwest",
@@ -164,7 +164,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-types"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "acdp-crypto",
  "acdp-did",
@@ -181,7 +181,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-validation"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "acdp-crypto",
  "acdp-did",
@@ -197,7 +197,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-verify"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "acdp-crypto",
  "acdp-did",

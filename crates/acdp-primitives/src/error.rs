@@ -88,6 +88,14 @@ pub enum AcdpError {
         served: String,
     },
 
+    /// Locally detected: a caller-supplied deadline passed before the
+    /// operation finished (the `acdp-client` `blocking` facade). Not a wire
+    /// code. The operation is abandoned and fails closed: no partial
+    /// result is returned. Transient (see [`AcdpError::is_transient`]): the
+    /// same call with more time, or on a later attempt, may succeed.
+    #[error("deadline exceeded: {0}")]
+    DeadlineExceeded(String),
+
     /// Locally detected: `GET /lineages/{id}` (RFC-ACDP-0013 §8.1) did not
     /// serve a lineage the caller could accept — either it came back with
     /// no members at all, or (when `ctx_id` is `Some`) its members did not
@@ -528,6 +536,7 @@ impl AcdpError {
                 | AcdpError::CrossRegistryResolutionFailed(_)
                 | AcdpError::RegistryInternal(_)
                 | AcdpError::Http(_)
+                | AcdpError::DeadlineExceeded(_)
         )
     }
 
@@ -993,6 +1002,7 @@ mod tests {
         assert!(AcdpError::CrossRegistryResolutionFailed("x".into()).is_transient());
         assert!(AcdpError::RegistryInternal("x".into()).is_transient());
         assert!(AcdpError::Http("x".into()).is_transient());
+        assert!(AcdpError::DeadlineExceeded("x".into()).is_transient());
         assert!(!AcdpError::SchemaViolation("x".into()).is_transient());
         assert!(!AcdpError::InvalidSignature("x".into()).is_transient());
         assert!(!AcdpError::NotFound("x".into()).is_transient());

@@ -739,3 +739,14 @@ fn core_types_are_send_sync() {
     assert_send_sync::<LogCosignature>();
     assert_send_sync::<WireError>();
 }
+
+// ---------------------------------------------------------------------------
+// acdp::client::blocking (feature `blocking`): no futures, but the facade
+// itself is shared across threads.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "blocking")]
+#[test]
+fn blocking_facade_is_send_sync() {
+    assert_send_sync::<acdp::client::blocking::BlockingClient>();
+}

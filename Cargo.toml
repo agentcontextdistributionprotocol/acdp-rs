@@ -44,6 +44,8 @@ default = ["client"]
 # combined client+server test harness gets RegistryServer::publish_verified.
 client  = ["dep:acdp-client", "acdp-primitives/reqwest", "acdp-server?/client"]
 server  = ["dep:acdp-server"]
+# `acdp::client::blocking`: synchronous facade with per-call deadlines.
+blocking = ["client", "acdp-client/blocking"]
 tracing = [
     "acdp-did/tracing",
     "acdp-client?/tracing",

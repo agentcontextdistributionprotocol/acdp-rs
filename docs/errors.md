@@ -66,6 +66,7 @@ are listed because their relationship to the local checks is easy to confuse.
 | `HashMismatch { stored, recomputed }` | your locally recomputed `content_hash` differs from the declared one (see below). |
 | `RemoteHashMismatch` | the wire `hash_mismatch`: the *registry* rejected your publish (see below). |
 | `DataRefHashMismatch` | a `DataRef`'s embedded or fetched bytes don't match its declared hash — raised locally by validation and `fetch_and_verify_data_ref`, and also the wire `data_ref_hash_mismatch`. |
+| `DeadlineExceeded` | a `blocking` facade call passed its caller-set deadline; the call is abandoned with no partial result. Transient. |
 | `ContextIdMismatch { requested, served }` | the registry served a body whose `ctx_id` isn't the one requested (context substitution). |
 | `IncompleteLineage` | `GET /lineages/{id}` came back empty, or without the member a search match named, during revocation discovery. |
 | `SearchTruncated` | a revocation-discovery search hit its page or lineage-walk safety cap with results remaining. |

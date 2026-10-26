@@ -11,6 +11,7 @@ and [RFC-ACDP-0002 (Context Body)](https://github.com/agentcontextdistributionpr
 cargo add acdp                          # client profile (default)
 cargo add acdp --no-default-features    # types + crypto only, no HTTP
 cargo add acdp --features server        # add the registry-side validator
+cargo add acdp --features blocking      # sync facade with per-call deadlines
 ```
 
 The `acdp` command-line tool is its own crate: `cargo install acdp-cli`

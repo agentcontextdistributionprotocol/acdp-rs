@@ -1459,6 +1459,53 @@ fn horizon_ignores_event_receipts_failing_step_9() {
     assert_eq!(v.horizon.as_deref(), Some("2026-12-02T00:00:00.000Z"));
 }
 
+#[test]
+fn latest_pass_admits_a_historical_producer_key_only_with_a_receipt() {
+    // §7.8 item 1 (spec 3d41e31): key-1 is in the latest snapshot's
+    // verificationMethod but not its assertionMethod.
+    let k1 = Signer::web(KEY1, "key-1");
+    let bundle_with = |receipted_event: bool| {
+        let mut e = chain_007_bundle(false);
+        let ev = event(
+            &k1,
+            'a',
+            0,
+            LifecycleEventType::Retracted,
+            "2026-10-12T00:00:00.000Z",
+        );
+        let a = e.contexts.get_mut(&ctx('a')).unwrap();
+        if receipted_event {
+            a.event_receipts = Some(vec![event_receipt('a', &ev, 0, "2026-10-12T00:00:01.000Z")]);
+        }
+        a.lifecycle_events = Some(vec![ev]);
+        e
+    };
+
+    let v = run(&['a'], &bundle_with(true), &Options::default());
+    let r = node(&v, 'a').latest.stages.retraction.as_ref().unwrap();
+    assert_eq!(
+        (
+            r.value,
+            r.events_admitted,
+            r.basis,
+            r.evidence_time.as_deref()
+        ),
+        (
+            RetractionValue::Retracted,
+            Some(1),
+            Some(Basis::Registry),
+            Some("2026-10-12T00:00:01.000Z")
+        )
+    );
+
+    let v = run(&['a'], &bundle_with(false), &Options::default());
+    let r = node(&v, 'a').latest.stages.retraction.as_ref().unwrap();
+    assert_eq!(
+        (r.value, r.events_admitted, r.basis),
+        (RetractionValue::NotRetracted, Some(0), None)
+    );
+}
+
 // ── KATs (chain-001 A, chain-002 A, chain-003 A, chain-010 A) ───────────────
 
 /// Known-answer vectors for the cross-implementation digests (§9.3,

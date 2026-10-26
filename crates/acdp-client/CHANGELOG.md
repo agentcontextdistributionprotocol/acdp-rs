@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.3](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-client-v0.17.2...acdp-client-v0.17.3) - 2026-10-26
+
+### Added
+
+- registry trust lists (RFC-ACDP-0020); pin spec a1324f8 ([#467](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/467))
+
+### Other
+
+- *(client)* execute rev-007 classification vectors; pin spec aa9701c ([#454](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/454))
+
 ## [0.17.2](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-client-v0.17.1...acdp-client-v0.17.2) - 2026-10-26
 
 ### Added

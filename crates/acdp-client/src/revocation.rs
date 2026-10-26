@@ -20,6 +20,7 @@ use acdp_crypto::fingerprint::{fingerprint_for_key_id, fingerprint_for_key_id_si
 use acdp_did::WebResolver;
 use acdp_primitives::error::AcdpError;
 use acdp_types::body::{Body, FullContext};
+use acdp_types::keyless::is_keyless_key_id;
 use acdp_types::primitives::{AgentDid, CtxId, LineageId};
 use acdp_types::receipt::ReceiptKeyStatus;
 use acdp_types::revocation::{KeyRevocation, RevocationTrustClass};
@@ -225,6 +226,9 @@ pub async fn verify_revocation_candidate(
     since: std::time::Instant,
 ) -> Result<KeyRevocation, AcdpError> {
     let body = &ctx.body;
+    if is_keyless_key_id(&body.signature.key_id) {
+        return Err(keyless_unverifiable(body));
+    }
     let verifier = Verifier::new(resolver).fresh_since(since);
     match verifier.verify_context(ctx).await {
         Ok(()) => {}
@@ -336,6 +340,28 @@ async fn verify_candidate_historically(
         }
     }
     acdp_verify::verify_body_signature_historical_since(body, resolver, since).await
+}
+
+/// A revocation signed by a keyless key (RFC-ACDP-0021 §9.3) cannot be
+/// verified through RFC-ACDP-0001 §5.11. Discovery sets such candidates
+/// aside for the keyless procedure; standalone callers get this error,
+/// which makes the outcome *unknown*, never *absent*.
+fn keyless_unverifiable(body: &Body) -> AcdpError {
+    AcdpError::RevocationCandidateUnverifiable(format!(
+        "revocation candidate {} is signed by the keyless key {}; it verifies only through \
+         its key attestation (RFC-ACDP-0021 §8.1), not through the DID document",
+        body.ctx_id.as_str(),
+        body.signature.key_id
+    ))
+}
+
+/// Fail closed on keyless candidates a standalone discovery call could
+/// not evaluate (see [`keyless_unverifiable`]).
+fn refuse_deferred(deferred: &[FullContext]) -> Result<(), AcdpError> {
+    match deferred.first() {
+        Some(ctx) => Err(keyless_unverifiable(&ctx.body)),
+        None => Ok(()),
+    }
 }
 
 /// A candidate-verification error that makes the discovery outcome
@@ -510,7 +536,7 @@ async fn walk_revocation_lineage(
     lineage_id: &LineageId,
     expect_member: Option<&CtxId>,
     since: std::time::Instant,
-) -> Result<Vec<(CtxId, KeyRevocation)>, AcdpError> {
+) -> Result<Walked, AcdpError> {
     let members = client.lineage(lineage_id).await?;
     if members.is_empty() {
         return Err(AcdpError::IncompleteLineage {
@@ -531,7 +557,12 @@ async fn walk_revocation_lineage(
         }
     }
     let mut out = Vec::with_capacity(members.len());
+    let mut deferred = Vec::new();
     for ctx in members {
+        if is_keyless_key_id(&ctx.body.signature.key_id) {
+            deferred.push(ctx);
+            continue;
+        }
         match verify_revocation_candidate(&ctx, client, resolver, since).await {
             Ok(rev) => out.push((ctx.body.ctx_id.clone(), rev)),
             // D5 (issue #248 Phase 1): a transient failure means "could
@@ -553,7 +584,17 @@ async fn walk_revocation_lineage(
             }
         }
     }
-    Ok(out)
+    Ok(Walked {
+        verified: out,
+        deferred,
+    })
+}
+
+/// A lineage walk's members: those that verified per §5, and those
+/// signed by a keyless key, set aside unverified (RFC-ACDP-0021 §9.3).
+struct Walked {
+    verified: Vec<(CtxId, KeyRevocation)>,
+    deferred: Vec<FullContext>,
 }
 
 /// Discover every verified member of a revocation lineage
@@ -578,17 +619,16 @@ pub async fn find_revocations_in_lineage(
     resolver: &WebResolver,
     lineage_id: &LineageId,
 ) -> Result<Vec<KeyRevocation>, AcdpError> {
-    Ok(walk_revocation_lineage(
+    let walked = walk_revocation_lineage(
         client,
         resolver,
         lineage_id,
         None,
         std::time::Instant::now(),
     )
-    .await?
-    .into_iter()
-    .map(|(_, rev)| rev)
-    .collect())
+    .await?;
+    refuse_deferred(&walked.deferred)?;
+    Ok(walked.verified.into_iter().map(|(_, rev)| rev).collect())
 }
 
 /// The data-only differences between [`find_revocations`] and
@@ -668,7 +708,7 @@ async fn discover_revocations(
     params: DiscoveryParams<'_>,
     keep: &(dyn Fn(&KeyRevocation) -> bool + Sync),
     on_drop: &(dyn Fn(&KeyRevocation, &CtxId, DropSite) + Sync),
-) -> Result<Vec<KeyRevocation>, AcdpError> {
+) -> Result<(Vec<KeyRevocation>, Vec<FullContext>), AcdpError> {
     let DiscoveryParams {
         search_agent_id,
         fn_name,
@@ -681,6 +721,8 @@ async fn discover_revocations(
     let since = std::time::Instant::now();
 
     let mut revocations = Vec::new();
+    // Keyless-signed candidates, set aside for the keyless procedure.
+    let mut deferred = Vec::new();
     let mut seen = std::collections::HashSet::new();
     // Discovery-order list of distinct lineage ids (walked below) plus
     // a plain `HashSet<String>` for the dedupe check — `LineageId`
@@ -732,6 +774,10 @@ async fn discover_revocations(
                         continue;
                     }
                     let ctx = client.retrieve(&m.ctx_id).await?;
+                    if is_keyless_key_id(&ctx.body.signature.key_id) {
+                        deferred.push(ctx);
+                        continue;
+                    }
                     match verify_revocation_candidate(&ctx, client, resolver, since).await {
                         Ok(rev) => {
                             if keep(&rev) {
@@ -808,7 +854,12 @@ async fn discover_revocations(
     for lineage_id in &lineage_order {
         let expect = lineage_expect.get(lineage_id.as_str());
         let walked = walk_revocation_lineage(client, resolver, lineage_id, expect, since).await?;
-        for (ctx_id, rev) in walked {
+        for ctx in walked.deferred {
+            if seen.insert(ctx.body.ctx_id.as_str().to_string()) {
+                deferred.push(ctx);
+            }
+        }
+        for (ctx_id, rev) in walked.verified {
             if !seen.insert(ctx_id.as_str().to_string()) {
                 continue;
             }
@@ -820,7 +871,7 @@ async fn discover_revocations(
         }
     }
 
-    Ok(revocations)
+    Ok((revocations, deferred))
 }
 
 /// Discover a producer's key revocations on a registry
@@ -1009,9 +1060,9 @@ pub async fn find_revocations(
     resolver: &WebResolver,
     agent_id: &AgentDid,
 ) -> Result<Vec<KeyRevocation>, AcdpError> {
-    find_revocations_lookup(client, resolver, agent_id)
-        .await
-        .map(|l| l.revocations)
+    let lookup = find_revocations_lookup(client, resolver, agent_id).await?;
+    refuse_deferred(&lookup.deferred)?;
+    Ok(lookup.revocations)
 }
 
 /// One discovery lookup's result: the verified revocations found and, when
@@ -1020,13 +1071,17 @@ pub async fn find_revocations(
 #[derive(Debug)]
 pub(crate) struct Lookup {
     pub(crate) revocations: Vec<KeyRevocation>,
+    /// Candidates signed by a keyless key, not yet verified (RFC-ACDP-0021
+    /// §9.3): the caller evaluates them under its keyless policy.
+    pub(crate) deferred: Vec<FullContext>,
     pub(crate) cached_since: Option<std::time::SystemTime>,
 }
 
 impl Lookup {
-    fn live(revocations: Vec<KeyRevocation>) -> Self {
+    fn live(revocations: Vec<KeyRevocation>, deferred: Vec<FullContext>) -> Self {
         Self {
             revocations,
+            deferred,
             cached_since: None,
         }
     }
@@ -1034,6 +1089,7 @@ impl Lookup {
     fn cached(observed: std::time::SystemTime) -> Self {
         Self {
             revocations: Vec::new(),
+            deferred: Vec::new(),
             cached_since: Some(observed),
         }
     }
@@ -1126,7 +1182,7 @@ pub(crate) async fn find_revocations_lookup(
         }
     };
 
-    let revocations = discover_revocations(
+    let (revocations, deferred) = discover_revocations(
         client,
         resolver,
         DiscoveryParams {
@@ -1146,9 +1202,15 @@ pub(crate) async fn find_revocations_lookup(
     // construction. `record_success` dedups `revocations` into the cached
     // fact set via `KeyRevocation`'s `Eq` and caps growth per entry — see
     // `crate::revocation_cache`.
-    if let (Some((cache, _freshness)), Some(vantage)) =
-        (client.revocation_cache(), vantage.as_deref())
-    {
+    //
+    // A lookup that set keyless candidates aside is not a complete answer
+    // on its own: no marker, so a later lookup re-fetches them rather than
+    // reading an absence from the cache.
+    if let (Some((cache, _freshness)), Some(vantage), true) = (
+        client.revocation_cache(),
+        vantage.as_deref(),
+        deferred.is_empty(),
+    ) {
         cache.record_success(
             vantage,
             agent_id.as_str(),
@@ -1156,7 +1218,7 @@ pub(crate) async fn find_revocations_lookup(
             &revocations,
         );
     }
-    Ok(Lookup::live(revocations))
+    Ok(Lookup::live(revocations, deferred))
 }
 
 /// Discover a producer's **registry-attested** (§6) key revocations —
@@ -1380,7 +1442,9 @@ pub(crate) async fn find_registry_attested_lookup(
         }
     };
 
-    let revocations = discover_revocations(
+    // A keyless key is a producer's key, never a registry's: keyless
+    // candidates here are outside the registry-attested class.
+    let (revocations, _keyless) = discover_revocations(
         client,
         resolver,
         DiscoveryParams {
@@ -1407,7 +1471,7 @@ pub(crate) async fn find_registry_attested_lookup(
             &revocations,
         );
     }
-    Ok(Lookup::live(revocations))
+    Ok(Lookup::live(revocations, Vec::new()))
 }
 
 #[cfg(test)]

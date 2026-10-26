@@ -39,12 +39,14 @@
 //! The outcome is one of the three existing
 //! [`KeyAuthorization`](crate::KeyAuthorization) values or an error.
 //!
-//! **Known limitation.** Revocation discovery verifies the revocation
-//! bodies it finds through RFC-ACDP-0001 §5.11, so a revocation signed
-//! with a keyless key is never applied here, even one under an `org_wide`
-//! attestation (§9.3 makes those producer-signed). Revocations signed by
-//! a DID-document key of the controller, and registry-attested ones,
-//! apply as usual.
+//! **Keyless-signed revocations (§9.3).** Revocation discovery sets a
+//! candidate signed by a keyless key aside and verifies its signer by
+//! §8.1 steps 1–7 under this same [`KeylessPolicy`]. One under an
+//! `org_wide` attestation is producer-signed and applies; one under a
+//! non-org-wide attestation is only a hint (`kl-005` G). One that cannot
+//! be evaluated (no `keyless` feature, an unaccepted attester, an
+//! attestation that does not verify) makes the verdict for the key it
+//! names `unknown`, never not-revoked.
 
 use acdp_types::trust_list::PinState;
 use chrono::{DateTime, Utc};
@@ -114,7 +116,89 @@ impl KeylessTrust {
 }
 
 #[cfg(feature = "keyless")]
-pub(crate) use verify::verify;
+pub(crate) use verify::{verify, verify_revocation_signer};
+
+/// A keyless-signed revocation candidate that could not be evaluated: no
+/// `keyless` feature, an unaccepted attester, or an attestation that does
+/// not verify. Naming the signing key it makes the verdict `unknown`
+/// (RFC-ACDP-0014 §7: unknown outranks not-revoked and pre-compromise).
+#[derive(Debug, Clone)]
+pub(crate) struct Unevaluated {
+    pub fingerprint: String,
+    pub detail: String,
+}
+
+/// What became of the keyless-signed candidates discovery set aside.
+#[derive(Debug, Default)]
+pub(crate) struct KeylessRevocations {
+    /// Signed under an `org_wide` attestation: producer-signed, applied
+    /// (§9.3).
+    pub applied: Vec<acdp_types::revocation::KeyRevocation>,
+    /// Signed under a non-org-wide attestation: reported, never applied
+    /// (`kl-005` G).
+    pub hints: Vec<acdp_types::revocation::KeyRevocation>,
+    pub unevaluated: Vec<Unevaluated>,
+}
+
+/// Evaluate keyless-signed revocation candidates for `agent_id`
+/// (RFC-ACDP-0021 §9.3). A candidate whose own shape is invalid, that
+/// does not speak for `agent_id`, or that revokes its own signing key is
+/// dropped, as for any revocation.
+pub(crate) async fn evaluate_revocations(
+    client: &crate::registry::RegistryClient,
+    resolver: &acdp_did::web::WebResolver,
+    agent_id: &acdp_types::primitives::AgentDid,
+    deferred: &[acdp_types::body::FullContext],
+    policy: &KeylessPolicy,
+) -> KeylessRevocations {
+    use acdp_types::revocation::{KeyRevocation, RevocationTrustClass};
+    let mut out = KeylessRevocations::default();
+    #[cfg(feature = "keyless")]
+    let since = std::time::Instant::now();
+    for ctx in deferred {
+        let Ok(rev) = KeyRevocation::from_body(&ctx.body) else {
+            continue;
+        };
+        if rev.publisher != *agent_id || rev.trust_class != RevocationTrustClass::ProducerSigned {
+            continue;
+        }
+        #[cfg(feature = "keyless")]
+        let outcome = verify_revocation_signer(client, resolver, ctx, policy, since).await;
+        #[cfg(not(feature = "keyless"))]
+        let outcome: Result<
+            acdp_types::keyless::KeyAttestation,
+            acdp_primitives::error::AcdpError,
+        > = {
+            let _ = (client, resolver, policy);
+            Err(acdp_primitives::error::AcdpError::KeyResolution(
+                "built without the `keyless` feature (RFC-ACDP-0021)".into(),
+            ))
+        };
+        match outcome {
+            Ok(att) => {
+                if rev.check_not_self_signed(&att.key_fingerprint).is_err() {
+                    continue;
+                }
+                if att.org_wide {
+                    out.applied.push(rev);
+                } else {
+                    out.hints.push(rev);
+                }
+            }
+            Err(e) => out.unevaluated.push(Unevaluated {
+                fingerprint: rev.revoked_key_fingerprint.clone(),
+                detail: format!(
+                    "the revocation {} of {} is signed by the keyless key {} and could not be \
+                     evaluated: {e}",
+                    ctx.body.ctx_id.as_str(),
+                    rev.revoked_key_fingerprint,
+                    ctx.body.signature.key_id
+                ),
+            }),
+        }
+    }
+    out
+}
 
 #[cfg(feature = "keyless")]
 mod verify {
@@ -313,19 +397,25 @@ mod verify {
         reason.error(detail)
     }
 
-    /// RFC-ACDP-0021 §8.1 for a keyless-signed body whose content hash
-    /// the caller has already recomputed.
+    /// §8.1 steps 1–7 for a keyless-signed body: the attestation, the
+    /// placed receipt, and every fact but the revocations (step 8) and
+    /// the current identity (step 9).
+    struct Signer {
+        att: Attestation,
+        placed: Option<Result<PlacedReceipt, AcdpError>>,
+        facts: KeylessFacts,
+    }
+
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn verify(
+    async fn signer(
         client: &RegistryClient,
         resolver: &WebResolver,
         ctx: &FullContext,
         expected_ctx_id: &CtxId,
         serving_authority: &str,
         policy: &KeylessPolicy,
-        revocations: &RevocationPolicy,
         since: Instant,
-    ) -> Result<KeyPhases, AcdpError> {
+    ) -> Result<Signer, AcdpError> {
         let body = &ctx.body;
         let reference = body.key_attestation()?.ok_or_else(|| {
             KeylessReason::AttestationMissing.error(format!(
@@ -372,22 +462,6 @@ mod verify {
                 created_at: meta.not_before,
             },
         });
-
-        // Step 8's input: revocations of the attested fingerprint,
-        // discovered by agent_id (§9.3), placed by the receipt.
-        let gathered =
-            crate::revocation_verdict::gather(client, resolver, &body.agent_id, revocations).await;
-        let assessment = crate::revocation_verdict::decide(
-            gathered,
-            Some(&meta.key_fingerprint),
-            placed_ok.map(|p| (p.receipt.created_at, p.key_status)),
-            revocations.accept_historical_receipt_key_for_pre_t,
-        );
-        let compromised_since = match &assessment.verdict {
-            crate::RevocationVerdict::Revoked { boundary, .. } => vec![*boundary],
-            _ => Vec::new(),
-        };
-
         let facts = KeylessFacts {
             attestation_valid: true,
             attester_accepted: accepted(policy, &att.registry, body, placed_ok),
@@ -404,8 +478,99 @@ mod verify {
                 )
                 .is_ok(),
             retracted: att.retracted,
-            compromised_since,
+            compromised_since: Vec::new(),
         };
+        Ok(Signer { att, placed, facts })
+    }
+
+    /// §9.3: verify the keyless signer of a key-revocation candidate set
+    /// aside by discovery, through §8.1 steps 1–7 under the same attester
+    /// policy as bodies. Returns its attestation (the caller applies it
+    /// only when `org_wide`); revocations of the signing key and its
+    /// identity today are not consulted (removal does not reach back,
+    /// §9.1).
+    pub(crate) async fn verify_revocation_signer(
+        client: &RegistryClient,
+        resolver: &WebResolver,
+        ctx: &FullContext,
+        policy: &KeylessPolicy,
+        since: Instant,
+    ) -> Result<KeyAttestation, AcdpError> {
+        let body = &ctx.body;
+        acdp_verify::verify_context_hash(ctx)?;
+        acdp_validation::validate_body(body)?;
+        let serving_authority = client
+            .authority()
+            .unwrap_or_else(|| body.ctx_id.authority().to_string());
+        let s = signer(
+            client,
+            resolver,
+            ctx,
+            &body.ctx_id,
+            &serving_authority,
+            policy,
+            since,
+        )
+        .await?;
+        match decide_until_identity(&s.facts) {
+            Ok(_) => Ok(s.att.metadata),
+            Err(reason) => Err(refusal(reason, body, &s.att.metadata)),
+        }
+    }
+
+    /// RFC-ACDP-0021 §8.1 for a keyless-signed body whose content hash
+    /// the caller has already recomputed.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn verify(
+        client: &RegistryClient,
+        resolver: &WebResolver,
+        ctx: &FullContext,
+        expected_ctx_id: &CtxId,
+        serving_authority: &str,
+        policy: &KeylessPolicy,
+        revocations: &RevocationPolicy,
+        since: Instant,
+    ) -> Result<KeyPhases, AcdpError> {
+        let body = &ctx.body;
+        let Signer {
+            att,
+            placed,
+            mut facts,
+        } = signer(
+            client,
+            resolver,
+            ctx,
+            expected_ctx_id,
+            serving_authority,
+            policy,
+            since,
+        )
+        .await?;
+        let meta = &att.metadata;
+        let placed_ok = placed.as_ref().and_then(|p| p.as_ref().ok());
+
+        // Step 8's input: revocations of the attested fingerprint,
+        // discovered by agent_id (§9.3), placed by the receipt.
+        let gathered = crate::revocation_verdict::gather(
+            client,
+            resolver,
+            &body.agent_id,
+            revocations,
+            policy,
+        )
+        .await;
+        let assessment = crate::revocation_verdict::decide(
+            gathered,
+            Some(&meta.key_fingerprint),
+            placed_ok.map(|p| (p.receipt.created_at, p.key_status)),
+            revocations.accept_historical_receipt_key_for_pre_t,
+        );
+        let compromised_since = match &assessment.verdict {
+            crate::RevocationVerdict::Revoked { boundary, .. } => vec![*boundary],
+            _ => Vec::new(),
+        };
+
+        facts.compromised_since = compromised_since;
 
         // Step 9 only when steps 1–8 leave it to decide.
         let now = match decide_until_identity(&facts) {

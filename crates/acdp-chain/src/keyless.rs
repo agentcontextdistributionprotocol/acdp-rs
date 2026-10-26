@@ -189,6 +189,7 @@ impl Engine<'_, '_> {
                 ctx_id: None,
             },
             evidence_time: stage.evidence_time.as_deref().and_then(parse_ts),
+            unevaluated: false,
         })
     }
 }

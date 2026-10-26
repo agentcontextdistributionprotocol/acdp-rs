@@ -376,3 +376,148 @@ fn trust_005_g_did_web_issuer_as_of_t() {
     );
     assert!(as_of.all_trusted());
 }
+
+#[test]
+fn unknown_issuer_revocation_passes_unless_local_policy_refuses() {
+    // The bundle has no discovery for the list issuer: its key_revocation
+    // stage is `unknown`. §5.2 step 5 (spec 25f8d3a) refuses only on an
+    // applied revocation, so the list is used.
+    let e = reparse(&with_golden_list());
+    let (_, trust) =
+        verify_chain_with_trust(&roots(), &e, &Options::default(), &trust_options()).unwrap();
+    assert_eq!(trust.latest.lists[0].status, ListStatus::Used);
+
+    // Local policy may refuse it; the verdict stays the same.
+    let strict = TrustPolicy::default().refuse_unknown_issuer_revocation(true);
+    let (v, trust) =
+        verify_chain_with_trust_policy(&roots(), &e, &Options::default(), &trust_options(), strict)
+            .unwrap();
+    assert_eq!(
+        (trust.latest.lists[0].status, trust.latest.lists[0].reason),
+        (ListStatus::Invalid, Some(TrustReason::NoValidVersion))
+    );
+    assert_eq!(v, verify_chain(&roots(), &e, &Options::default()).unwrap());
+
+    // With a complete discovery for the issuer, strict policy uses it.
+    let mut e = with_golden_list();
+    add_discovery(&mut e, ISSUER, discovery("2026-10-26T06:00:00.000Z"));
+    let (_, trust) = verify_chain_with_trust_policy(
+        &roots(),
+        &reparse(&e),
+        &Options::default(),
+        &trust_options(),
+        strict,
+    )
+    .unwrap();
+    assert_eq!(trust.latest.lists[0].status, ListStatus::Used);
+}
+
+/// trust-002 K: §5.2 step 5 across every RFC-ACDP-0014 §7 class of the
+/// issuer key, each produced by real evidence. A did:web issuer signs
+/// serial 7 with key-1 (receipted 2026-10-26T00:00:01) and, where a
+/// revocation applies, revokes key-1 with key-2.
+#[test]
+fn trust_002_k_issuer_key_revocation_classes() {
+    const LIST_AT: &str = "2026-10-26T00:00:01.000Z";
+    let k1 = Signer::web(KEY1, "key-1");
+    let k2 = Signer::web(KEY2, "key-2");
+    let bundle_for = |compromised_since: Option<&str>, receipted: bool, discovered: bool| {
+        let producer = k1.producer();
+        let (_, mut ce) = list_evidence(
+            &producer,
+            &k1.fingerprint(),
+            'd',
+            golden_metadata(7),
+            LIST_AT,
+        );
+        if !receipted {
+            ce.registry_receipt = None;
+        }
+        let mut e = bundle();
+        put(&mut e, 'd', ce);
+        add_snapshot(
+            &mut e,
+            WEB_PRODUCER,
+            did_doc(
+                WEB_PRODUCER,
+                &[("key-1", KEY1), ("key-2", KEY2)],
+                &["key-1", "key-2"],
+            ),
+            REGISTRY_OBSERVED,
+        );
+        if let Some(since) = compromised_since {
+            put(
+                &mut e,
+                'e',
+                revocation(&k2, 'e', &KEY1, since, "2026-10-26T06:00:00.000Z"),
+            );
+        }
+        if discovered {
+            add_discovery(&mut e, WEB_PRODUCER, discovery("2026-10-26T12:00:00.000Z"));
+        }
+        reparse(&e)
+    };
+    let pin = IssuerPin::new(WEB_PRODUCER, LIST_ID);
+    let check = |e: &Evidence, policy: TrustPolicy| {
+        let roots = [ctx('d')];
+        let trust = TrustOptions::new(vec![pin.clone()], at(NOW));
+        let (v, t) =
+            verify_chain_with_trust_policy(&roots, e, &Options::default(), &trust, policy).unwrap();
+        let class = v.nodes[0]
+            .latest
+            .stages
+            .key_revocation
+            .as_ref()
+            .unwrap()
+            .value;
+        let l = &t.latest.lists[0];
+        (class, l.status, l.reason)
+    };
+    let strict = TrustPolicy::default().refuse_unknown_issuer_revocation(true);
+    let used = (ListStatus::Used, None);
+    let invalid = (ListStatus::Invalid, Some(TrustReason::NoValidVersion));
+    let cases = [
+        (
+            "not-revoked",
+            bundle_for(None, true, true),
+            KeyRevocationValue::NotRevoked,
+            used,
+            used,
+        ),
+        (
+            "pre-compromise",
+            bundle_for(Some("2026-10-26T03:00:00.000Z"), true, true),
+            KeyRevocationValue::PreCompromise,
+            used,
+            used,
+        ),
+        (
+            "unknown",
+            bundle_for(None, true, false),
+            KeyRevocationValue::Unknown,
+            used,
+            invalid,
+        ),
+        (
+            "revoked",
+            bundle_for(Some("2026-10-01T00:00:00.000Z"), true, true),
+            KeyRevocationValue::Revoked,
+            invalid,
+            invalid,
+        ),
+        (
+            "unplaceable",
+            bundle_for(Some("2026-10-01T00:00:00.000Z"), false, true),
+            KeyRevocationValue::Unplaceable,
+            invalid,
+            invalid,
+        ),
+    ];
+    for (name, e, class, default, under_strict) in cases {
+        let (c, s, r) = check(&e, TrustPolicy::default());
+        assert_eq!(c, class, "{name}: class");
+        assert_eq!((s, r), default, "{name}: default policy");
+        let (_, s, r) = check(&e, strict);
+        assert_eq!((s, r), under_strict, "{name}: refuse-unknown policy");
+    }
+}

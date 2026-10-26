@@ -877,7 +877,7 @@ fn trust_006_multiple_lists() {
 fn trust_fixtures_each_have_tests() {
     const BOUND: &[(&str, &str)] = &[
         ("trust-001", "trust_lists::trust_001_golden_list"),
-        ("trust-002", "trust_lists::trust_002_list_validation"),
+        ("trust-002", "trust_lists::trust_002_list_validation (K: acdp-chain trust::trust_002_k_issuer_key_revocation_classes)"),
         ("trust-003", "trust_lists::trust_003_series_state"),
         ("trust-004", "trust_lists::trust_004_retraction"),
         ("trust-005", "trust_lists::trust_005_as_of_selection"),

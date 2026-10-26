@@ -46,6 +46,10 @@ tokio      = { version = "1", features = ["time", "macros"], default-features = 
 tracing    = { version = "0.1", optional = true, default-features = false, features = ["attributes"] }
 
 [dev-dependencies]
+# Builds rev-007 members as real publish requests. PATH-ONLY (no
+# version): not a normal dependency, so release-plz may publish
+# acdp-client first (same rule as acdp-chain).
+acdp-producer = { path = "../acdp-producer" }
 tokio    = { version = "1", features = ["full"] }
 wiremock = "0.6"
 anyhow   = "1"

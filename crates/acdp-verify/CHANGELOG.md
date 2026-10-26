@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-verify-v0.17.3...acdp-verify-v0.18.0) - 2026-10-26
+
+### Added
+
+- [**breaking**] RFC-ACDP-0021 keyless signing behind the keyless feature ([#478](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/478))
+
 ## [0.17.3](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-verify-v0.17.2...acdp-verify-v0.17.3) - 2026-10-26
 
 ### Added

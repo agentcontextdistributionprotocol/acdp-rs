@@ -193,7 +193,7 @@ pub fn validate_publish_request(req: &PublishRequest) -> Result<(), AcdpError> {
     validate_optional_string(req.summary.as_deref(), "summary", MAX_SUMMARY_LEN)?;
     validate_optional_string(req.domain.as_deref(), "domain", MAX_DOMAIN_LEN)?;
 
-    validate_agent_did(&req.agent_id)?;
+    validate_agent_did(&req.agent_id, true)?;
     for c in &req.contributors {
         validate_loose_did(c)?;
     }
@@ -290,7 +290,22 @@ pub fn validate_publish_request(req: &PublishRequest) -> Result<(), AcdpError> {
 
 /// Validate a stored [`Body`] (retrieval-side check).
 pub fn validate_body(body: &Body) -> Result<(), AcdpError> {
-    validate_body_inner(body, /* check_embedded_hashes = */ true)
+    validate_body_inner(
+        body, /* check_embedded_hashes = */ true, /* resolve_keys = */ true,
+    )
+}
+
+/// [`validate_body`] without resolving `did:key` identifiers.
+///
+/// A `did:key` `agent_id` or `signature.key_id` that does not decode is
+/// a verification outcome, not a schema failure: RFC-ACDP-0017 §7.6
+/// reports it as `key: unresolvable` with `signature: unresolvable`
+/// rather than rejecting the evidence bundle (§4.1). Syntax is still
+/// checked; only the resolution step is skipped.
+pub fn validate_body_schema(body: &Body) -> Result<(), AcdpError> {
+    validate_body_inner(
+        body, /* check_embedded_hashes = */ true, /* resolve_keys = */ false,
+    )
 }
 
 /// Same as [`validate_body`] but skips the embedded-`content_hash` recomputation.
@@ -304,10 +319,16 @@ pub fn validate_body(body: &Body) -> Result<(), AcdpError> {
 /// Production code that doesn't need partial-failure reporting should
 /// prefer [`validate_body`].
 pub fn validate_body_structural(body: &Body) -> Result<(), AcdpError> {
-    validate_body_inner(body, /* check_embedded_hashes = */ false)
+    validate_body_inner(
+        body, /* check_embedded_hashes = */ false, /* resolve_keys = */ true,
+    )
 }
 
-fn validate_body_inner(body: &Body, check_embedded_hashes: bool) -> Result<(), AcdpError> {
+fn validate_body_inner(
+    body: &Body,
+    check_embedded_hashes: bool,
+    resolve_keys: bool,
+) -> Result<(), AcdpError> {
     validate_title(&body.title)?;
     validate_optional_string(
         body.description.as_deref(),
@@ -317,7 +338,7 @@ fn validate_body_inner(body: &Body, check_embedded_hashes: bool) -> Result<(), A
     validate_optional_string(body.summary.as_deref(), "summary", MAX_SUMMARY_LEN)?;
     validate_optional_string(body.domain.as_deref(), "domain", MAX_DOMAIN_LEN)?;
 
-    validate_agent_did(&body.agent_id)?;
+    validate_agent_did(&body.agent_id, resolve_keys)?;
     for c in &body.contributors {
         validate_loose_did(c)?;
     }
@@ -365,7 +386,9 @@ fn validate_body_inner(body: &Body, check_embedded_hashes: bool) -> Result<(), A
     }
 
     validate_signature_length(&body.signature.algorithm, &body.signature.value)?;
-    validate_did_key_key_id_form(&body.signature.key_id)?;
+    if resolve_keys {
+        validate_did_key_key_id_form(&body.signature.key_id)?;
+    }
     validate_identifiers(&body.ctx_id, &body.lineage_id, &body.content_hash)?;
 
     // Every entry in supersedes / derived_from MUST be a valid ctx_id.
@@ -916,9 +939,12 @@ fn validate_did_key_key_id_form(key_id: &str) -> Result<(), AcdpError> {
     Ok(())
 }
 
-fn validate_agent_did(did: &AgentDid) -> Result<(), AcdpError> {
+fn validate_agent_did(did: &AgentDid, resolve: bool) -> Result<(), AcdpError> {
     if did.as_str().starts_with("did:key:") {
         AgentDid::parse(did.as_str())?;
+        if !resolve {
+            return Ok(());
+        }
         // See validate_did_key_key_id_form above: propagate the resolver's
         // own AcdpError::KeyResolution rather than downgrading to
         // SchemaViolation.

@@ -331,9 +331,10 @@ impl ChangeVerdict {
 ///   `lifecycle_events[index]` must equal the entry's event under JCS.
 ///   Every `retracted`/`republished` event in that list is verified.
 /// - **`superseded`** — `superseded_by` is retrieved and verified under
-///   `policy` with its receipt required; its `supersedes`, `lineage_id`
-///   and `agent_id` must be the entry's, and its verified receipt must
-///   equal the entry's.
+///   `policy` with its receipt required; it must originate at the
+///   serving registry (§7 origin binding); its `supersedes`,
+///   `lineage_id` and `agent_id` must be the entry's, and its verified
+///   receipt must equal the entry's.
 /// - **`key_revocation`** — the revocation context is retrieved and
 ///   verified under RFC-ACDP-0014 §5 (including the historical-key arm)
 ///   or §6 (a registry-attested one must be published by this registry);
@@ -572,9 +573,19 @@ async fn verify_superseded(
         receipts: ReceiptPolicy::Require,
         ..policy.clone()
     };
+    let authority = serving_authority(client)?;
     let new_version =
         VerifiedContext::fetch_with_policy(client, resolver, superseded_by, &policy).await?;
     let body = new_version.body();
+    if body.origin_registry != authority {
+        return Err(reject(
+            change,
+            format!(
+                "{superseded_by} originates at {}, not this registry",
+                body.origin_registry
+            ),
+        ));
+    }
     if body.supersedes.as_ref() != Some(change.ctx_id()) {
         return Err(reject(
             change,

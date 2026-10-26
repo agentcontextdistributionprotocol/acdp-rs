@@ -183,9 +183,11 @@ impl Engine<'_, '_> {
         };
 
         let (signature, key_stage) = match check {
+            // §7.6: a key that cannot resolve whatever the evidence is
+            // unresolvable in both passes, and so is the signature.
             Err(Missing::Malformed) => (
                 Some(SignatureStage {
-                    value: SignatureValue::Invalid,
+                    value: SignatureValue::Unresolvable,
                     basis: None,
                 }),
                 KeyStage {
@@ -702,11 +704,12 @@ impl Engine<'_, '_> {
                 value,
                 events_admitted: Some(prefix as u64),
                 basis: admitted[..prefix].iter().flatten().max().copied(),
-                evidence_time: accepted[..prefix]
-                    .iter()
-                    .flatten()
-                    .max()
-                    .map(|t| fmt_ts(*t)),
+                // §7.8 item 2: the last admitted event's verified
+                // accepted_at, if it has one.
+                evidence_time: prefix
+                    .checked_sub(1)
+                    .and_then(|last| accepted[last])
+                    .map(fmt_ts),
                 reason: None,
             },
             facts,
@@ -796,12 +799,13 @@ impl Engine<'_, '_> {
             // context. Only discovery decides not-revoked (§7.9).
         }
 
-        let deciding = self
-            .parsed
-            .discovery
-            .get(producer)
-            .into_iter()
-            .flatten()
+        let records = || self.parsed.discovery.get(producer).into_iter().flatten();
+        // §7.9: a vantage saw a revocation the bundle does not carry.
+        if records().any(|d| d.outcome == DiscoveryOutcome::Revoked && pass.admits(d.completed_at))
+        {
+            return stage(KeyRevocationValue::Unknown);
+        }
+        let deciding = records()
             .enumerate()
             .filter(|(_, d)| {
                 d.outcome == DiscoveryOutcome::NotRevokedComplete && pass.admits(d.completed_at)
@@ -841,8 +845,9 @@ impl Engine<'_, '_> {
         )
     }
 
-    /// The latest-pass `accepted_at` of every event receipt that
-    /// verifies, for the horizon.
+    /// The latest-pass `accepted_at` of every event receipt that passes
+    /// §10.3 on its own (every step but the cross-receipt step 8), for
+    /// the horizon (§5.4).
     pub(crate) fn verified_event_times(&self, pc: &ParsedContext<'_>) -> Vec<DateTime<Utc>> {
         let body = &pc.body;
         let registry_did = acdp_did::web::authority_to_did_web(&body.origin_registry);
@@ -850,14 +855,17 @@ impl Engine<'_, '_> {
             .iter()
             .enumerate()
             .filter(|(j, (r, raw))| {
-                let Some((event, raw_event)) = pc.events.get(*j) else {
+                let Some((_, raw_event)) = pc.events.get(*j) else {
                     return false;
                 };
-                r.registry_did == registry_did
-                    && r.ctx_id == body.ctx_id
-                    && r.event_id == event.event_id
-                    && r.index == *j as u64
-                    && EventReceipt::event_hash_of_value(raw_event).is_ok_and(|h| h == r.event_hash)
+                r.check_binding(
+                    &body.origin_registry,
+                    &body.ctx_id,
+                    raw_event,
+                    *j as u64,
+                    body.created_at,
+                )
+                .is_ok()
                     && EventReceipt::preimage_hash_of_value(raw).is_ok_and(|hash| {
                         self.keys
                             .check(&r.signature, &hash, &registry_did, None)

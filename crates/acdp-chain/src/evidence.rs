@@ -465,7 +465,9 @@ fn parse_context<'a>(
 ) -> Result<ParsedContext<'a>, ChainError> {
     let body: Body = serde_json::from_value(ce.body.clone())
         .map_err(|e| evidence(format!("contexts['{key}'].body does not parse: {e}")))?;
-    acdp_validation::validate_body(&body)
+    // A key_id that cannot resolve is a stage outcome (§7.6), not a
+    // schema failure, so did:key resolution is left to the key stage.
+    acdp_validation::validate_body_schema(&body)
         .map_err(|e| evidence(format!("contexts['{key}'].body: {e}")))?;
 
     let receipt = match &ce.registry_receipt {

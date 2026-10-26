@@ -25,15 +25,16 @@ witness cosigning, key revocation, and lifecycle/retraction events.
 > This crate implements 0001–0008 (core + retrieval/lineage/search), 0010
 > (registry receipts), 0011 (lineage-head receipts), 0012 (transparency log),
 > 0013 (lifecycle/retraction), 0014 (key revocation), 0015 (witness
-> cosigning), and, on the Draft line, 0016 (typed external anchors), 0017
-> (offline chain verification) and 0018 (retraction recall: the changes
+> cosigning), 0017 (offline chain verification, Final at 0.5.0; its §10–§11
+> registry event and lineage-member receipts remain Draft), and, on the Draft
+> line, 0016 (typed external anchors) and 0018 (retraction recall: the changes
 > feed, change hints and the `acdp-consumer-recall` profile).
 
 This is a **Cargo workspace**: the umbrella `acdp` crate is a thin facade that
 re-exports a fine-grained set of crates under [`crates/`](./crates/)
 (`acdp-primitives` → `acdp-jcs`/`acdp-safe-http` → `acdp-did` → `acdp-crypto` →
 `acdp-types` → `acdp-validation` → `acdp-verify` → `acdp-chain` (offline
-RFC-ACDP-0017 chain verification, Draft) → `acdp-producer` →
+RFC-ACDP-0017 chain verification) → `acdp-producer` →
 `acdp-client`/`acdp-server` → `acdp-cli`), preserving the historical
 `acdp::{error, types, crypto, did, validation, verify, chain, producer,
 client, registry, …}` paths. Language bindings live under [`bindings/`](./bindings/)

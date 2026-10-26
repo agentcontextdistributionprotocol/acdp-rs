@@ -64,7 +64,7 @@ pub use acdp_types::profile;
 // Validation, high-level verification, and the producer builder are now
 // their own crates; re-export under their historical module paths.
 /// Offline, as-of chain verification over evidence bundles
-/// (RFC-ACDP-0017, 0.5.0 Draft).
+/// (RFC-ACDP-0017, Final at 0.5.0).
 pub use acdp_chain as chain;
 pub use acdp_producer as producer;
 pub use acdp_validation as validation;

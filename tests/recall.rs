@@ -309,6 +309,41 @@ async fn rec_006_e_bogus_supersession_changes_nothing() {
 }
 
 #[tokio::test]
+async fn rec_006_e_supersession_from_another_origin_is_rejected() {
+    // RFC-ACDP-0018 §7 origin binding: the new version must originate at
+    // the registry serving the feed. Same server, reached under another
+    // authority name, so its origin differs from the serving authority.
+    let w = world().await;
+    let v1 = w.publish("key-1", K1, ContextType::Analysis, None).await;
+    let v2 = w.publish_next(&v1, "key-1", K1).await;
+    let change =
+        Change::superseded(1052, v1.body.ctx_id.clone(), agent(), &receipt_of(&v2)).unwrap();
+    let mirror = acdp::client::RegistryClient::with_test_endpoint(
+        "https://localhost.",
+        w.tls.addr,
+        &w.tls.root_cert_pem,
+    )
+    .expect("client");
+    assert_eq!(mirror.authority().as_deref(), Some("localhost."));
+    let verdict = verify_change(
+        &mirror,
+        &w.resolver(),
+        &change,
+        None,
+        &VerificationPolicy::default(),
+    )
+    .await
+    .expect("decided");
+    // The receipt binding (registry_did vs the serving authority) fires
+    // before the explicit origin check; either way the entry is rejected.
+    let e = rejected(&verdict);
+    assert!(
+        e.to_string().contains("serving authority") || e.to_string().contains("originates at"),
+        "{e}"
+    );
+}
+
+#[tokio::test]
 async fn rec_006_f_out_of_scope_revocation_changes_nothing() {
     let w = world().await;
     let rev = w.publish_revocation_of_k1("key-2", K2).await;

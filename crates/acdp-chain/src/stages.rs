@@ -183,9 +183,11 @@ impl Engine<'_, '_> {
         };
 
         let (signature, key_stage) = match check {
+            // §7.6: a key that cannot resolve whatever the evidence is
+            // unresolvable in both passes, and so is the signature.
             Err(Missing::Malformed) => (
                 Some(SignatureStage {
-                    value: SignatureValue::Invalid,
+                    value: SignatureValue::Unresolvable,
                     basis: None,
                 }),
                 KeyStage {
@@ -568,21 +570,24 @@ impl Engine<'_, '_> {
         seen.len() as u64
     }
 
-    /// Whether event `raw` (already parsed as `event`) verifies under its
-    /// actor's key in this pass, and whether it is an unsigned registry
-    /// event (admissible only on a verified receipt).
+    /// How event `raw` (already parsed as `event`) stands in this pass:
+    /// `(signed, authorized, unsigned_registry)`. `signed`: its signature
+    /// verifies under its actor's located key. `authorized`: that key is
+    /// in `assertionMethod` too (always, for a non-producer actor).
+    /// `unsigned_registry`: an unsigned origin-registry event, admissible
+    /// only on a verified receipt.
     fn event_status(
         &self,
         body: &Body,
         event: &LifecycleEvent,
         raw: &serde_json::Value,
         pass: PassAt,
-    ) -> (bool, bool) {
+    ) -> (bool, bool, bool) {
         let registry_did = acdp_did::web::authority_to_did_web(&body.origin_registry);
         if !event.is_signed() {
             let unsigned_registry =
                 event.ctx_id == body.ctx_id && event.actor.as_str() == registry_did;
-            return (false, unsigned_registry);
+            return (false, false, unsigned_registry);
         }
         let Ok((event, hash)) = acdp_verify::lifecycle_event_prechecks(
             raw,
@@ -590,17 +595,19 @@ impl Engine<'_, '_> {
             &body.agent_id,
             Some(&registry_did),
         ) else {
-            return (false, false);
+            return (false, false, false);
         };
         let Some(signature) = &event.signature else {
-            return (false, false);
+            return (false, false, false);
         };
         let producer = event.actor == body.agent_id;
-        let ok = self
+        match self
             .keys
             .check(signature, &hash, event.actor.as_str(), pass.t())
-            .is_ok_and(|k| k.valid && (k.in_assertion || !producer));
-        (ok, false)
+        {
+            Ok(k) if k.valid => (true, k.in_assertion || !producer, false),
+            _ => (false, false, false),
+        }
     }
 
     /// §7.8 with §10.3 event-receipt verification.
@@ -658,7 +665,8 @@ impl Engine<'_, '_> {
         let mut facts = PassFacts::default();
         let mut admitted: Vec<Option<Basis>> = Vec::with_capacity(n);
         for (i, (event, raw)) in pc.events.iter().enumerate() {
-            let (signed_ok, unsigned_registry) = self.event_status(body, event, raw, pass);
+            let (signed, authorized, unsigned_registry) = self.event_status(body, event, raw, pass);
+            let signed_ok = signed && authorized;
             let basis = match (pass, accepted[i]) {
                 (PassAt::AsOf(t), Some(a)) => {
                     if event.occurred_at <= t && a > t {
@@ -670,8 +678,11 @@ impl Engine<'_, '_> {
                     (!self.require_attested_events && signed_ok && event.occurred_at <= t)
                         .then_some(Basis::Observed)
                 }
+                // §7.8 item 1: a verified receipt also admits a producer
+                // key that is only in verificationMethod (receipt-attested
+                // historical key, by analogy with RFC-ACDP-0010 §10).
                 (PassAt::Latest, Some(_)) => {
-                    (signed_ok || unsigned_registry).then_some(Basis::Registry)
+                    (signed || unsigned_registry).then_some(Basis::Registry)
                 }
                 (PassAt::Latest, None) => signed_ok.then_some(Basis::Observed),
             };
@@ -702,11 +713,12 @@ impl Engine<'_, '_> {
                 value,
                 events_admitted: Some(prefix as u64),
                 basis: admitted[..prefix].iter().flatten().max().copied(),
-                evidence_time: accepted[..prefix]
-                    .iter()
-                    .flatten()
-                    .max()
-                    .map(|t| fmt_ts(*t)),
+                // §7.8 item 2: the last admitted event's verified
+                // accepted_at, if it has one.
+                evidence_time: prefix
+                    .checked_sub(1)
+                    .and_then(|last| accepted[last])
+                    .map(fmt_ts),
                 reason: None,
             },
             facts,
@@ -796,12 +808,13 @@ impl Engine<'_, '_> {
             // context. Only discovery decides not-revoked (§7.9).
         }
 
-        let deciding = self
-            .parsed
-            .discovery
-            .get(producer)
-            .into_iter()
-            .flatten()
+        let records = || self.parsed.discovery.get(producer).into_iter().flatten();
+        // §7.9: a vantage saw a revocation the bundle does not carry.
+        if records().any(|d| d.outcome == DiscoveryOutcome::Revoked && pass.admits(d.completed_at))
+        {
+            return stage(KeyRevocationValue::Unknown);
+        }
+        let deciding = records()
             .enumerate()
             .filter(|(_, d)| {
                 d.outcome == DiscoveryOutcome::NotRevokedComplete && pass.admits(d.completed_at)
@@ -841,8 +854,9 @@ impl Engine<'_, '_> {
         )
     }
 
-    /// The latest-pass `accepted_at` of every event receipt that
-    /// verifies, for the horizon.
+    /// The latest-pass `accepted_at` of every event receipt that passes
+    /// §10.3 on its own (every step but the cross-receipt step 8), for
+    /// the horizon (§5.4).
     pub(crate) fn verified_event_times(&self, pc: &ParsedContext<'_>) -> Vec<DateTime<Utc>> {
         let body = &pc.body;
         let registry_did = acdp_did::web::authority_to_did_web(&body.origin_registry);
@@ -850,14 +864,17 @@ impl Engine<'_, '_> {
             .iter()
             .enumerate()
             .filter(|(j, (r, raw))| {
-                let Some((event, raw_event)) = pc.events.get(*j) else {
+                let Some((_, raw_event)) = pc.events.get(*j) else {
                     return false;
                 };
-                r.registry_did == registry_did
-                    && r.ctx_id == body.ctx_id
-                    && r.event_id == event.event_id
-                    && r.index == *j as u64
-                    && EventReceipt::event_hash_of_value(raw_event).is_ok_and(|h| h == r.event_hash)
+                r.check_binding(
+                    &body.origin_registry,
+                    &body.ctx_id,
+                    raw_event,
+                    *j as u64,
+                    body.created_at,
+                )
+                .is_ok()
                     && EventReceipt::preimage_hash_of_value(raw).is_ok_and(|hash| {
                         self.keys
                             .check(&r.signature, &hash, &registry_did, None)

@@ -1301,6 +1301,211 @@ fn bundle_posture() {
     assert!(Evidence::from_value(&v).is_err());
 }
 
+// ── spec c411d94 rulings ─────────────────────────────────────────────────────
+
+#[test]
+fn malformed_key_id_is_unresolvable_in_both_passes() {
+    // §7.6: not a schema failure (§4.1); key and signature unresolvable.
+    let bad_fragment = format!("{KEY_PRODUCER}#z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK");
+    for key_id in [
+        "did:key:z6MkBOGUS#z6MkBOGUS",
+        bad_fragment.as_str(),
+        "did:web:producer.example.com#key-1",
+    ] {
+        let mut e = chain_008_bundle();
+        e.contexts.get_mut(&ctx('b')).unwrap().body["signature"]["key_id"] = json!(key_id);
+        let v = run(&['a'], &e, &Options::as_of(t()));
+        let b = node(&v, 'b');
+        for p in [&b.latest, as_of(b)] {
+            assert_eq!(
+                p.stages.signature.as_ref().map(|s| s.value),
+                Some(SignatureValue::Unresolvable),
+                "{key_id}"
+            );
+            assert_eq!(
+                p.stages.key.as_ref().map(|k| (k.value, k.reason.clone())),
+                Some((KeyValue::Unresolvable, None)),
+                "{key_id}"
+            );
+            assert_eq!(p.verdict, Verdict::Refused, "{key_id}");
+        }
+    }
+}
+
+#[test]
+fn retraction_evidence_time_is_the_last_admitted_events() {
+    // §7.8 item 2: e0 receipted, e1 on its signature alone. Latest admits
+    // both, and the last one has no verified receipt: no evidence_time.
+    let v = run(
+        &['a'],
+        &chain_009_bundle(|e0, _| vec![event_receipt('b', e0, 0, "2026-09-05T00:00:00.000Z")]),
+        &Options::as_of(t()),
+    );
+    let (a, l) = b_retraction(&v);
+    assert_eq!(
+        (
+            l.value,
+            l.events_admitted,
+            l.basis,
+            l.evidence_time.as_deref()
+        ),
+        (
+            RetractionValue::NotRetracted,
+            Some(2),
+            Some(Basis::Observed),
+            None
+        )
+    );
+    // As of T only e0 is admitted, and its receipt verifies.
+    assert_eq!(
+        (
+            a.value,
+            a.events_admitted,
+            a.basis,
+            a.evidence_time.as_deref()
+        ),
+        (
+            RetractionValue::Retracted,
+            Some(1),
+            Some(Basis::Registry),
+            Some("2026-09-05T00:00:00.000Z")
+        )
+    );
+}
+
+#[test]
+fn revoked_discovery_record_without_an_applied_revocation_is_unknown() {
+    // §7.9: a vantage saw a revocation the bundle does not carry.
+    let mut e = chain_001_bundle();
+    add_discovery(
+        &mut e,
+        KEY_PRODUCER,
+        DiscoveryRecord::new(
+            REGISTRY,
+            DiscoveryOutcome::Revoked,
+            "2026-10-02T00:00:00.000Z",
+        ),
+    );
+    let v = run(&['a'], &e, &Options::as_of(t()));
+    for id in ['a', 'b', 'c'] {
+        let n = node(&v, id);
+        let kr = n.latest.stages.key_revocation.as_ref().unwrap();
+        assert_eq!(
+            (
+                kr.value,
+                kr.basis,
+                kr.evidence_time.as_deref(),
+                kr.reason.as_deref()
+            ),
+            (KeyRevocationValue::Unknown, None, None, None)
+        );
+        assert_eq!(n.latest.verdict, Verdict::Unknown);
+        // Not admitted as of T (completed after T): the complete record decides.
+        assert_eq!(
+            as_of(n).stages.key_revocation.as_ref().unwrap().value,
+            KeyRevocationValue::NotRevoked
+        );
+    }
+    // An `unknown` record is ignored.
+    let mut e = chain_001_bundle();
+    add_discovery(
+        &mut e,
+        KEY_PRODUCER,
+        DiscoveryRecord::new(
+            REGISTRY,
+            DiscoveryOutcome::Unknown,
+            "2026-10-02T00:00:00.000Z",
+        ),
+    );
+    let v = run(&['a'], &e, &Options::default());
+    assert_eq!(
+        node(&v, 'a')
+            .latest
+            .stages
+            .key_revocation
+            .as_ref()
+            .unwrap()
+            .value,
+        KeyRevocationValue::NotRevoked
+    );
+}
+
+#[test]
+fn horizon_ignores_event_receipts_failing_step_9() {
+    // §5.4: B is unreceipted and created 12-01; its event receipt accepts
+    // e0 on 11-01, before created_at, so it fails §10.3 step 9 and does
+    // not raise the horizon past the 09-30 discovery record.
+    let p = Signer::did_key();
+    let mut e = chain_003_bundle(false);
+    let b = body(&p, 'b', &[], "2026-12-01T00:00:00.000Z");
+    let ev = event(
+        &p,
+        'b',
+        0,
+        LifecycleEventType::Retracted,
+        "2026-10-03T00:00:00.000Z",
+    );
+    let mut ce = ContextEvidence::new(serde_json::to_value(&b).unwrap());
+    ce.event_receipts = Some(vec![event_receipt('b', &ev, 0, "2026-11-01T00:00:00.000Z")]);
+    ce.lifecycle_events = Some(vec![ev.clone()]);
+    put(&mut e, 'b', ce.clone());
+    let v = run(&['a'], &e, &Options::default());
+    assert_eq!(v.horizon.as_deref(), Some("2026-09-30T00:00:00.000Z"));
+
+    // The same receipt accepted on/after created_at does count.
+    ce.event_receipts = Some(vec![event_receipt('b', &ev, 0, "2026-12-02T00:00:00.000Z")]);
+    put(&mut e, 'b', ce);
+    let v = run(&['a'], &e, &Options::default());
+    assert_eq!(v.horizon.as_deref(), Some("2026-12-02T00:00:00.000Z"));
+}
+
+#[test]
+fn latest_pass_admits_a_historical_producer_key_only_with_a_receipt() {
+    // §7.8 item 1 (spec 3d41e31): key-1 is in the latest snapshot's
+    // verificationMethod but not its assertionMethod.
+    let k1 = Signer::web(KEY1, "key-1");
+    let bundle_with = |receipted_event: bool| {
+        let mut e = chain_007_bundle(false);
+        let ev = event(
+            &k1,
+            'a',
+            0,
+            LifecycleEventType::Retracted,
+            "2026-10-12T00:00:00.000Z",
+        );
+        let a = e.contexts.get_mut(&ctx('a')).unwrap();
+        if receipted_event {
+            a.event_receipts = Some(vec![event_receipt('a', &ev, 0, "2026-10-12T00:00:01.000Z")]);
+        }
+        a.lifecycle_events = Some(vec![ev]);
+        e
+    };
+
+    let v = run(&['a'], &bundle_with(true), &Options::default());
+    let r = node(&v, 'a').latest.stages.retraction.as_ref().unwrap();
+    assert_eq!(
+        (
+            r.value,
+            r.events_admitted,
+            r.basis,
+            r.evidence_time.as_deref()
+        ),
+        (
+            RetractionValue::Retracted,
+            Some(1),
+            Some(Basis::Registry),
+            Some("2026-10-12T00:00:01.000Z")
+        )
+    );
+
+    let v = run(&['a'], &bundle_with(false), &Options::default());
+    let r = node(&v, 'a').latest.stages.retraction.as_ref().unwrap();
+    assert_eq!(
+        (r.value, r.events_admitted, r.basis),
+        (RetractionValue::NotRetracted, Some(0), None)
+    );
+}
+
 // ── KATs (chain-001 A, chain-002 A, chain-003 A, chain-010 A) ───────────────
 
 /// Known-answer vectors for the cross-implementation digests (§9.3,

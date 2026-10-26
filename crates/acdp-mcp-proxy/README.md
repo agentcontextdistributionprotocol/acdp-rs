@@ -66,7 +66,7 @@ Point your MCP client at the proxy instead of at the server:
 | `tools.<name>.fail_closed` | When publishing fails, the result is withheld and an `isError` result is returned instead. The default is fail-open: the result is returned with `{"failed": true, "error"?}`. |
 | `tools.<name>.skip` | The tool is relayed without a record. The default is to cover every tool. |
 
-When `external` is set, the proxy writes `<dir>/<content-hash hex>.json` before it publishes. The bytes it writes are the JCS of the hashed result. Your web server is expected to serve `dir` at `base_url`.
+When `external` is set, the proxy writes `<dir>/<content-hash hex>.json` before it publishes. The bytes it writes are the JCS of the hashed result. Your web server is expected to serve `dir` at `base_url`, which must be a public `https` URL. The DataRef carries `content_hash` and `size_bytes`.
 
 ## Behaviour
 
@@ -74,6 +74,11 @@ When `external` is set, the proxy writes `<dir>/<content-hash hex>.json` before 
 - **Salted by default.** The arguments, the hashed result and the request id are hashed as `H(salt ‖ JCS(v))`. The salt is a fresh 32-byte value per call and is revealed only to the client, in `_meta`. Only embedded records are unsalted.
 - **`derived_from`** lists the `acdp://` ids that appear as whole string values in the arguments. They are collected in JCS order, without duplicates, up to 1000.
 - **No link before the publish response.** A `tools/call` result is held until its publish succeeds or fails. All other messages pass through byte for byte.
+- **Edge cases (spec rulings, f9bd453):**
+  - A tool name over 256 characters is never truncated. That call is a publish failure.
+  - A result that arrives before `initialize` is a publish failure under the tool's own policy.
+  - A JSON-RPC error produces no record.
+  - The configured `visibility` is published exactly as configured, and a rejection is a publish failure. The proxy never widens it.
 - stdout carries only the relayed protocol. Diagnostics go to stderr.
 
 Only the stdio transport is supported. The record format already covers `streamable-http` and `sse`, and `record::http_descriptor` builds their endpoint descriptor.

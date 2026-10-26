@@ -240,6 +240,12 @@ impl Config {
     /// Build the relay around `registry` (production callers pass
     /// `RegistryClient::new(&config.registry)`).
     pub fn proxy(&self, registry: RegistryClient) -> Result<Proxy, AcdpError> {
+        // Consumers fetch external results under the RFC-ACDP-0008 rules.
+        if let Some(e) = &self.external {
+            if !e.base_url.starts_with("https://") {
+                return Err(bad("external.base_url must be a public https URL"));
+            }
+        }
         let tools = self
             .tools
             .iter()

@@ -320,6 +320,7 @@ pub fn prepare(
             let location = format!("{}/{hex}.json", base.trim_end_matches('/'));
             let mut r = DataRef::uri_verified(DataRefType::PrimaryResult, location.clone(), hash);
             r.format = Some("json".into());
+            r.size_bytes = Some(bytes.len() as u64);
             data_refs.push(r);
             external = Some(ExternalPayload {
                 location,
@@ -344,7 +345,13 @@ pub fn prepare(
     server_obj.insert("transport".into(), serde_json::to_value(server.transport)?);
     server_obj.insert("endpoint_hash".into(), server.endpoint_hash.clone().into());
 
-    let tool = truncate(&call.tool, MAX_TOOL);
+    // Unlike the server fields, `tool` is never truncated: a cut name
+    // could name a different tool, so it fails the publish (§4.2).
+    if call.tool.chars().count() > MAX_TOOL {
+        return Err(AcdpError::SchemaViolation(format!(
+            "tool name exceeds {MAX_TOOL} characters"
+        )));
+    }
     let mut record = Map::new();
     record.insert("record_version".into(), RECORD_VERSION.into());
     record.insert(
@@ -352,7 +359,7 @@ pub fn prepare(
         truncate(&server.protocol_version, MAX_PROTOCOL_VERSION).into(),
     );
     record.insert("server".into(), Value::Object(server_obj));
-    record.insert("tool".into(), tool.clone().into());
+    record.insert("tool".into(), call.tool.clone().into());
     record.insert(
         "arguments_hash".into(),
         call_hash(&call.arguments, salt.as_ref()).into(),

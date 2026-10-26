@@ -180,6 +180,7 @@ const KNOWN_FAMILIES: &[&str] = &[
     "schema",
     "sig",
     "status",
+    "trust",
     "vis",
     "wit",
 ];
@@ -187,7 +188,11 @@ const KNOWN_FAMILIES: &[&str] = &[
 /// Families in [`KNOWN_FAMILIES`] with no dedicated fixture-driven test today, and why.
 /// Every entry here must also appear in `KNOWN_FAMILIES`
 /// (see `excused_families_are_a_subset_of_known_families`).
-const EXCUSED: &[(&str, &str)] = &[];
+const EXCUSED: &[(&str, &str)] = &[(
+    "trust",
+    "RFC-ACDP-0020 (Draft) consumer trust-list evaluation is the next work item; \
+     trust-001..007 get bound when it lands",
+)];
 
 /// Longest-prefix match of a fixture `id` against a family list, mirroring the spec's own
 /// `scripts/check-consistency.py::check_families` (spec repo, ~line 79): sort candidates by

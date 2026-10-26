@@ -246,6 +246,7 @@ fn mcp_006_embedding_allowlist() {
     assert_eq!(
         req["data_refs"],
         json!([{ "type": "primary_result", "format": "json", "content_hash": h.as_str(),
+                 "size_bytes": payload.bytes.len(),
                  "location": format!("https://results.example.com/mcp/{}.json", payload.hex) }])
     );
     assert_eq!(req["metadata"]["embedded"], true);
@@ -295,6 +296,30 @@ fn mcp_007_salt_rules() {
         record::endpoint_hash(&d),
         record::endpoint_hash(&record::http_descriptor("https://mcp.example.com/v1/mcp").unwrap())
     );
+}
+
+#[test]
+fn tool_names_are_never_truncated() {
+    let Some(dir) = common::spec_dir() else {
+        return;
+    };
+    let f = common::fixture(&dir, "mcp-001-tool-result-golden.json");
+    let (mut server, mut call) = mcp_001_call(&f["vectors"][0]);
+    let producer = zero_seed_producer();
+    let opts = BodyOptions::default();
+    call.tool = "t".repeat(256);
+    assert!(record::prepare(&producer, &server, &call, &opts, Salt::random).is_ok());
+    call.tool.push('t');
+    assert!(record::prepare(&producer, &server, &call, &opts, Salt::random).is_err());
+    // Server fields are truncated by Unicode scalar values instead.
+    call.tool = "t".into();
+    server.name = "é".repeat(300);
+    let p = record::prepare(&producer, &server, &call, &opts, Salt::random).unwrap();
+    let name = p.request.metadata.unwrap()["server"]["name"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(name.chars().count(), 256);
 }
 
 #[test]

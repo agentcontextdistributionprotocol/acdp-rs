@@ -514,6 +514,47 @@ async fn mcp_006_c_external_result_is_written_before_publishing() {
 }
 
 #[tokio::test]
+async fn over_long_tool_name_is_a_publish_failure() {
+    let (reg, client) = registry_ok().await;
+    let long = "t".repeat(257);
+    let mut h = Harness::start(
+        proxy(client),
+        HashMap::from([(long.clone(), mcp_001_result())]),
+    )
+    .await;
+    let got = h.call(&long, json!({})).await;
+    assert_eq!(got["_meta"][META_KEY], json!({ "failed": true }));
+    assert!(published(&reg).await.is_empty());
+}
+
+#[tokio::test]
+async fn result_before_initialize_follows_the_tool_policy() {
+    let (reg, client) = registry_ok().await;
+    let mut p = proxy(client);
+    p.default_policy.fail_closed = true;
+    let (mut to_proxy, client_in) = tokio::io::duplex(1 << 16);
+    let (client_out, from_proxy) = tokio::io::duplex(1 << 16);
+    let (server_in, stub_in) = tokio::io::duplex(1 << 16);
+    let (stub_out, server_out) = tokio::io::duplex(1 << 16);
+    tokio::spawn(stub_server(stub_in, stub_out, results()));
+    tokio::spawn(Arc::new(p).run(client_in, client_out, server_in, server_out));
+    let call = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": { "name": "regional_fraud_rate", "arguments": {} } });
+    to_proxy
+        .write_all(format!("{call}\n").as_bytes())
+        .await
+        .unwrap();
+    let mut lines = BufReader::new(from_proxy).lines();
+    let reply: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+    assert_eq!(reply["result"]["isError"], true);
+    assert_eq!(
+        reply["result"]["_meta"][META_KEY],
+        json!({ "failed": true })
+    );
+    assert!(published(&reg).await.is_empty());
+}
+
+#[tokio::test]
 async fn skipped_tools_relay_without_a_record() {
     let (reg, client) = registry_ok().await;
     let mut p = proxy(client);

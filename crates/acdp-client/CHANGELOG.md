@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-client-v0.17.0...acdp-client-v0.17.1) - 2026-10-26
+
+### Fixed
+
+- *(chain,client)* apply the RFC-ACDP-0017/0018 rulings in spec c411d94 and 3d41e31 ([#437](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/437))
+
 ## [0.17.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-client-v0.16.1...acdp-client-v0.17.0) - 2026-10-25
 
 ### Added

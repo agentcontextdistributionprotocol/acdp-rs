@@ -11,6 +11,7 @@
 //! - [`provenance`] is the `_meta` value and the §7 failure forms.
 //! - [`relay`] is the newline-delimited JSON-RPC relay.
 //! - [`config`] is the operator's config file.
+//! - [`verify`] is the holder's check of a returned link (§4.3).
 //!
 //! The proxy is the producer: its signature says *the operator observed
 //! this call and this result*, never that the upstream server vouches
@@ -20,6 +21,7 @@ pub mod config;
 pub mod provenance;
 pub mod record;
 pub mod relay;
+pub mod verify;
 
 pub use config::Config;
 pub use relay::Proxy;

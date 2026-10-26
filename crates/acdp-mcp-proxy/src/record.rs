@@ -60,9 +60,16 @@ impl Salt {
         Self(bytes)
     }
 
-    /// Strict decode of the `_meta` form: base64url, unpadded, exactly
-    /// 32 bytes (§4.3 verification step 3).
+    /// Strict decode of the `_meta` form (§4.3 step 3): exactly 43
+    /// base64url characters, no padding, zero trailing bits.
     pub fn from_base64url(s: &str) -> Result<Self, AcdpError> {
+        if s.len() != 43 {
+            return Err(AcdpError::SchemaViolation(format!(
+                "salt must be 43 base64url characters, got {}",
+                s.len()
+            )));
+        }
+        // The engine rejects padding and non-zero trailing bits.
         let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(s)
             .map_err(|e| AcdpError::SchemaViolation(format!("salt is not base64url: {e}")))?;

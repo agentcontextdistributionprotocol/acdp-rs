@@ -564,3 +564,117 @@ async fn skipped_tools_relay_without_a_record() {
     assert_eq!(got, mcp_001_result());
     assert!(published(&reg).await.is_empty());
 }
+
+#[tokio::test]
+async fn holder_verifies_the_link() {
+    use acdp::types::{primitives::AgentDid, Body};
+    use acdp_mcp_proxy::verify::{verify_link, HeldCall, LinkError};
+
+    let (reg, client) = registry_ok().await;
+    let mut h = Harness::start(proxy(client), results()).await;
+    let got = h.call("regional_fraud_rate", mcp_001_arguments()).await;
+    let link = got["_meta"][META_KEY].clone();
+    let mut stored: Value = serde_json::from_slice(&published(&reg).await[0].body).unwrap();
+    stored["ctx_id"] = CTX_ID.into();
+    stored["origin_registry"] = "registry.example.com".into();
+    stored["created_at"] = "2026-10-26T14:03:12.040Z".into();
+    stored["lineage_id"] =
+        "lin:sha256:53269327c5284c8d8389e5687a6604e81c64e81587e6518687cb41a7f3ea5647".into();
+    let body: Body = acdp::crypto::verify_body_value_offline(&stored).unwrap();
+    let proxy_did = vec![body.agent_id.clone()];
+    let result = got.as_object().unwrap().clone();
+    let args = mcp_001_arguments();
+    let id = json!(2);
+    let held = HeldCall {
+        tool: "regional_fraud_rate",
+        result: &result,
+        arguments: Some(&args),
+        request_id: Some(&id),
+    };
+    verify_link(&body, &link, &proxy_did, &held).unwrap();
+    let step = |e: LinkError| match e {
+        LinkError::Unrecognised { step, .. } | LinkError::Mismatch { step, .. } => step,
+    };
+
+    // Step 1 — bindings.
+    let mut other = link.clone();
+    other["ctx_id"] = "acdp://registry.example.com/0f9e8d7c-6b5a-4c3d-9e2f-1a0b9c8d7e6f".into();
+    assert_eq!(
+        step(verify_link(&body, &other, &proxy_did, &held).unwrap_err()),
+        1
+    );
+    let mut other = link.clone();
+    other["registry"] = "elsewhere.example.com".into();
+    assert_eq!(
+        step(verify_link(&body, &other, &proxy_did, &held).unwrap_err()),
+        1
+    );
+    // Step 2 — untrusted proxy; closed record.
+    let stranger = vec![AgentDid::new("did:web:someone.example.com")];
+    assert!(matches!(
+        verify_link(&body, &link, &stranger, &held),
+        Err(LinkError::Unrecognised { step: 2, .. })
+    ));
+    let mut extra = body.clone();
+    extra.metadata.as_mut().unwrap()["note"] = "x".into();
+    assert_eq!(
+        step(verify_link(&extra, &link, &proxy_did, &held).unwrap_err()),
+        2
+    );
+    // Step 3 — only the canonical salt: flip a trailing bit.
+    let s = link["salt"].as_str().unwrap();
+    let last = s.chars().last().unwrap();
+    let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let idx = alphabet.find(last).unwrap();
+    let flipped = alphabet.chars().nth(idx ^ 1).unwrap();
+    let mut bad = link.clone();
+    bad["salt"] = format!("{}{flipped}", &s[..42]).into();
+    assert!(matches!(
+        verify_link(&body, &bad, &proxy_did, &held),
+        Err(LinkError::Mismatch { step: 3, .. })
+    ));
+    let mut padded = link.clone();
+    padded["salt"] = format!("{s}=").into();
+    assert_eq!(
+        step(verify_link(&body, &padded, &proxy_did, &held).unwrap_err()),
+        3
+    );
+    // Step 4 — result, tool, isError.
+    let mut tampered = result.clone();
+    tampered["content"][0]["text"] = "EMEA 0.43%".into();
+    let h2 = HeldCall {
+        result: &tampered,
+        ..held.clone()
+    };
+    assert!(matches!(
+        verify_link(&body, &link, &proxy_did, &h2),
+        Err(LinkError::Mismatch { step: 4, .. })
+    ));
+    let h2 = HeldCall {
+        tool: "other_tool",
+        ..held.clone()
+    };
+    assert_eq!(
+        step(verify_link(&body, &link, &proxy_did, &h2).unwrap_err()),
+        4
+    );
+    // Step 5 — wrong request id; absent request_id_hash is unchecked.
+    let wrong = json!(3);
+    let h2 = HeldCall {
+        request_id: Some(&wrong),
+        ..held.clone()
+    };
+    assert_eq!(
+        step(verify_link(&body, &link, &proxy_did, &h2).unwrap_err()),
+        5
+    );
+    let mut no_id = body.clone();
+    no_id
+        .metadata
+        .as_mut()
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .remove("request_id_hash");
+    verify_link(&no_id, &link, &proxy_did, &h2).unwrap();
+}

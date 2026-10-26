@@ -83,6 +83,18 @@ When `external` is set, the proxy writes `<dir>/<content-hash hex>.json` before 
 
 Only the stdio transport is supported. The record format already covers `streamable-http` and `sse`, and `record::http_descriptor` builds their endpoint descriptor.
 
+## Checking a link (holders)
+
+`acdp_mcp_proxy::verify::verify_link(body, link, trusted_proxies, held)` runs the §4.3 holder check against a body you have already retrieved and verified. Use `acdp::crypto::verify_body_offline` for a `did:key` proxy, or the resolver-backed `Verifier` for `did:web`. The check covers:
+
+1. The body's `ctx_id`, `origin_registry` and `content_hash` match the link.
+2. The proxy is trusted, and the record is closed and valid.
+3. The salt is in its canonical encoding only.
+4. `result_hash`, `tool` and `is_error` match the held call.
+5. Optionally, `arguments_hash` and `request_id_hash` match. A record with no `request_id_hash` is not checked for it.
+
+Failures are reported as `Unrecognised` (steps 1–2) or `Mismatch` (steps 3–5).
+
 ## Conformance
 
 `tests/conformance.rs` reproduces `mcp-001` byte for byte: every hash, the canonical form, the `content_hash`, the Ed25519 signature, the Idempotency-Key and the returned result. `tests/relay.rs` runs the relayed scenarios of `mcp-002`..`mcp-007` against a stub MCP server and a mock registry. Point `ACDP_SPEC_DIR` at a spec checkout to run them.

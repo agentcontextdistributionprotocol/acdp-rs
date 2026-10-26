@@ -158,6 +158,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "acdp-mcp-proxy"
+version = "0.17.2"
+dependencies = [
+ "acdp",
+ "base64 0.23.1",
+ "chrono",
+ "getrandom 0.4.3",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
 name = "acdp-primitives"
 version = "0.17.2"
 dependencies = [

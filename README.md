@@ -119,6 +119,12 @@ The `acdp` binary is its own crate (`cargo run -p acdp-cli -- …`). Offline
 `did:key` verification and the receipt types work under
 `--no-default-features` (no HTTP stack).
 
+The MCP signing proxy of RFC-ACDP-0019 (0.5.0 Draft) is the
+`acdp-mcp-proxy` binary (`cargo install acdp-mcp-proxy`). It relays any
+stdio MCP server unchanged and publishes a signed `acdp:mcp-tool-result`
+record of every `tools/call`; see
+[`crates/acdp-mcp-proxy/README.md`](crates/acdp-mcp-proxy/README.md).
+
 ## Security defaults
 
 The public client APIs apply the RFC-ACDP-0006 §7 / RFC-ACDP-0008 defenses

@@ -161,6 +161,10 @@ const KNOWN_FAMILIES: &[&str] = &[
     "lhr",
     "lin",
     "log",
+    // RFC-ACDP-0019 (MCP signing proxy): bound by name in
+    // `crates/acdp-mcp-proxy/tests/conformance.rs` (`mcp_fixtures_each_have_tests`);
+    // mcp-001 runs byte for byte there, the relayed scenarios in `tests/relay.rs`.
+    "mcp",
     "meta",
     "pub",
     "rate",

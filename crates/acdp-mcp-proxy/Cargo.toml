@@ -1,0 +1,44 @@
+[package]
+name        = "acdp-mcp-proxy"
+version.workspace = true
+edition     = "2021"
+description = "MCP signing proxy (RFC-ACDP-0019): relays an MCP server unchanged and publishes a signed ACDP record of every tools/call"
+license     = "MIT OR Apache-2.0"
+readme      = "README.md"
+repository  = "https://github.com/agentcontextdistributionprotocol/acdp-rs"
+homepage    = "https://github.com/agentcontextdistributionprotocol/acdp-rs"
+documentation = "https://docs.rs/acdp-mcp-proxy"
+keywords    = ["acdp", "mcp", "provenance", "proxy", "agent"]
+categories  = ["command-line-utilities", "cryptography"]
+rust-version = "1.87"
+
+[[bin]]
+name = "acdp-mcp-proxy"
+path = "src/main.rs"
+
+[dependencies]
+# Manual std::env::args parsing in the binary, as in acdp-cli — no clap.
+acdp       = { path = "../..", version = "=0.17.2", default-features = false, features = ["client"] }
+tokio      = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "io-util", "io-std", "process", "sync", "time", "fs"] }
+serde      = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+chrono     = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+sha2       = "0.11"
+hex        = "0.4"
+base64     = "0.23"
+getrandom  = "0.4"
+
+[dev-dependencies]
+acdp     = { path = "../..", features = ["client", "test-transport"] }
+tokio    = { version = "1", features = ["full"] }
+wiremock = "0.6"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

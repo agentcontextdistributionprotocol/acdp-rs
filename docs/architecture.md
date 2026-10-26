@@ -75,6 +75,7 @@ paths. The crates form a strict bottom→top dependency DAG:
 | `acdp-producer` | `Producer` + `RequestBuilder`. Enforces v1-vs-v2+ rules, ms-truncates timestamps, validates, computes `content_hash`, then signs. |
 | `acdp-client` *(feature `client`)* | `RegistryClient`, `VerifiedContext`, `VerificationPolicy`/`Report`, `CrossRegistryResolver`. Implements the **`acdp-consumer`** profile. |
 | `acdp-server` *(feature `server`)* | `RegistryServer`, `PublishValidator`, `InMemoryStore`. Building blocks for separate `acdp-registry-*` crates. |
+| `acdp-mcp-proxy` | RFC-ACDP-0019 (0.5.0 Draft) MCP signing proxy: the `acdp-mcp-proxy` binary relays a stdio MCP server unchanged, publishes a signed `acdp:mcp-tool-result` body per `tools/call` (salted call hashes, `derived_from` from the arguments, embedding allowlist) and adds `_meta["io.acdp/provenance"]`. Profile `acdp-producer-mcp-proxy`. Depends on the umbrella `acdp` (`client`). |
 | `acdp-cli` | The `acdp` binary (`cargo run -p acdp-cli`). Uses `std::env::args` directly — **no `clap`** by design. |
 
 `did→crypto` and `validation→producer` are **test-only** (dev-dependency)

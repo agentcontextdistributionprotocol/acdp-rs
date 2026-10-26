@@ -84,7 +84,22 @@ jobs:
         id: semver-checks
         run: |
           set +e
-          cargo semver-checks --workspace 2>&1 | tee semver-checks.log
+          # A crate that was never published has no baseline, and
+          # cargo-semver-checks exits 101 on it, which semver-tool-health
+          # would read as a broken tool. Skip such crates until their
+          # first (manual) publish.
+          excludes=""
+          for c in $(cargo metadata --no-deps --format-version 1 \
+                     | jq -r '.packages[] | select(.publish != []) | .name'); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' \
+                   -A "acdp-rs-ci (github.com/agentcontextdistributionprotocol/acdp-rs)" \
+                   "https://crates.io/api/v1/crates/$c")
+            if [ "$code" = "404" ]; then
+              echo "::notice::$c is not on crates.io yet; no semver baseline, skipped."
+              excludes="$excludes --exclude $c"
+            fi
+          done
+          cargo semver-checks --workspace $excludes 2>&1 | tee semver-checks.log
           s=${PIPESTATUS[0]}
           if grep -q "unsupported rustdoc format" semver-checks.log; then
             echo "unsupported=true" >> "$GITHUB_OUTPUT"

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.3](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.17.2...acdp-v0.17.3) - 2026-10-26
+
+### Added
+
+- registry trust lists (RFC-ACDP-0020); pin spec a1324f8 ([#467](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/467))
+- *(mcp-proxy)* MCP signing proxy (RFC-ACDP-0019); pin spec 47cb0cc ([#460](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/460))
+
 ## [0.17.2](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.17.1...acdp-v0.17.2) - 2026-10-26
 
 ### Added

@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [**breaking**] RFC-ACDP-0021 keyless signing behind the keyless feature ([#478](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/478))
 - *(trust)* opt-in refusal of unknown issuer-key revocation; trust-002 K; pin spec 3e0d8b0 ([#471](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/471))
 
+### Upgrade notes
+
+- **`KeyAuthorization` and `RevocationTrustClass` are unchanged**, and `AcdpError` gains no variants. Keyless outcomes map onto the existing three `KeyAuthorization` values, and keyless refusals reuse existing error variants with the RFC-ACDP-0021 §8.1 reason token in the message. Read it with `KeylessReason::of`.
+- Breaking: `PublishRequest` gains `key_attestation`, `DidDocument` gains `services`, and `VerificationPolicy` gains `keyless`. Struct literals need the new fields (`None` / `Vec::new()` / `Default::default()`).
+- Every build refuses keyless-signed bodies unless the `keyless` feature is enabled and an attester is accepted (the default accepts none).
+
 ## [0.17.3](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.17.2...acdp-v0.17.3) - 2026-10-26
 
 ### Added

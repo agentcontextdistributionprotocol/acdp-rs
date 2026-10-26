@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-client-v0.17.3...acdp-client-v0.18.0) - 2026-10-26
+
+### Added
+
+- [**breaking**] RFC-ACDP-0021 keyless signing behind the keyless feature ([#478](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/478))
+- *(trust)* opt-in refusal of unknown issuer-key revocation; trust-002 K; pin spec 3e0d8b0 ([#471](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/471))
+
 ## [0.17.3](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-client-v0.17.2...acdp-client-v0.17.3) - 2026-10-26
 
 ### Added

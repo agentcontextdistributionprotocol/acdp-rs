@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-client-v0.18.0...acdp-client-v0.18.1) - 2026-10-27
+
+No enum change: no new `KeyAuthorization`, `RevocationTrustClass` or
+`UnknownReason` variant. A keyless-signed key revocation found by discovery
+is now verified through RFC-ACDP-0021 §8.1 under `VerificationPolicy.keyless`.
+It applies when its attestation is org-wide and is only a hint otherwise. One
+that cannot be evaluated makes the verdict `unknown` (`unverifiable_candidate`),
+never not-revoked; before this fix it was dropped and read as not-revoked.
+`acdp-chain` follows the same rules.
+
+### Fixed
+
+- *(keyless)* evaluate keyless-signed key revocations; unknown when unevaluable ([#480](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/480))
+
 ## [0.18.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-client-v0.17.3...acdp-client-v0.18.0) - 2026-10-26
 
 ### Added

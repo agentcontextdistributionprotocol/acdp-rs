@@ -1032,9 +1032,25 @@ token rides on the message. Read it with `KeylessReason::of(&err)`:
 The registry-side tokens of `POST /key-attestations` (`issuer_not_accepted`,
 `pop_invalid`, …) come back on the wire error and parse the same way.
 
-**Limitation.** Client-side revocation gathering never applies a revocation
-signed by a keyless key, even an org-wide one (§9.3 allows org-wide).
-`acdp-chain` applies org-wide ones.
+**Keyless-signed revocations (§9.3).** Revocation discovery sets aside a
+candidate signed by a keyless key. It then verifies that key through §8.1,
+steps 1–7, using the same `VerificationPolicy.keyless` attesters as for
+bodies. The outcome depends on the attestation:
+
+- **Org-wide:** the revocation counts as producer-signed and applies.
+- **Not org-wide:** it never applies, and is reported in
+  `revocation_hints()` (`kl-005` G).
+- **Cannot be evaluated** (built without the `keyless` feature, attester
+  not accepted, attestation doesn't verify): the verdict for the key it
+  names is `unknown` (`unverifiable_candidate`), never not-revoked. Under
+  `FailClosed` this is `RevocationUnknown`.
+
+`find_revocations_verdict` accepts no keyless attester. So does the
+standalone `find_revocations` family, which returns
+`RevocationCandidateUnverifiable` for such a candidate. `acdp-chain`
+applies the same rules: when it cannot evaluate such a revocation, the
+`key_revocation` stage is `unknown` and its `revocation_ctx_id` names the
+revocation.
 
 **Chains (§10).** `acdp-chain` with the `keyless` feature reads the
 attestation from the bundle's `contexts`, like a revocation body. Set the

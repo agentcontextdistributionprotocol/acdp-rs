@@ -45,8 +45,12 @@ fn evidence(body: &Body, fp: &str) -> ContextEvidence {
     ce
 }
 
-/// The registry-signed attestation of the ephemeral key, stored as `k`.
+/// The registry-signed attestation of the ephemeral key, stored as `e`.
 fn attestation() -> Body {
+    attestation_with(false)
+}
+
+fn attestation_with(org_wide: bool) -> Body {
     let key = ephemeral();
     let metadata = KeyAttestation {
         attestation_version: ATTESTATION_VERSION.into(),
@@ -55,7 +59,7 @@ fn attestation() -> Body {
             issuer: ISSUER.into(),
             subject: SUBJECT.into(),
         },
-        org_wide: false,
+        org_wide,
         key_id: key.key_id(CONTROLLER).unwrap(),
         algorithm: "ed25519".into(),
         public_key_jwk: key.jwk().unwrap(),
@@ -240,13 +244,13 @@ fn kl_008_e_without_keyless_support_refused() {
     }
 }
 
-/// §9.3: a revocation signed by a keyless key that is not org-wide is
-/// never applied.
-#[cfg(feature = "keyless")]
-#[test]
-fn kl_009_f_non_org_wide_keyless_revocation_not_applied() {
+/// The keyless bundle with the attestation `e` (`org_wide` as given), a
+/// revocation `d` of `key-1` signed by the ephemeral key under it, and a
+/// node `b` signed by `key-1` after the claimed compromise.
+fn keyless_revocation_bundle(org_wide: bool) -> Evidence {
     let mut e = keyless_bundle(true);
-    let att = attestation();
+    let att = attestation_with(org_wide);
+    put(&mut e, 'e', evidence(&att, &fingerprint(&REGISTRY_SEED)));
     let producer = ephemeral().into_producer(&att).unwrap();
     let req = producer
         .publish_request()
@@ -266,7 +270,6 @@ fn kl_009_f_non_org_wide_keyless_revocation_not_applied() {
         'd',
         evidence(&r, &ephemeral().fingerprint().unwrap()),
     );
-    // A node signed by key-1 after the claimed compromise.
     let web = Signer {
         did: CONTROLLER.into(),
         seed: KEY1,
@@ -274,10 +277,40 @@ fn kl_009_f_non_org_wide_keyless_revocation_not_applied() {
     };
     let b = body(&web, 'b', &[], "2026-09-02T00:00:00.000Z");
     put(&mut e, 'b', evidence(&b, &fingerprint(&KEY1)));
-    let v = verify_chain(&[ctx('b')], &reparse(&e), &accepting()).unwrap();
-    let n = v.nodes.iter().find(|n| n.ctx_id == ctx('b')).unwrap();
-    assert_ne!(
-        n.latest.stages.key_revocation.as_ref().unwrap().value,
-        KeyRevocationValue::Revoked
-    );
+    e
+}
+
+fn key_revocation_of_b(e: &Evidence, o: &Options) -> KeyRevocationStage {
+    let v = verify_chain(&[ctx('b')], &reparse(e), o).unwrap();
+    let n = v.nodes.into_iter().find(|n| n.ctx_id == ctx('b')).unwrap();
+    n.latest.stages.key_revocation.unwrap()
+}
+
+/// §9.3: a revocation signed by a keyless key that is not org-wide is
+/// never applied.
+#[cfg(feature = "keyless")]
+#[test]
+fn kl_009_f_non_org_wide_keyless_revocation_not_applied() {
+    let kr = key_revocation_of_b(&keyless_revocation_bundle(false), &accepting());
+    assert_ne!(kr.value, KeyRevocationValue::Revoked);
+}
+
+/// §9.3: a revocation signed by an org-wide keyless key is
+/// producer-signed and applies.
+#[cfg(feature = "keyless")]
+#[test]
+fn kl_009_org_wide_keyless_revocation_applies() {
+    let kr = key_revocation_of_b(&keyless_revocation_bundle(true), &accepting());
+    assert_eq!(kr.value, KeyRevocationValue::Revoked);
+    assert_eq!(kr.revocation_ctx_id.as_deref(), Some(ctx('d').as_str()));
+}
+
+/// A keyless-signed revocation naming the key that this pass cannot
+/// evaluate (no accepted attester, or no RFC-ACDP-0021 support) makes the
+/// stage unknown, never not-revoked.
+#[test]
+fn kl_009_unevaluable_keyless_revocation_is_unknown() {
+    let kr = key_revocation_of_b(&keyless_revocation_bundle(true), &Options::default());
+    assert_eq!(kr.value, KeyRevocationValue::Unknown);
+    assert_eq!(kr.revocation_ctx_id.as_deref(), Some(ctx('d').as_str()));
 }

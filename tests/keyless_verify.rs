@@ -29,7 +29,7 @@ use acdp::types::keyless::{
 use acdp::types::receipt::ReceiptSigner;
 use acdp::types::revocation::{KeyRevocation, RevocationTrustClass};
 use acdp::types::{AgentDid, Body, ContextType, CtxId, PublishRequest};
-use axum::extract::Path;
+use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
@@ -123,6 +123,62 @@ async fn harness() -> Harness {
                             )
                                 .into_response(),
                         }
+                    }
+                }
+            }),
+        )
+        .route(
+            "/contexts/search",
+            get({
+                let contexts = contexts.clone();
+                move |Query(q): Query<HashMap<String, String>>| {
+                    let contexts = contexts.clone();
+                    async move {
+                        let matches: Vec<Value> = contexts
+                            .read()
+                            .unwrap()
+                            .values()
+                            .filter(|c| {
+                                Some(&c["body"]["type"]) == q.get("type").map(|t| json!(t)).as_ref()
+                                    && Some(&c["body"]["agent_id"])
+                                        == q.get("agent_id").map(|a| json!(a)).as_ref()
+                                    && Some(&c["registry_state"]["status"])
+                                        == q.get("status").map(|s| json!(s)).as_ref()
+                            })
+                            .map(|c| {
+                                let b = &c["body"];
+                                json!({
+                                    "ctx_id": b["ctx_id"],
+                                    "lineage_id": b["lineage_id"],
+                                    "agent_id": b["agent_id"],
+                                    "title": b["title"],
+                                    "type": b["type"],
+                                    "created_at": b["created_at"],
+                                    "status": c["registry_state"]["status"],
+                                    "visibility": b["visibility"],
+                                })
+                            })
+                            .collect();
+                        Json(json!({"matches": matches}))
+                    }
+                }
+            }),
+        )
+        .route(
+            "/lineages/{id}",
+            get({
+                let contexts = contexts.clone();
+                move |Path(id): Path<String>| {
+                    let contexts = contexts.clone();
+                    async move {
+                        let members: Vec<Value> = contexts
+                            .read()
+                            .unwrap()
+                            .values()
+                            .filter(|c| c["body"]["lineage_id"] == json!(id))
+                            .cloned()
+                            .collect();
+                        Json(json!(members))
                     }
                 }
             }),
@@ -261,6 +317,10 @@ fn fixture(attestation_status: &str) -> Fixture {
 }
 
 fn fixture_with(attestation_status: &str, attestation_agent: &str) -> Fixture {
+    fixture_full(attestation_status, attestation_agent, false)
+}
+
+fn fixture_full(attestation_status: &str, attestation_agent: &str, org_wide: bool) -> Fixture {
     let now = acdp::time::trunc_ms(Utc::now());
     let key = EphemeralKey::from_key(SigningKey::from_bytes(&EPHEMERAL_SEED).into());
     let fingerprint = key.fingerprint().unwrap();
@@ -268,7 +328,7 @@ fn fixture_with(attestation_status: &str, attestation_agent: &str) -> Fixture {
         attestation_version: ATTESTATION_VERSION.into(),
         controller: CONTROLLER.into(),
         identity: identity(),
-        org_wide: false,
+        org_wide,
         key_id: key.key_id(CONTROLLER).unwrap(),
         algorithm: "ed25519".into(),
         public_key_jwk: key.jwk().unwrap(),
@@ -743,4 +803,215 @@ async fn kl_006_d_trust_list_outcome_other_than_trusted() {
         reason(run(&h, &fx, &trusting(&other)).await),
         KeylessReason::UntrustedAttester
     );
+}
+
+// ── §9.3: keyless-signed revocations, client and chain agreeing ────────────
+
+/// A body signed by the controller's DID-document key `key-1`, and a
+/// revocation of `key-1` signed by the ephemeral keyless key under an
+/// attestation (`org_wide` as given), compromised before the body.
+struct KeylessRevocationCase {
+    fx: Fixture,
+    body: Body,
+    body_ctx: Value,
+    revocation: Body,
+    revocation_ctx: Value,
+}
+
+fn keyless_revocation_case(org_wide: bool) -> KeylessRevocationCase {
+    let fx = fixture_full("active", REGISTRY_DID, org_wide);
+    let key1_fp =
+        fingerprint_ed25519(&SigningKey::from_bytes(&CONTROLLER_SEED).verifying_key_bytes());
+    let req = EphemeralKey::from_key(SigningKey::from_bytes(&EPHEMERAL_SEED).into())
+        .into_producer(&fx.attestation)
+        .unwrap()
+        .publish_request()
+        .title("Key revocation")
+        .context_type(ContextType::KeyRevocation)
+        .visibility(acdp::types::Visibility::Public)
+        .metadata(json!({
+            "revoked_key_fingerprint": key1_fp,
+            "compromised_since": acdp::time::fmt_rfc3339_ms(fx.created_at - Duration::hours(1)),
+        }))
+        .acdp_version("0.5.0")
+        .build()
+        .unwrap();
+    let (revocation, revocation_ctx) = stored(
+        &req,
+        fx.created_at,
+        Some(&signer(REGISTRY_DID)),
+        &fx.fingerprint,
+        "active",
+    );
+    let req = Producer::new(
+        SigningKey::from_bytes(&CONTROLLER_SEED),
+        AgentDid::new(CONTROLLER),
+        format!("{CONTROLLER}#key-1"),
+    )
+    .publish_request()
+    .title("Signed by key-1")
+    .context_type(ContextType::Analysis)
+    .build()
+    .unwrap();
+    let (body, body_ctx) = stored(
+        &req,
+        fx.created_at,
+        Some(&signer(REGISTRY_DID)),
+        &key1_fp,
+        "active",
+    );
+    KeylessRevocationCase {
+        fx,
+        body,
+        body_ctx,
+        revocation,
+        revocation_ctx,
+    }
+}
+
+/// The three outcomes both verifiers must agree on.
+#[derive(Debug, PartialEq, Eq)]
+enum Outcome {
+    Revoked,
+    NotRevoked,
+    Unknown,
+}
+
+async fn client_outcome(case: &KeylessRevocationCase, keyless: KeylessPolicy) -> Outcome {
+    let h = harness().await;
+    h.serve(&case.fx.attestation_ctx);
+    h.serve(&case.revocation_ctx);
+    let policy = VerificationPolicy {
+        keyless,
+        revocations: RevocationPolicy::new(vec![])
+            .with_discovery(acdp::client::RevocationDiscovery::producer_signed_only()),
+        ..VerificationPolicy::default()
+    };
+    match verify(&h, &case.body_ctx, &policy).await {
+        Ok(v) => {
+            assert_eq!(v.key_status(), KeyAuthorization::CurrentlyAuthorized);
+            Outcome::NotRevoked
+        }
+        Err(AcdpError::KeyRevoked(_)) => Outcome::Revoked,
+        Err(AcdpError::RevocationUnknown { reason, .. }) => {
+            assert_eq!(reason, acdp::client::UnknownReason::UnverifiableCandidate);
+            Outcome::Unknown
+        }
+        Err(e) => panic!("unexpected {e:?}"),
+    }
+}
+
+fn chain_outcome(case: &KeylessRevocationCase, attesters: &[&str]) -> (Outcome, Option<String>) {
+    use acdp::chain::*;
+    let observed = acdp::time::fmt_rfc3339_ms(case.fx.created_at - Duration::hours(2));
+    let doc = |v: Value| v.as_object().unwrap().clone();
+    let mut e = Evidence::new();
+    e.did_documents = Some(
+        [
+            (
+                REGISTRY_DID.to_string(),
+                vec![DidSnapshot::new(
+                    doc(ed25519_did_doc(
+                        REGISTRY_DID,
+                        "receipt-key-1",
+                        &SigningKey::from_bytes(&REGISTRY_SEED).verifying_key_bytes(),
+                    )),
+                    &observed,
+                )],
+            ),
+            (
+                CONTROLLER.to_string(),
+                vec![DidSnapshot::new(doc(controller_doc(true)), &observed)],
+            ),
+        ]
+        .into(),
+    );
+    for ctx in [
+        &case.fx.attestation_ctx,
+        &case.revocation_ctx,
+        &case.body_ctx,
+    ] {
+        let mut ce = ContextEvidence::new(ctx["body"].clone());
+        ce.registry_receipt = Some(ctx["registry_receipt"].clone());
+        e.contexts
+            .insert(ctx["body"]["ctx_id"].as_str().unwrap().to_owned(), ce);
+    }
+    e.revocation_discovery = Some(
+        [(
+            CONTROLLER.to_string(),
+            vec![DiscoveryRecord::new(
+                AUTHORITY,
+                DiscoveryOutcome::NotRevokedComplete,
+                acdp::time::fmt_rfc3339_ms(case.fx.created_at + Duration::seconds(1)),
+            )],
+        )]
+        .into(),
+    );
+    let e = Evidence::from_slice(&serde_json::to_vec(&e).unwrap()).unwrap();
+    let id = case.body.ctx_id.as_str().to_owned();
+    let v = verify_chain(
+        std::slice::from_ref(&id),
+        &e,
+        &Options::default().with_keyless_attesters(attesters.iter().copied()),
+    )
+    .unwrap();
+    let node = v.nodes.iter().find(|n| n.ctx_id == id).unwrap();
+    let kr = node.latest.stages.key_revocation.as_ref().unwrap();
+    let outcome = match kr.value {
+        KeyRevocationValue::Revoked => Outcome::Revoked,
+        KeyRevocationValue::NotRevoked => Outcome::NotRevoked,
+        KeyRevocationValue::Unknown => Outcome::Unknown,
+        other => panic!("unexpected {other:?}"),
+    };
+    (outcome, kr.revocation_ctx_id.clone())
+}
+
+/// §9.3: an org-wide keyless key's revocation is producer-signed and
+/// applies in both verifiers.
+#[tokio::test]
+async fn kl_009_org_wide_keyless_revocation_applies() {
+    let case = keyless_revocation_case(true);
+    assert_eq!(
+        client_outcome(&case, KeylessPolicy::attesters([REGISTRY_DID])).await,
+        Outcome::Revoked
+    );
+    let (chain, ctx_id) = chain_outcome(&case, &[REGISTRY_DID]);
+    assert_eq!(chain, Outcome::Revoked);
+    assert_eq!(ctx_id.as_deref(), Some(case.revocation.ctx_id.as_str()));
+}
+
+/// kl-005 G: a non-org-wide keyless key's revocation is not applied; the
+/// client reports it as a hint.
+#[tokio::test]
+async fn kl_005_g_non_org_wide_keyless_revocation_is_a_hint() {
+    let case = keyless_revocation_case(false);
+    let h = harness().await;
+    h.serve(&case.fx.attestation_ctx);
+    h.serve(&case.revocation_ctx);
+    let policy = VerificationPolicy {
+        keyless: KeylessPolicy::attesters([REGISTRY_DID]),
+        revocations: RevocationPolicy::new(vec![])
+            .with_discovery(acdp::client::RevocationDiscovery::producer_signed_only()),
+        ..VerificationPolicy::default()
+    };
+    let v = verify(&h, &case.body_ctx, &policy)
+        .await
+        .expect("not revoked");
+    assert_eq!(v.revocation_hints().len(), 1);
+    assert_eq!(chain_outcome(&case, &[REGISTRY_DID]).0, Outcome::NotRevoked);
+}
+
+/// A keyless-signed revocation that cannot be evaluated (the attester
+/// is not accepted) makes the key's status unknown, never not-revoked,
+/// in both verifiers (RFC-ACDP-0014 §7 precedence).
+#[tokio::test]
+async fn kl_009_unevaluable_keyless_revocation_is_unknown() {
+    let case = keyless_revocation_case(true);
+    assert_eq!(
+        client_outcome(&case, KeylessPolicy::default()).await,
+        Outcome::Unknown
+    );
+    let (chain, ctx_id) = chain_outcome(&case, &[]);
+    assert_eq!(chain, Outcome::Unknown);
+    assert_eq!(ctx_id.as_deref(), Some(case.revocation.ctx_id.as_str()));
 }

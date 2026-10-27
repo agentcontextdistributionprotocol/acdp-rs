@@ -1389,6 +1389,7 @@ impl VerifiedContext {
                 resolver,
                 &ctx.body.agent_id,
                 &policy.revocations,
+                &policy.keyless,
             )
             .await;
             let fingerprint = if gathered.has_in_scope() {

@@ -216,13 +216,15 @@ pub(crate) struct Gathered {
     registry_attested_checked: bool,
     observed_at: Option<SystemTime>,
     on_failure: DiscoveryFailurePolicy,
+    /// Keyless-signed candidates that could not be evaluated (§9.3).
+    unevaluated: Vec<crate::keyless::Unevaluated>,
 }
 
 impl Gathered {
     /// Whether any in-scope revocation exists — the caller resolves the
     /// signing key's fingerprint only then.
     pub(crate) fn has_in_scope(&self) -> bool {
-        !self.in_scope.is_empty()
+        !self.in_scope.is_empty() || !self.unevaluated.is_empty()
     }
 }
 
@@ -242,6 +244,7 @@ pub(crate) async fn gather(
     resolver: &WebResolver,
     agent_id: &AgentDid,
     policy: &RevocationPolicy,
+    keyless: &crate::keyless::KeylessPolicy,
 ) -> Gathered {
     let vantage = client.authority();
     let include_attested = policy.discover.is_some_and(|d| d.include_registry_attested);
@@ -272,7 +275,9 @@ pub(crate) async fn gather(
         registry_attested_checked: false,
         observed_at: None,
         on_failure,
+        unevaluated: Vec::new(),
     };
+    let mut keyless_hints = Vec::new();
 
     if let Some(discovery) = &policy.discover {
         // One combined budget for both lookups, on a client clone, so
@@ -282,7 +287,7 @@ pub(crate) async fn gather(
             .with_discovery_budget(budget)
             .with_revocation_freshness(discovery.freshness);
         let fut = async {
-            tokio::try_join!(
+            let (signed, attested) = tokio::try_join!(
                 find_revocations_lookup(&dclient, resolver, agent_id),
                 async {
                     if include_attested {
@@ -293,10 +298,21 @@ pub(crate) async fn gather(
                         Ok(None)
                     }
                 },
+            )?;
+            // RFC-ACDP-0021 §9.3: keyless-signed candidates, on the same
+            // budget and deadline.
+            let keyless = crate::keyless::evaluate_revocations(
+                &dclient,
+                resolver,
+                agent_id,
+                &signed.deferred,
+                keyless,
             )
+            .await;
+            Ok::<_, AcdpError>((signed, attested, keyless))
         };
         let failure = match tokio::time::timeout(discovery.total_timeout, fut).await {
-            Ok(Ok((signed, attested))) => {
+            Ok(Ok((signed, attested, keyless))) => {
                 let outcome = DiscoveryOutcome {
                     producer_signed: signed.revocations.len(),
                     registry_attested: attested.as_ref().map(|l| l.revocations.len()),
@@ -316,6 +332,17 @@ pub(crate) async fn gather(
                         })
                     }));
                 }
+                all.extend(keyless.applied.iter().map(|r| {
+                    r.sourced(RevocationSource::Discovered {
+                        authority: authority.clone(),
+                    })
+                }));
+                keyless_hints.extend(keyless.hints.iter().map(|r| {
+                    r.sourced(RevocationSource::Discovered {
+                        authority: authority.clone(),
+                    })
+                }));
+                gathered.unevaluated = keyless.unevaluated;
                 gathered.discovery = Some(Ok(outcome));
                 None
             }
@@ -340,6 +367,11 @@ pub(crate) async fn gather(
     }
 
     (gathered.in_scope, gathered.hints) = scope(all, agent_id);
+    for h in keyless_hints {
+        if !gathered.hints.contains(&h) {
+            gathered.hints.push(h);
+        }
+    }
     gathered
 }
 
@@ -409,7 +441,21 @@ pub(crate) fn decide(
             ..
         })
     );
-    let unknown = match &gathered.discovery {
+    // RFC-ACDP-0021 §9.3: a keyless-signed revocation of this key that
+    // could not be evaluated leaves discovery's answer unknown.
+    let mut discovery = gathered.discovery;
+    if !matches!(discovery, Some(Err(_))) {
+        if let Some(u) = signing_key_fingerprint
+            .and_then(|fp| gathered.unevaluated.iter().find(|u| u.fingerprint == fp))
+        {
+            discovery = Some(Err(AcdpError::RevocationUnknown {
+                reason: UnknownReason::UnverifiableCandidate,
+                source: Box::new(AcdpError::RevocationCandidateUnverifiable(u.detail.clone())),
+                detail: u.detail.clone(),
+            }));
+        }
+    }
+    let unknown = match &discovery {
         Some(Err(AcdpError::RevocationUnknown { reason, detail, .. })) => {
             Some(RevocationVerdict::Unknown {
                 reason: *reason,
@@ -433,7 +479,7 @@ pub(crate) fn decide(
     RevocationAssessment {
         verdict,
         hints: gathered.hints,
-        discovery: gathered.discovery,
+        discovery,
         pre_compromise,
         on_failure: gathered.on_failure,
     }
@@ -466,7 +512,17 @@ pub async fn find_revocations_verdict(
     policy: &RevocationPolicy,
 ) -> Result<RevocationAssessment, AcdpError> {
     let agent_id = AgentDid::parse(agent_id.as_str())?;
-    let gathered = gather(client, resolver, &agent_id, policy).await;
+    // No keyless attester is accepted here: a keyless-signed revocation of
+    // this key reads as `unknown` (use `VerifiedContext` with
+    // `VerificationPolicy.keyless` to evaluate one).
+    let gathered = gather(
+        client,
+        resolver,
+        &agent_id,
+        policy,
+        &crate::keyless::KeylessPolicy::default(),
+    )
+    .await;
     Ok(decide(
         gathered,
         Some(signing_key_fingerprint),
@@ -496,6 +552,7 @@ pub(crate) fn decide_known(
         registry_attested_checked: false,
         observed_at: None,
         on_failure: DiscoveryFailurePolicy::FailClosed,
+        unevaluated: Vec::new(),
     };
     decide(
         gathered,
@@ -617,6 +674,7 @@ mod tests {
                 discovery: Some(discovery),
                 observed_at: None,
                 on_failure: DiscoveryFailurePolicy::FailClosed,
+                unevaluated: Vec::new(),
             };
             let got = match decide(gathered, Some(fp), placement, false).verdict {
                 RevocationVerdict::Revoked {

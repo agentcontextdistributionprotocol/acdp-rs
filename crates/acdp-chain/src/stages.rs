@@ -88,6 +88,13 @@ pub(crate) struct AppliedRevocation {
     pub ctx_id: String,
     pub revocation: KeyRevocation,
     pub evidence_time: Option<DateTime<Utc>>,
+    /// A revocation signed by a keyless key that this pass could not
+    /// evaluate (no RFC-ACDP-0021 support, an unaccepted attester, or an
+    /// attestation that does not verify). It never applies, but naming
+    /// the node's key it makes the stage `unknown` (RFC-ACDP-0021 §9.3,
+    /// RFC-ACDP-0014 §7: unknown outranks not-revoked and
+    /// pre-compromise).
+    pub unevaluated: bool,
 }
 
 /// Evaluation context shared by both passes.
@@ -428,7 +435,13 @@ impl Engine<'_, '_> {
                 PassAt::Latest => true,
                 PassAt::AsOf(_) => b.receipt.is_some(),
             };
-            if !strict || !dated {
+            if !dated {
+                continue;
+            }
+            if !strict {
+                if let Some(pending) = self.unevaluated_keyless(key, pc, b) {
+                    out.push(pending);
+                }
                 continue;
             }
             // RFC-ACDP-0021 §9.3: only an org-wide keyless key may sign a
@@ -454,9 +467,37 @@ impl Engine<'_, '_> {
                 ctx_id: key.to_string(),
                 revocation,
                 evidence_time: b.receipt.as_ref().map(|r| r.created_at),
+                unevaluated: false,
             });
         }
         out
+    }
+
+    /// A key-revocation context signed by a keyless key that did not
+    /// verify in this pass: carried as `unevaluated` when it is present
+    /// with an intact hash and speaks for its producer. Without the
+    /// `keyless` feature every keyless-signed revocation lands here.
+    fn unevaluated_keyless(
+        &self,
+        key: &str,
+        pc: &ParsedContext<'_>,
+        b: &Basic,
+    ) -> Option<AppliedRevocation> {
+        if !acdp_types::keyless::is_keyless_key_id(&pc.body.signature.key_id)
+            || b.presence.value != PresenceValue::Present
+            || b.content_hash.value != ContentHashValue::Ok
+        {
+            return None;
+        }
+        let revocation = KeyRevocation::from_body(&pc.body).ok()?;
+        (revocation.trust_class == RevocationTrustClass::ProducerSigned
+            && revocation.publisher == revocation.revoked_key_controller)
+            .then(|| AppliedRevocation {
+                ctx_id: key.to_string(),
+                revocation,
+                evidence_time: b.receipt.as_ref().map(|r| r.created_at),
+                unevaluated: true,
+            })
     }
 
     /// The full pass over one present node: §7.7–§7.9 on top of
@@ -831,6 +872,27 @@ impl Engine<'_, '_> {
             })
             .collect();
 
+        let fingerprint_of = || {
+            basic
+                .fingerprint
+                .as_deref()
+                .or(basic.receipt.as_ref().map(|r| r.key_fingerprint.as_str()))
+        };
+        // An unevaluated keyless-signed revocation naming this key.
+        let pending = fingerprint_of().and_then(|fp| {
+            in_scope
+                .iter()
+                .filter(|a| a.unevaluated && a.revocation.revokes(fp))
+                .map(|a| a.ctx_id.clone())
+                .min()
+        });
+        let in_scope: Vec<&AppliedRevocation> =
+            in_scope.into_iter().filter(|a| !a.unevaluated).collect();
+        let unknown_pending = |ctx_id: String| KeyRevocationStage {
+            revocation_ctx_id: Some(ctx_id),
+            ..stage(KeyRevocationValue::Unknown)
+        };
+
         if !in_scope.is_empty() {
             let fingerprint = basic
                 .fingerprint
@@ -866,6 +928,11 @@ impl Engine<'_, '_> {
                     }
                     Some(_) => KeyRevocationValue::Revoked,
                 };
+                if value == KeyRevocationValue::PreCompromise {
+                    if let Some(ctx_id) = pending {
+                        return unknown_pending(ctx_id);
+                    }
+                }
                 return KeyRevocationStage {
                     value,
                     revocation_ctx_id: Some(fixing.ctx_id.clone()),
@@ -877,6 +944,10 @@ impl Engine<'_, '_> {
             // Revocations that name other keys prove nothing about this
             // one: the bundle is untrusted and may omit the revoking
             // context. Only discovery decides not-revoked (§7.9).
+        }
+
+        if let Some(ctx_id) = pending {
+            return unknown_pending(ctx_id);
         }
 
         let records = || self.parsed.discovery.get(producer).into_iter().flatten();

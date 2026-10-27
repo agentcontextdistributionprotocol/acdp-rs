@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-chain-v0.18.0...acdp-chain-v0.18.1) - 2026-10-27
+
+### Fixed
+
+- *(keyless)* evaluate keyless-signed key revocations; unknown when unevaluable ([#480](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/480))
+
 ## [0.18.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-chain-v0.17.3...acdp-chain-v0.18.0) - 2026-10-26
 
 ### Added

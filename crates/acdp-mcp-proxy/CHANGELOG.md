@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-mcp-proxy-v0.18.0...acdp-mcp-proxy-v0.18.1) - 2026-10-27
+
+### Added
+
+- *(mcp-proxy)* MCP signing proxy (RFC-ACDP-0019); pin spec 47cb0cc ([#460](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/460))
+
+### Other
+
+- release v0.18.0 ([#468](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/468))
+- release v0.17.3 ([#451](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/451))
+
 ## [0.18.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-mcp-proxy-v0.17.3...acdp-mcp-proxy-v0.18.0) - 2026-10-26
 
 ### Added

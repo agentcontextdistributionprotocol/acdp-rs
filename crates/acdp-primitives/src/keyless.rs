@@ -66,11 +66,20 @@ pub enum KeylessReason {
     Revoked,
     /// §8.1 step 9: the controller's DID document could not be fetched.
     ControllerUnreachable,
+    // New tokens go last, so existing discriminants never move.
+    /// §5.2 step 3: the issuer's published keys (OIDC JWKS or SPIFFE
+    /// bundle) could not be fetched. Transient: the wire code is
+    /// `key_resolution_unreachable`, so the client may retry.
+    IssuerUnreachable,
+    /// §6.3: a lifecycle event signed with a keyless key id; keyless
+    /// keys do not sign events in this version.
+    KeylessEventUnsupported,
 }
 
 impl KeylessReason {
-    /// Every reason, in declaration order.
-    pub const ALL: [KeylessReason; 20] = [
+    /// Every reason, in declaration order. A slice, so a new spec token
+    /// is an additive change.
+    pub const ALL: &'static [KeylessReason] = &[
         Self::IssuerNotAccepted,
         Self::TokenInvalid,
         Self::AudienceMismatch,
@@ -91,6 +100,8 @@ impl KeylessReason {
         Self::InvalidSignature,
         Self::Revoked,
         Self::ControllerUnreachable,
+        Self::IssuerUnreachable,
+        Self::KeylessEventUnsupported,
     ];
 
     /// The token as written on the wire and in reports.
@@ -98,12 +109,14 @@ impl KeylessReason {
         match self {
             Self::IssuerNotAccepted => "issuer_not_accepted",
             Self::TokenInvalid => "token_invalid",
+            Self::IssuerUnreachable => "issuer_unreachable",
             Self::AudienceMismatch => "audience_mismatch",
             Self::ConfirmationMismatch => "confirmation_mismatch",
             Self::TokenReplayed => "token_replayed",
             Self::IdentityNotAuthorized => "identity_not_authorized",
             Self::PopInvalid => "pop_invalid",
             Self::AttestationMissing => "attestation_missing",
+            Self::KeylessEventUnsupported => "keyless_event_unsupported",
             Self::AttestationForeign => "attestation_foreign",
             Self::AttestationNotFound => "attestation_not_found",
             Self::AttestationMismatch => "attestation_mismatch",
@@ -121,7 +134,7 @@ impl KeylessReason {
 
     /// Parse a token.
     pub fn parse(token: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|r| r.as_str() == token)
+        Self::ALL.iter().copied().find(|r| r.as_str() == token)
     }
 
     /// True for the tokens `registries/error-codes.md` lists as registry
@@ -145,14 +158,18 @@ impl KeylessReason {
 
     /// The consumer-side error for this reason (§8.1, §8.2): the
     /// existing variant whose meaning fits, with the reason prefix.
-    /// `controller_unreachable` is the one transient refusal.
+    /// `controller_unreachable` and `issuer_unreachable` are the
+    /// transient refusals.
     pub fn error(self, message: impl std::fmt::Display) -> AcdpError {
         let msg = self.tag(message);
         match self {
             Self::InvalidSignature | Self::PopInvalid => AcdpError::InvalidSignature(msg),
-            Self::ControllerUnreachable => AcdpError::KeyResolutionUnreachable(msg),
+            Self::ControllerUnreachable | Self::IssuerUnreachable => {
+                AcdpError::KeyResolutionUnreachable(msg)
+            }
             Self::AttestationInvalid
             | Self::AttestationMissing
+            | Self::KeylessEventUnsupported
             | Self::AttestationForeign
             | Self::AttestationNotFound => AcdpError::KeyResolution(msg),
             Self::KeylessIdentityMismatch => AcdpError::NotAuthorized(msg),
@@ -193,7 +210,7 @@ mod tests {
     #[test]
     fn tokens_round_trip_and_are_unique() {
         let mut seen = std::collections::BTreeSet::new();
-        for r in KeylessReason::ALL {
+        for &r in KeylessReason::ALL {
             assert!(seen.insert(r.as_str()), "duplicate token {r}");
             assert_eq!(KeylessReason::parse(r.as_str()), Some(r));
             let json = serde_json::to_value(r).unwrap();

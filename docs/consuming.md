@@ -1030,7 +1030,11 @@ token rides on the message. Read it with `KeylessReason::of(&err)`:
 | `controller_unreachable` | `KeyResolutionUnreachable` (transient) |
 
 The registry-side tokens of `POST /key-attestations` (`issuer_not_accepted`,
-`pop_invalid`, …) come back on the wire error and parse the same way.
+`pop_invalid`, …) come back on the wire error and parse the same way. Only
+`issuer_unreachable` is transient: the registry could not fetch the token
+issuer's keys (`KeyResolutionUnreachable`), so a publishing client may retry.
+`KeylessReason` is `#[non_exhaustive]` and `KeylessReason::ALL` is a slice,
+so a new spec token is an additive change.
 
 **Attester key rotation (§8.1 step 1).** The attestation's own signature
 gets the RFC-ACDP-0010 §10 historical arm through its receipt. Suppose the

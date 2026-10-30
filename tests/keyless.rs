@@ -569,3 +569,40 @@ fn kl_fixtures_each_have_tests() {
     let bound: Vec<&str> = BOUND.iter().map(|(id, _)| *id).collect();
     assert_eq!(ids, bound, "unbound kl fixtures");
 }
+
+/// Every registry `details.reason` token in the spec's
+/// `registries/error-codes.md` keyless table has a `KeylessReason`, which
+/// `from_wire_error` keeps on the error (RFC-ACDP-0021 §13.3).
+#[test]
+fn registry_reason_tokens_match_the_spec() {
+    let Some(root) = spec_root() else { return };
+    let text = std::fs::read_to_string(root.join("registries/error-codes.md")).unwrap();
+    let table = text
+        .split("## Keyless-signing reason tokens")
+        .nth(1)
+        .expect("error-codes.md has the keyless reason table")
+        .split("\n## ")
+        .next()
+        .unwrap();
+    // | `token` | Status | `code` [/ `code`] | Meaning | Reference |
+    let rows: Vec<(&str, &str)> = table
+        .lines()
+        .filter(|l| l.starts_with("| `"))
+        .map(|l| {
+            let cells: Vec<&str> = l.split('|').map(str::trim).collect();
+            (cells[1].trim_matches('`'), cells[3])
+        })
+        .collect();
+    assert!(rows.iter().any(|(t, _)| *t == "issuer_unreachable"));
+    for (token, codes) in rows {
+        let r = KeylessReason::parse(token)
+            .unwrap_or_else(|| panic!("no KeylessReason for spec token '{token}'"));
+        assert!(r.is_registry_token(), "{token} is a registry token");
+        // A token on one code: our error for it carries that code.
+        if !codes.contains('/') {
+            assert_eq!(code(&r.error("x")), codes.trim_matches('`'), "{token}");
+        }
+    }
+    // The one transient registry refusal.
+    assert!(KeylessReason::IssuerUnreachable.error("x").is_transient());
+}

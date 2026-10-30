@@ -570,10 +570,14 @@ fn keyless_signed_event_is_not_admitted() {
     .unwrap();
     // `sign_with` refuses a keyless key id; sign by hand as a rogue
     // producer would.
-    assert!(ev
+    let refused = ev
         .clone()
         .sign_with(SigningKey::from_bytes(&EPHEMERAL_SEED), &key_id)
-        .is_err());
+        .unwrap_err();
+    assert_eq!(
+        acdp_types::keyless::KeylessReason::of(&refused),
+        Some(acdp_types::keyless::KeylessReason::KeylessEventUnsupported)
+    );
     let hash = ev.preimage_hash().unwrap();
     let mut raw = serde_json::to_value(&ev).unwrap();
     raw["signature"] = json!({

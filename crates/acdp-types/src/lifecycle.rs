@@ -285,11 +285,12 @@ impl LifecycleEvent {
         // RFC-ACDP-0021 §6.3: keyless keys do not sign lifecycle events in
         // this version (the event has no member naming an attestation).
         if crate::keyless::is_keyless_key_id(&key_id) {
-            return Err(AcdpError::KeyResolution(format!(
-                "keyless_event_unsupported: lifecycle event key_id '{key_id}' is a keyless key \
-                 id; a producer-actor event needs a key in the actor's DID document \
-                 (RFC-ACDP-0021 §6.3)"
-            )));
+            return Err(
+                crate::keyless::KeylessReason::KeylessEventUnsupported.error(format!(
+                "lifecycle event key_id '{key_id}' is a keyless key id; a producer-actor event \
+                 needs a key in the actor's DID document (RFC-ACDP-0021 §6.3)"
+            )),
+            );
         }
         // The preimage removes `signature` entirely, so it is identical
         // before and after this assignment.

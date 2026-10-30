@@ -841,6 +841,19 @@ mod tests {
             KeylessReason::of(&e),
             Some(KeylessReason::KeylessIdentityMismatch)
         );
+        // §5.2 step 3: an unreachable issuer is the transient registry
+        // refusal a publishing client retries.
+        let e = AcdpError::from_wire_error(wire(
+            "key_resolution_unreachable",
+            "issuer JWKS fetch timed out",
+            Some(json!({"reason": "issuer_unreachable"})),
+        ));
+        assert!(matches!(e, AcdpError::KeyResolutionUnreachable(_)));
+        assert!(e.is_transient());
+        assert_eq!(
+            KeylessReason::of(&e),
+            Some(KeylessReason::IssuerUnreachable)
+        );
         // Consumer-only tokens and unknown reasons are not registry tokens.
         for reason in ["untrusted_attester", "something_else"] {
             let e = AcdpError::from_wire_error(wire(

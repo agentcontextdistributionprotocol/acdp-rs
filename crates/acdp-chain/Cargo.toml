@@ -20,13 +20,13 @@ rust-version = "1.87"
 keyless = []
 
 [dependencies]
-acdp-primitives = { path = "../acdp-primitives", version = "=0.18.2" }
-acdp-jcs        = { path = "../acdp-jcs", version = "=0.18.2" }
-acdp-did        = { path = "../acdp-did", version = "=0.18.2" }
-acdp-crypto     = { path = "../acdp-crypto", version = "=0.18.2" }
-acdp-types      = { path = "../acdp-types", version = "=0.18.2" }
-acdp-validation = { path = "../acdp-validation", version = "=0.18.2" }
-acdp-verify     = { path = "../acdp-verify", version = "=0.18.2" }
+acdp-primitives = { path = "../acdp-primitives", version = "=0.18.3" }
+acdp-jcs        = { path = "../acdp-jcs", version = "=0.18.3" }
+acdp-did        = { path = "../acdp-did", version = "=0.18.3" }
+acdp-crypto     = { path = "../acdp-crypto", version = "=0.18.3" }
+acdp-types      = { path = "../acdp-types", version = "=0.18.3" }
+acdp-validation = { path = "../acdp-validation", version = "=0.18.3" }
+acdp-verify     = { path = "../acdp-verify", version = "=0.18.3" }
 serde      = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 chrono     = { version = "0.4", default-features = false, features = ["serde"] }

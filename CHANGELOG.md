@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.18.3](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.18.2...acdp-v0.18.3) - 2026-10-30
 
+No enum change: no new `KeyAuthorization` or `RevocationTrustClass` variant (and no new `KeylessReason` or `AcdpError` variant). RFC-ACDP-0021 draft.4: a key attestation signed under an attester key that was rotated out of `assertionMethod` but kept in `verificationMethod` now verifies through its receipt (`kl-005` M). A key removed from `verificationMethod` is `attestation_invalid` (`kl-005` N).
+
 ### Fixed
 
 - *(keyless)* attestations survive attester key rotation (RFC-ACDP-0021 draft.4) ([#494](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/494))

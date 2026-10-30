@@ -1032,6 +1032,16 @@ token rides on the message. Read it with `KeylessReason::of(&err)`:
 The registry-side tokens of `POST /key-attestations` (`issuer_not_accepted`,
 `pop_invalid`, …) come back on the wire error and parse the same way.
 
+**Attester key rotation (§8.1 step 1).** The attestation's own signature
+gets the RFC-ACDP-0010 §10 historical arm through its receipt. Suppose the
+attester rotated the signing key out of `assertionMethod` but kept it in
+`verificationMethod`. Then the attestation still verifies when its receipt
+verifies with that key's fingerprint (`kl-005` M), and the body's status is
+unchanged. A key removed from `verificationMethod` entirely is the
+attester's compromise signal and gives `attestation_invalid` (`kl-005` N).
+The same holds for keyless-signed revocations and in `acdp-chain`, where
+the node's `key` and `signature` stages are then `unresolvable`.
+
 **Presence rules (§6.2).** A keyless key id with no `key_attestation` fails
 with `attestation_invalid`. A `key_attestation` on a body whose key id is
 not keyless fails with `attestation_mismatch`, even with the key in the DID

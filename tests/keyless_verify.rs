@@ -79,6 +79,7 @@ struct Harness {
     tls: TlsTestServer,
     contexts: Arc<RwLock<HashMap<String, Value>>>,
     controller: Arc<RwLock<Value>>,
+    registry: Arc<RwLock<Value>>,
     resolver: WebResolver,
 }
 
@@ -90,12 +91,16 @@ async fn harness() -> Harness {
     );
     let contexts: Arc<RwLock<HashMap<String, Value>>> = Arc::default();
     let controller = Arc::new(RwLock::new(controller_doc(true)));
+    let registry = Arc::new(RwLock::new(registry_doc));
     let router = Router::new()
         .route(
             "/.well-known/did.json",
-            get(move || {
-                let doc = registry_doc.clone();
-                async move { Json(doc) }
+            get({
+                let doc = registry.clone();
+                move || {
+                    let doc = doc.clone();
+                    async move { Json(doc.read().unwrap().clone()) }
+                }
             }),
         )
         .route(
@@ -231,6 +236,7 @@ async fn harness() -> Harness {
         tls,
         contexts,
         controller,
+        registry,
         resolver,
     }
 }
@@ -248,6 +254,29 @@ impl Harness {
     fn serve(&self, ctx: &Value) {
         let id = ctx["body"]["ctx_id"].as_str().unwrap().to_owned();
         self.contexts.write().unwrap().insert(id, ctx.clone());
+    }
+
+    /// Rotate the attester's signing key to `receipt-key-2`, keeping
+    /// `receipt-key-1` in `verificationMethod` (`retain`) or removing it
+    /// entirely.
+    fn rotate_registry_key(&self, retain: bool) {
+        let old = SigningKey::from_bytes(&REGISTRY_SEED).verifying_key_bytes();
+        let mut doc = ed25519_did_doc(
+            REGISTRY_DID,
+            "receipt-key-2",
+            &SigningKey::from_bytes(&[0x12; 32]).verifying_key_bytes(),
+        );
+        if retain {
+            let mut retired = ed25519_did_doc(REGISTRY_DID, "receipt-key-1", &old)
+                ["verificationMethod"][0]
+                .clone();
+            retired["id"] = json!(format!("{REGISTRY_DID}#receipt-key-1"));
+            doc["verificationMethod"]
+                .as_array_mut()
+                .unwrap()
+                .push(retired);
+        }
+        *self.registry.write().unwrap() = doc;
     }
 
     fn list_identity(&self, listed: bool) {
@@ -1117,5 +1146,32 @@ async fn kl_005_key_attestation_presence() {
     assert_eq!(
         reason(verify(&h, &ctx, &accepting()).await),
         KeylessReason::AttestationMismatch
+    );
+}
+
+/// kl-005 M (0.5.0-draft.4): the attester rotated the key that signed
+/// the attestation out of `assertionMethod` but kept it in
+/// `verificationMethod`. Step 1 passes by the RFC-ACDP-0010 §10
+/// historical arm through the attestation's receipt; the body's status
+/// is unchanged.
+#[tokio::test]
+async fn kl_005_m_attester_key_rotated() {
+    let h = harness().await;
+    h.rotate_registry_key(true);
+    let fx = fixture("active");
+    let v = run(&h, &fx, &accepting()).await.expect("verifies");
+    assert_eq!(v.key_status(), KeyAuthorization::CurrentlyAuthorized);
+}
+
+/// kl-005 N: the retired attester key is gone from `verificationMethod`
+/// (compromise): `attestation_invalid`, whatever the receipt says.
+#[tokio::test]
+async fn kl_005_n_attester_key_removed() {
+    let h = harness().await;
+    h.rotate_registry_key(false);
+    let fx = fixture("active");
+    assert_eq!(
+        reason(run(&h, &fx, &accepting()).await),
+        KeylessReason::AttestationInvalid
     );
 }

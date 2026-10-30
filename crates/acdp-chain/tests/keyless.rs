@@ -597,3 +597,50 @@ fn keyless_signed_event_is_not_admitted() {
         );
     }
 }
+
+/// The bundle with the attester's DID document rotated to
+/// `receipt-key-2`, keeping `receipt-key-1` in `verificationMethod`
+/// (`retain`) or removing it entirely.
+#[cfg(feature = "keyless")]
+fn rotated_bundle(retain: bool) -> Evidence {
+    let mut e = keyless_bundle(true);
+    let mut methods = vec![("receipt-key-2", [0x12; 32])];
+    if retain {
+        methods.push(("receipt-key-1", REGISTRY_SEED));
+    }
+    let doc = did_doc(REGISTRY_DID, &methods, &["receipt-key-2"]);
+    e.did_documents.as_mut().unwrap().insert(
+        REGISTRY_DID.into(),
+        vec![DidSnapshot::new(doc, REGISTRY_OBSERVED)],
+    );
+    e
+}
+
+/// kl-005 M (0.5.0-draft.4): the attestation's signing key left
+/// `assertionMethod` but stayed in `verificationMethod`. Step 1 passes by
+/// the RFC-ACDP-0010 §10 historical arm through its receipt, and the
+/// node's key stage is unchanged.
+#[cfg(feature = "keyless")]
+#[test]
+fn kl_005_m_attester_key_rotated() {
+    let n = run(&rotated_bundle(true), &accepting());
+    for p in [&n.latest, n.as_of.as_ref().unwrap()] {
+        assert_eq!(key(p).value, KeyValue::Current);
+        assert_eq!(
+            p.stages.signature.as_ref().unwrap().value,
+            SignatureValue::Ok
+        );
+    }
+}
+
+/// kl-005 N: the key is gone from `verificationMethod` (compromise), so
+/// the attestation fails step 1 and the node is refused.
+#[cfg(feature = "keyless")]
+#[test]
+fn kl_005_n_attester_key_removed() {
+    let n = run(&rotated_bundle(false), &accepting());
+    for p in [&n.latest, n.as_of.as_ref().unwrap()] {
+        assert_eq!(key(p).value, KeyValue::Unresolvable);
+        assert_eq!(p.verdict, Verdict::Refused);
+    }
+}

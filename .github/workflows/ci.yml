@@ -75,9 +75,9 @@ jobs:
           repository: agentcontextdistributionprotocol/agentcontextdistributionprotocol
           # Pinned so a spec-repo push cannot change this repo's CI result
           # without a commit here. Bump deliberately when adopting new
-          # fixtures. (bf37195 adopted 2026-10-30 for RFC-ACDP-0021 0.5.0-draft.3; bump-spec
+          # fixtures. (1560e0f adopted 2026-10-30 for RFC-ACDP-0021 0.5.0-draft.4; bump-spec
           # rewrites only the SHA, so refresh this note on each bump.)
-          ref: bf37195a7b39cb9e5ddac9058511d76d72f3c55a
+          ref: 1560e0f389875be8addaa7b7908751e020db50fe
           path: acdp-spec
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:

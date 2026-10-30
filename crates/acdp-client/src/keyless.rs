@@ -371,10 +371,15 @@ mod verify {
             .await
             .map_err(Step1::unavailable)?;
         let verifier = Verifier::new(resolver).fresh_since(since);
-        verifier
-            .verify_body_signature(&ctx.body)
-            .await
-            .map_err(Step1::invalid)?;
+        let strict = verifier.verify_body_signature(&ctx.body).await;
+        if let Err(e) = &strict {
+            if e.is_transient() {
+                return Err(Step1::invalid(strict.unwrap_err()));
+            }
+        }
+        // `fingerprint_for_key_id_since` finds the key in
+        // `verificationMethod`; a key removed from it entirely (the
+        // attester's compromise signal) fails here (§8.1 step 1).
         let registry_fp = acdp_crypto::fingerprint::fingerprint_for_key_id_since(
             &ctx.body.signature.key_id,
             &ctx.body.signature.algorithm,
@@ -395,6 +400,17 @@ mod verify {
         )
         .await
         .map_err(Step1::invalid)?;
+        // §8.1 step 1 (0.5.0-draft.4): the RFC-ACDP-0010 §10 historical
+        // arm. The receipt verified with `key_fingerprint` equal to the
+        // signing key, so a key the attester rotated out of
+        // `assertionMethod` (kept in `verificationMethod`) still
+        // verifies the attestation (`kl-005` M).
+        if strict.is_err() {
+            verifier
+                .verify_body_signature_historical(&ctx.body)
+                .await
+                .map_err(Step1::invalid)?;
+        }
         Ok(metadata)
     }
 

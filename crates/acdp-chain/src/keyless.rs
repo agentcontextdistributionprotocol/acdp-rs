@@ -120,11 +120,19 @@ impl Engine<'_, '_> {
             return Err(Unattested::Invalid);
         }
         let b = self.basic(key, pc, pass);
-        if b.presence.value != PresenceValue::Present || b.key.value == KeyValue::Unknown {
+        if b.presence.value != PresenceValue::Present {
             return Err(Unattested::NoEvidence);
         }
         if pc.receipt.is_none() || !self.keys.has_snapshot(pc.body.agent_id.as_str(), pass.t()) {
             return Err(Unattested::Unavailable);
+        }
+        // With the attester's snapshot at hand, a key it no longer lists
+        // in `verificationMethod` is its compromise signal, not missing
+        // evidence: step 1 fails (§8.1 step 1, `kl-005` N). A key only
+        // rotated out of `assertionMethod` is `historical_receipt_attested`
+        // through the attestation's receipt and passes (`kl-005` M).
+        if b.key.value == KeyValue::Unknown {
+            return Err(Unattested::Invalid);
         }
         let sig_ok = b
             .signature

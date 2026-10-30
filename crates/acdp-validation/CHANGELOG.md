@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.2](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-validation-v0.18.1...acdp-validation-v0.18.2) - 2026-10-30
+
+### Added
+
+- *(keyless)* adopt RFC-ACDP-0021 0.5.0-draft.3 rulings ([#486](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/486))
+
 ## [0.18.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-validation-v0.17.3...acdp-validation-v0.18.0) - 2026-10-26
 
 ### Added

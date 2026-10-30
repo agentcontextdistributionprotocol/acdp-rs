@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.2](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-types-v0.18.1...acdp-types-v0.18.2) - 2026-10-30
+
+No enum change: no new `KeyAuthorization` or `RevocationTrustClass` variant (and no new `KeylessReason` or `AcdpError` variant). `acdp-chain`'s `Options::keyless_attesters` is deprecated in favour of `pinned.keyless_attesters`.
+
+### Added
+
+- *(keyless)* adopt RFC-ACDP-0021 0.5.0-draft.3 rulings ([#486](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/486))
+
 ## [0.18.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-types-v0.17.3...acdp-types-v0.18.0) - 2026-10-26
 
 ### Added

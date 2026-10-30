@@ -112,6 +112,12 @@ pub struct Pinned {
     /// Discovery vantages whose records the caller vouches for.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vantages: Vec<String>,
+    /// *(0.5.0, Draft)* Registry DIDs accepted as RFC-ACDP-0021 key
+    /// attesters (§10, §11). The only local source `verify_chain` takes
+    /// attesters from, so `options_digest` covers them. Without the
+    /// `keyless` feature a non-empty member is rejected as unknown.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keyless_attesters: Vec<String>,
 }
 
 impl Pinned {
@@ -138,6 +144,7 @@ impl Pinned {
             ("registries", &pinned.registries),
             ("witnesses", &pinned.witnesses),
             ("vantages", &pinned.vantages),
+            ("keyless_attesters", &pinned.keyless_attesters),
         ] {
             let mut seen = std::collections::BTreeSet::new();
             if !list.iter().all(|s| seen.insert(s)) {
@@ -189,6 +196,21 @@ impl Pinned {
                 return Err(options(format!("pinned vantage '{h}' is not a hostname")));
             }
         }
+        // RFC-ACDP-0017 §6.3: a verifier without RFC-ACDP-0021 support
+        // rejects the member as unknown.
+        #[cfg(not(feature = "keyless"))]
+        if !self.keyless_attesters.is_empty() {
+            return Err(options(
+                "pinned.keyless_attesters needs RFC-ACDP-0021 support (the `keyless` feature)",
+            ));
+        }
+        for d in &self.keyless_attesters {
+            if !is_did(d) {
+                return Err(options(format!(
+                    "pinned keyless attester '{d}' is not a DID"
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -211,6 +233,7 @@ impl Pinned {
             registries: sorted(&self.registries),
             witnesses: sorted(&self.witnesses),
             vantages: sorted(&self.vantages),
+            keyless_attesters: sorted(&self.keyless_attesters),
         }
     }
 
@@ -220,6 +243,7 @@ impl Pinned {
             && self.registries.is_empty()
             && self.witnesses.is_empty()
             && self.vantages.is_empty()
+            && self.keyless_attesters.is_empty()
     }
 
     /// `options_digest` (§9.1): `sha256:` + hex(SHA-256(JCS(normalized))),
@@ -245,15 +269,20 @@ pub struct Options {
     pub pinned: Option<Pinned>,
     /// §6.4. Defaults to `true`.
     pub require_attested_events: bool,
-    /// RFC-ACDP-0021 §11: the registry DIDs accepted as keyless
-    /// attesters. Empty (the default) accepts none, so every keyless node
-    /// is refused. Not part of `options_digest`, which covers `pinned`
-    /// only.
+    /// Superseded by [`Pinned::keyless_attesters`]: RFC-ACDP-0021 §10
+    /// (0.5.0-draft.2) takes accepted attesters only from `pinned`, so
+    /// `options_digest` covers them. Kept for compatibility; a non-empty
+    /// value is rejected. Use [`Options::with_keyless_attesters`].
     #[cfg(feature = "keyless")]
+    #[deprecated(
+        since = "0.18.2",
+        note = "set `pinned.keyless_attesters` (or use `with_keyless_attesters`)"
+    )]
     pub keyless_attesters: Vec<String>,
 }
 
 impl Default for Options {
+    #[allow(deprecated)]
     fn default() -> Self {
         Self {
             as_of: None,
@@ -293,23 +322,28 @@ impl Options {
         self
     }
 
-    /// Accept these registries as keyless attesters (RFC-ACDP-0021 §11).
+    /// Accept these registries as keyless attesters (RFC-ACDP-0021 §11):
+    /// sets [`Pinned::keyless_attesters`], so they enter `options_digest`.
     #[cfg(feature = "keyless")]
     pub fn with_keyless_attesters<S: Into<String>>(
         mut self,
         attesters: impl IntoIterator<Item = S>,
     ) -> Self {
-        self.keyless_attesters = attesters.into_iter().map(Into::into).collect();
+        let mut pinned = self.pinned.take().unwrap_or_default();
+        pinned.keyless_attesters = attesters.into_iter().map(Into::into).collect();
+        self.pinned = Some(pinned);
         self
     }
 
     pub(crate) fn check(&self) -> Result<(), ChainError> {
         self.limits.check()?;
         #[cfg(feature = "keyless")]
-        for d in &self.keyless_attesters {
-            if !is_did(d) {
-                return Err(options(format!("keyless attester '{d}' is not a DID")));
-            }
+        #[allow(deprecated)]
+        if !self.keyless_attesters.is_empty() {
+            return Err(options(
+                "Options.keyless_attesters is superseded: RFC-ACDP-0021 §10 takes keyless \
+                 attesters only from pinned.keyless_attesters (use with_keyless_attesters)",
+            ));
         }
         if let Some(t) = self.as_of {
             if parse_ts(&fmt_ts(t)) != Some(t) {

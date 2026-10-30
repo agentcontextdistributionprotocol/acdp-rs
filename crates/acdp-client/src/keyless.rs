@@ -118,6 +118,27 @@ impl KeylessTrust {
 #[cfg(feature = "keyless")]
 pub(crate) use verify::{verify, verify_revocation_signer};
 
+/// RFC-ACDP-0021 §6.2, §12: a `key_attestation` on a body whose key id is
+/// not a keyless key id fails closed with `attestation_mismatch`.
+#[cfg(feature = "keyless")]
+pub(crate) fn check_presence(
+    body: &acdp_types::body::Body,
+) -> Result<(), acdp_primitives::error::AcdpError> {
+    if !acdp_types::keyless::is_keyless_key_id(&body.signature.key_id)
+        && body
+            .extensions
+            .contains_key(acdp_types::keyless::KEY_ATTESTATION_FIELD)
+    {
+        return Err(
+            acdp_types::keyless::KeylessReason::AttestationMismatch.error(format!(
+            "the body carries key_attestation but signature.key_id '{}' is not a keyless key id",
+            body.signature.key_id
+        )),
+        );
+    }
+    Ok(())
+}
+
 /// A keyless-signed revocation candidate that could not be evaluated: no
 /// `keyless` feature, an unaccepted attester, or an attestation that does
 /// not verify. Naming the signing key it makes the verdict `unknown`
@@ -165,14 +186,9 @@ pub(crate) async fn evaluate_revocations(
         #[cfg(feature = "keyless")]
         let outcome = verify_revocation_signer(client, resolver, ctx, policy, since).await;
         #[cfg(not(feature = "keyless"))]
-        let outcome: Result<
-            acdp_types::keyless::KeyAttestation,
-            acdp_primitives::error::AcdpError,
-        > = {
+        let outcome: Result<acdp_types::keyless::KeyAttestation, Unsupported> = {
             let _ = (client, resolver, policy);
-            Err(acdp_primitives::error::AcdpError::KeyResolution(
-                "built without the `keyless` feature (RFC-ACDP-0021)".into(),
-            ))
+            Err(Unsupported)
         };
         match outcome {
             Ok(att) => {
@@ -185,19 +201,37 @@ pub(crate) async fn evaluate_revocations(
                     out.hints.push(rev);
                 }
             }
+            // §9.3: a definitively invalid signer is ignored.
+            #[cfg(feature = "keyless")]
+            Err(e) if !e.unavailable => {}
             Err(e) => out.unevaluated.push(Unevaluated {
                 fingerprint: rev.revoked_key_fingerprint.clone(),
                 detail: format!(
                     "the revocation {} of {} is signed by the keyless key {} and could not be \
-                     evaluated: {e}",
+                     evaluated: {}",
                     ctx.body.ctx_id.as_str(),
                     rev.revoked_key_fingerprint,
-                    ctx.body.signature.key_id
+                    ctx.body.signature.key_id,
+                    signer_failure(&e),
                 ),
             }),
         }
     }
     out
+}
+
+#[cfg(feature = "keyless")]
+fn signer_failure(e: &verify::Step1) -> &acdp_primitives::error::AcdpError {
+    &e.error
+}
+
+/// Without the `keyless` feature no keyless signer is evaluable.
+#[cfg(not(feature = "keyless"))]
+struct Unsupported;
+
+#[cfg(not(feature = "keyless"))]
+fn signer_failure(_: &Unsupported) -> &'static str {
+    "built without the `keyless` feature (RFC-ACDP-0021)"
 }
 
 #[cfg(feature = "keyless")]
@@ -230,6 +264,37 @@ mod verify {
         KeylessReason::AttestationInvalid.error(e)
     }
 
+    /// A §8.1 step-1 failure. `unavailable` when the attestation could
+    /// not be fetched or checked (not found, or a transient failure):
+    /// a revocation signed under it is not evaluable rather than
+    /// invalid (§9.3).
+    pub(crate) struct Step1 {
+        pub(crate) error: Box<AcdpError>,
+        pub(crate) unavailable: bool,
+    }
+
+    impl Step1 {
+        fn invalid(error: AcdpError) -> Self {
+            Self {
+                error: Box::new(error),
+                unavailable: false,
+            }
+        }
+
+        fn unavailable(error: AcdpError) -> Self {
+            Self {
+                error: Box::new(error),
+                unavailable: true,
+            }
+        }
+    }
+
+    impl From<Step1> for AcdpError {
+        fn from(s: Step1) -> Self {
+            *s.error
+        }
+    }
+
     /// §8.1 step 1. Transient failures propagate unchanged (retry later);
     /// every other failure is `attestation_invalid`.
     async fn attestation(
@@ -238,30 +303,40 @@ mod verify {
         reference: &KeyAttestationRef,
         serving_authority: &str,
         since: Instant,
-    ) -> Result<Attestation, AcdpError> {
+    ) -> Result<Attestation, Step1> {
         // §6.3 step 2: a registry accepts only attestations it minted, so
         // the attestation of a body it serves is its own.
         if reference.ctx_id.authority() != serving_authority {
-            return Err(invalid(format!(
+            return Err(Step1::invalid(invalid(format!(
                 "key_attestation.ctx_id '{}' is not on the serving registry '{serving_authority}'",
                 reference.ctx_id
-            )));
+            ))));
         }
         let ctx = match client.retrieve(&reference.ctx_id).await {
             Ok(ctx) => ctx,
-            Err(e) if e.is_transient() => return Err(e),
-            Err(e) => return Err(invalid(format!("fetching the attestation: {e}"))),
+            Err(e) if e.is_transient() => return Err(Step1::unavailable(e)),
+            Err(e) => {
+                return Err(Step1::unavailable(invalid(format!(
+                    "fetching the attestation: {e}"
+                ))))
+            }
         };
-        let checked = check_attestation(resolver, &ctx, reference, serving_authority, since).await;
-        match checked {
-            Ok(metadata) => Ok(Attestation {
-                metadata,
-                registry: ctx.body.agent_id.as_str().to_owned(),
-                retracted: ctx.registry_state.status.is_retracted(),
-            }),
-            Err(e) if e.is_transient() => Err(e),
-            Err(e) => Err(invalid(e)),
-        }
+        let metadata = check_attestation(resolver, &ctx, reference, serving_authority, since)
+            .await
+            .map_err(|mut s| {
+                // Transient failures propagate unchanged (retry later).
+                if s.error.is_transient() {
+                    s.unavailable = true;
+                } else {
+                    s.error = Box::new(invalid(&s.error));
+                }
+                s
+            })?;
+        Ok(Attestation {
+            metadata,
+            registry: ctx.body.agent_id.as_str().to_owned(),
+            retracted: ctx.registry_state.status.is_retracted(),
+        })
     }
 
     async fn check_attestation(
@@ -270,29 +345,44 @@ mod verify {
         reference: &KeyAttestationRef,
         serving_authority: &str,
         since: Instant,
-    ) -> Result<KeyAttestation, AcdpError> {
-        acdp_verify::verify_ctx_id_binding(ctx.body.ctx_id.as_str(), reference.ctx_id.as_str())?;
-        acdp_verify::verify_context_hash(ctx)?;
+    ) -> Result<KeyAttestation, Step1> {
+        // §9.3 "unavailable versus invalid": evidence that could not be
+        // obtained (another context than the one named, no receipt, no
+        // attester DID document) is unavailable; obtained evidence that
+        // fails a check is invalid.
+        acdp_verify::verify_ctx_id_binding(ctx.body.ctx_id.as_str(), reference.ctx_id.as_str())
+            .map_err(Step1::unavailable)?;
+        acdp_verify::verify_context_hash(ctx).map_err(Step1::invalid)?;
         if ctx.body.content_hash != reference.content_hash {
-            return Err(AcdpError::HashMismatch {
+            return Err(Step1::invalid(AcdpError::HashMismatch {
                 stored: reference.content_hash.clone(),
                 recomputed: ctx.body.content_hash.clone(),
-            });
+            }));
         }
-        acdp_validation::validate_body(&ctx.body)?;
-        let metadata = KeyAttestation::from_body(&ctx.body)?;
-        let verifier = Verifier::new(resolver).fresh_since(since);
-        verifier.verify_body_signature(&ctx.body).await?;
+        acdp_validation::validate_body(&ctx.body).map_err(Step1::invalid)?;
+        let metadata = KeyAttestation::from_body(&ctx.body).map_err(Step1::invalid)?;
         let receipt = ctx.registry_receipt.as_ref().ok_or_else(|| {
-            AcdpError::InvalidReceipt("the attestation carries no receipt".into())
+            Step1::unavailable(AcdpError::InvalidReceipt(
+                "the attestation carries no receipt".into(),
+            ))
         })?;
+        resolver
+            .resolve(ctx.body.agent_id.as_str())
+            .await
+            .map_err(Step1::unavailable)?;
+        let verifier = Verifier::new(resolver).fresh_since(since);
+        verifier
+            .verify_body_signature(&ctx.body)
+            .await
+            .map_err(Step1::invalid)?;
         let registry_fp = acdp_crypto::fingerprint::fingerprint_for_key_id_since(
             &ctx.body.signature.key_id,
             &ctx.body.signature.algorithm,
             resolver,
             since,
         )
-        .await?;
+        .await
+        .map_err(Step1::invalid)?;
         verify_receipt_placed(
             receipt,
             &reference.ctx_id,
@@ -303,7 +393,8 @@ mod verify {
             resolver,
             since,
         )
-        .await?;
+        .await
+        .map_err(Step1::invalid)?;
         Ok(metadata)
     }
 
@@ -415,14 +506,19 @@ mod verify {
         serving_authority: &str,
         policy: &KeylessPolicy,
         since: Instant,
-    ) -> Result<Signer, AcdpError> {
+    ) -> Result<Signer, Step1> {
         let body = &ctx.body;
-        let reference = body.key_attestation()?.ok_or_else(|| {
-            KeylessReason::AttestationMissing.error(format!(
-                "signature.key_id '{}' is a keyless key id but the body has no key_attestation",
-                body.signature.key_id
-            ))
-        })?;
+        // §6.2: a keyless key id with no `key_attestation` fails step 1.
+        let reference = body
+            .key_attestation()
+            .map_err(Step1::invalid)?
+            .ok_or_else(|| {
+                Step1::invalid(KeylessReason::AttestationInvalid.error(format!(
+                    "signature.key_id '{}' is a keyless key id but the body has no \
+                     key_attestation",
+                    body.signature.key_id
+                )))
+            })?;
 
         // Step 1 decides alone: nothing below can be evaluated without it.
         let att = attestation(client, resolver, &reference, serving_authority, since).await?;
@@ -487,18 +583,21 @@ mod verify {
     /// aside by discovery, through §8.1 steps 1–7 under the same attester
     /// policy as bodies. Returns its attestation (the caller applies it
     /// only when `org_wide`); revocations of the signing key and its
-    /// identity today are not consulted (removal does not reach back,
-    /// §9.1).
+    /// identity today are not consulted (no step 8 or 9).
+    ///
+    /// A failure is `unavailable` (not evaluable: the attester is not
+    /// accepted, or the attestation could not be had) or definitively
+    /// invalid (ignored, as any revocation whose signature fails).
     pub(crate) async fn verify_revocation_signer(
         client: &RegistryClient,
         resolver: &WebResolver,
         ctx: &FullContext,
         policy: &KeylessPolicy,
         since: Instant,
-    ) -> Result<KeyAttestation, AcdpError> {
+    ) -> Result<KeyAttestation, Step1> {
         let body = &ctx.body;
-        acdp_verify::verify_context_hash(ctx)?;
-        acdp_validation::validate_body(body)?;
+        acdp_verify::verify_context_hash(ctx).map_err(Step1::invalid)?;
+        acdp_validation::validate_body(body).map_err(Step1::invalid)?;
         let serving_authority = client
             .authority()
             .unwrap_or_else(|| body.ctx_id.authority().to_string());
@@ -514,7 +613,10 @@ mod verify {
         .await?;
         match decide_until_identity(&s.facts) {
             Ok(_) => Ok(s.att.metadata),
-            Err(reason) => Err(refusal(reason, body, &s.att.metadata)),
+            Err(reason) => Err(Step1 {
+                error: Box::new(refusal(reason, body, &s.att.metadata)),
+                unavailable: reason == KeylessReason::UntrustedAttester,
+            }),
         }
     }
 
@@ -545,7 +647,8 @@ mod verify {
             policy,
             since,
         )
-        .await?;
+        .await
+        .map_err(AcdpError::from)?;
         let meta = &att.metadata;
         let placed_ok = placed.as_ref().and_then(|p| p.as_ref().ok());
 

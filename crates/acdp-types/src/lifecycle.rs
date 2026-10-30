@@ -264,7 +264,8 @@ impl LifecycleEvent {
     /// a signature over the ASCII bytes of the full `"sha256:<hex>"`
     /// string. `key_id`'s DID portion MUST equal `actor` — the signing
     /// key need not be the key that signed the original body (§5:
-    /// producers rotate keys), but it must belong to the actor's DID.
+    /// producers rotate keys), but it must belong to the actor's DID, and
+    /// it must not be a keyless key (RFC-ACDP-0021 §6.3).
     pub fn sign_with(
         mut self,
         key: impl Into<acdp_crypto::sign::AcdpSigningKey>,
@@ -280,6 +281,15 @@ impl LifecycleEvent {
                     self.actor
                 )));
             }
+        }
+        // RFC-ACDP-0021 §6.3: keyless keys do not sign lifecycle events in
+        // this version (the event has no member naming an attestation).
+        if crate::keyless::is_keyless_key_id(&key_id) {
+            return Err(AcdpError::KeyResolution(format!(
+                "keyless_event_unsupported: lifecycle event key_id '{key_id}' is a keyless key \
+                 id; a producer-actor event needs a key in the actor's DID document \
+                 (RFC-ACDP-0021 §6.3)"
+            )));
         }
         // The preimage removes `signature` entirely, so it is identical
         // before and after this assignment.

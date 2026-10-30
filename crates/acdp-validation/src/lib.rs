@@ -309,7 +309,9 @@ pub fn validate_body(body: &Body) -> Result<(), AcdpError> {
 /// a verification outcome, not a schema failure: RFC-ACDP-0017 §7.6
 /// reports it as `key: unresolvable` with `signature: unresolvable`
 /// rather than rejecting the evidence bundle (§4.1). Syntax is still
-/// checked; only the resolution step is skipped.
+/// checked; only the resolution step is skipped. So is the RFC-ACDP-0021
+/// §6.2 `key_attestation` presence rule, which chain verification
+/// reports the same way (§10).
 pub fn validate_body_schema(body: &Body) -> Result<(), AcdpError> {
     validate_body_inner(
         body, /* check_embedded_hashes = */ true, /* resolve_keys = */ false,
@@ -394,11 +396,13 @@ fn validate_body_inner(
     }
 
     // RFC-ACDP-0021 §6.2: a stored body carries `key_attestation` among
-    // its extension fields.
-    acdp_types::keyless::check_key_attestation_presence(
-        &body.signature.key_id,
-        body.key_attestation()?.is_some(),
-    )?;
+    // its extension fields. A misplaced member is a verification outcome
+    // in chain verification (§10: `key: unresolvable`), not a schema
+    // failure, so `validate_body_schema` leaves it to the key stage.
+    let present = body.key_attestation()?.is_some();
+    if resolve_keys {
+        acdp_types::keyless::check_key_attestation_presence(&body.signature.key_id, present)?;
+    }
 
     validate_signature_length(&body.signature.algorithm, &body.signature.value)?;
     if resolve_keys {

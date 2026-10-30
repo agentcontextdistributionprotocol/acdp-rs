@@ -280,6 +280,14 @@ fn keyless_revocation_bundle(org_wide: bool) -> Evidence {
     e
 }
 
+/// [`keyless_revocation_bundle`] without the revocation `d`.
+#[cfg(feature = "keyless")]
+fn keyless_bundle_b() -> Evidence {
+    let mut e = keyless_revocation_bundle(true);
+    e.contexts.remove(&ctx('d'));
+    e
+}
+
 fn key_revocation_of_b(e: &Evidence, o: &Options) -> KeyRevocationStage {
     let v = verify_chain(&[ctx('b')], &reparse(e), o).unwrap();
     let n = v.nodes.into_iter().find(|n| n.ctx_id == ctx('b')).unwrap();
@@ -313,4 +321,279 @@ fn kl_009_unevaluable_keyless_revocation_is_unknown() {
     let kr = key_revocation_of_b(&keyless_revocation_bundle(true), &Options::default());
     assert_eq!(kr.value, KeyRevocationValue::Unknown);
     assert_eq!(kr.revocation_ctx_id.as_deref(), Some(ctx('d').as_str()));
+    // kl-008 F: nothing was established, so no basis or evidence_time.
+    assert_eq!(kr.basis, None);
+    assert_eq!(kr.evidence_time, None);
+}
+
+/// RFC-ACDP-0021 §10 (0.5.0-draft.2): a step-6 failure is
+/// `signature: invalid`, with the key stage as located.
+#[cfg(feature = "keyless")]
+#[test]
+fn kl_008_step_6_failure_is_signature_invalid() {
+    let mut e = keyless_bundle(true);
+    let a = e.contexts.get_mut(&ctx('a')).unwrap();
+    // The signature is outside the content hash, so the receipt still
+    // binds the body; only the signature fails.
+    a.body["signature"]["value"] = json!(SigningKey::from_bytes(&[0x77; 32]).sign_string("x"));
+    let n = run(&e, &accepting());
+    for p in [&n.latest, n.as_of.as_ref().unwrap()] {
+        assert_eq!(key(p).value, KeyValue::Current);
+        assert_eq!(key(p).basis, Some(Basis::Registry));
+        assert_eq!(
+            p.stages.signature.as_ref().unwrap().value,
+            SignatureValue::Invalid
+        );
+        assert_eq!(p.verdict, Verdict::Refused);
+    }
+}
+
+/// §10: the key stage's `evidence_time` is the body receipt's
+/// `created_at`, also for a currently authorized key.
+#[cfg(feature = "keyless")]
+#[test]
+fn kl_008_evidence_time_is_the_body_receipt() {
+    let n = run(&keyless_bundle(true), &accepting());
+    assert_eq!(key(&n.latest).evidence_time.as_deref(), Some(SIGNED_AT));
+}
+
+/// §10 missing evidence: no controller snapshot selectable at T is
+/// `unknown` as of T and `unresolvable` in the latest pass.
+#[cfg(feature = "keyless")]
+#[test]
+fn kl_008_no_controller_snapshot() {
+    let mut e = keyless_bundle(true);
+    e.did_documents.as_mut().unwrap().remove(CONTROLLER);
+    let n = run(&e, &accepting());
+    assert_eq!(key(&n.latest).value, KeyValue::Unresolvable);
+    let as_of = n.as_of.as_ref().unwrap();
+    assert_eq!(key(as_of).value, KeyValue::Unknown);
+    assert_eq!(key(as_of).reason.as_deref(), Some("no_evidence_at_as_of"));
+    assert!(as_of.stages.signature.is_none());
+}
+
+/// §6.2, §10 (0.5.0-draft.3): a `key_attestation` beside a DID-document
+/// key id breaks the presence rules: `key` and `signature` are
+/// `unresolvable`, though the key is in the DID document.
+#[cfg(feature = "keyless")]
+#[test]
+fn kl_008_key_attestation_on_a_did_document_key() {
+    let mut e = keyless_bundle(true);
+    let att = attestation();
+    let web = Signer {
+        did: CONTROLLER.into(),
+        seed: KEY1,
+        key_id: format!("{CONTROLLER}#key-1"),
+    };
+    let mut b = body(&web, 'b', &[], SIGNED_AT);
+    b.extensions.insert(
+        "key_attestation".into(),
+        json!({"ctx_id": att.ctx_id.as_str(), "content_hash": att.content_hash.as_str()}),
+    );
+    b.content_hash = acdp_crypto::compute_content_hash(&serde_json::to_value(&b).unwrap()).unwrap();
+    b.signature.value = SigningKey::from_bytes(&KEY1).sign_string(b.content_hash.as_str());
+    put(&mut e, 'b', evidence(&b, &fingerprint(&KEY1)));
+    let v = verify_chain(&[ctx('b')], &reparse(&e), &accepting()).unwrap();
+    let n = v.nodes.into_iter().find(|n| n.ctx_id == ctx('b')).unwrap();
+    for p in [&n.latest, n.as_of.as_ref().unwrap()] {
+        assert_eq!(key(p).value, KeyValue::Unresolvable);
+        assert_eq!(
+            p.stages.signature.as_ref().unwrap().value,
+            SignatureValue::Unresolvable
+        );
+        assert_eq!(p.verdict, Verdict::Refused);
+    }
+}
+
+/// §10 attester acceptance: `pinned.keyless_attesters` is the source,
+/// covered by `options_digest`; `with_keyless_attesters` builds it.
+#[cfg(feature = "keyless")]
+#[test]
+fn keyless_attesters_are_pinned() {
+    let o = accepting();
+    let pinned = o.pinned.as_ref().unwrap();
+    assert_eq!(pinned.keyless_attesters, vec![REGISTRY_DID.to_string()]);
+    let v = verify_chain(&[ctx('a')], &reparse(&keyless_bundle(true)), &o).unwrap();
+    assert!(v.options_digest.is_some());
+    // Sorted and deduplicated in the normal form; the digest follows it.
+    let p = Pinned::from_value(
+        &json!({"keyless_attesters": ["did:web:b.example", "did:web:a.example"]}),
+    )
+    .unwrap();
+    assert_eq!(
+        p.normalized().keyless_attesters,
+        vec![
+            "did:web:a.example".to_string(),
+            "did:web:b.example".to_string()
+        ]
+    );
+    assert!(Pinned::from_value(&json!({"keyless_attesters": []})).is_err());
+    assert!(Pinned::from_value(&json!({"keyless_attesters": ["x", "x"]})).is_err());
+    // The superseded side channel is refused, never consulted.
+    #[allow(deprecated)]
+    {
+        let mut o = Options::as_of(t());
+        o.keyless_attesters = vec![REGISTRY_DID.into()];
+        assert!(verify_chain(&[ctx('a')], &reparse(&keyless_bundle(true)), &o).is_err());
+    }
+}
+
+/// RFC-ACDP-0017 §6.3: a verifier without RFC-ACDP-0021 support rejects
+/// `pinned.keyless_attesters` as an unknown member.
+#[cfg(not(feature = "keyless"))]
+#[test]
+fn keyless_attesters_need_keyless_support() {
+    let p = Pinned::from_value(&json!({"keyless_attesters": [REGISTRY_DID]}));
+    assert!(p.is_err());
+}
+
+/// kl-005 L (chain): a keyless-signed revocation whose signer is
+/// definitively invalid is ignored, not `unknown`.
+#[cfg(feature = "keyless")]
+#[test]
+fn kl_005_l_invalid_keyless_signer_is_ignored() {
+    // A complete discovery record: an ignored revocation leaves the
+    // stage not-revoked; an unevaluable one would make it unknown.
+    let complete = |mut e: Evidence| {
+        add_discovery(&mut e, CONTROLLER, discovery("2026-09-03T00:00:00.000Z"));
+        e
+    };
+    let kr = key_revocation_of_b(&complete(keyless_bundle_b()), &accepting());
+    assert_eq!(kr.value, KeyRevocationValue::NotRevoked);
+
+    // Step 6: the revocation's signature does not verify.
+    let mut e = complete(keyless_revocation_bundle(true));
+    e.contexts.get_mut(&ctx('d')).unwrap().body["signature"]["value"] =
+        json!(SigningKey::from_bytes(&[0x77; 32]).sign_string("x"));
+    let kr = key_revocation_of_b(&e, &accepting());
+    assert_eq!(kr.value, KeyRevocationValue::NotRevoked);
+
+    // Step 7: the signer's attestation is withdrawn.
+    let mut e = complete(keyless_revocation_bundle(true));
+    let registry = Signer {
+        did: REGISTRY_DID.into(),
+        seed: REGISTRY_SEED,
+        key_id: format!("{REGISTRY_DID}#receipt-key-1"),
+    };
+    let ev = event(
+        &registry,
+        'e',
+        0,
+        LifecycleEventType::Retracted,
+        "2026-09-10T00:00:00.000Z",
+    );
+    let k = e.contexts.get_mut(&ctx('e')).unwrap();
+    k.event_receipts = Some(vec![event_receipt('e', &ev, 0, "2026-09-10T00:00:01.000Z")]);
+    k.lifecycle_events = Some(vec![ev]);
+    let kr = key_revocation_of_b(&e, &accepting());
+    assert_eq!(kr.value, KeyRevocationValue::NotRevoked);
+}
+
+/// kl-005 K (chain): an attestation not in evidence leaves the signer
+/// unevaluable, so the stage is `unknown`.
+#[cfg(feature = "keyless")]
+#[test]
+fn kl_005_k_attestation_unavailable_is_unknown() {
+    let mut e = keyless_revocation_bundle(true);
+    e.contexts.remove(&ctx('e'));
+    let kr = key_revocation_of_b(&e, &accepting());
+    assert_eq!(kr.value, KeyRevocationValue::Unknown);
+    assert_eq!(kr.revocation_ctx_id.as_deref(), Some(ctx('d').as_str()));
+}
+
+/// §9.3 (0.5.0-draft.3): evidence that cannot be obtained is unavailable,
+/// not invalid: an attestation without its receipt, or another context
+/// supplied under the named `ctx_id`, leaves the revocation `unknown`.
+#[cfg(feature = "keyless")]
+#[test]
+fn kl_005_k_unobtainable_evidence_is_unknown() {
+    let mut e = keyless_revocation_bundle(true);
+    e.contexts.get_mut(&ctx('e')).unwrap().registry_receipt = None;
+    let kr = key_revocation_of_b(&e, &accepting());
+    assert_eq!(kr.value, KeyRevocationValue::Unknown);
+    assert_eq!(kr.revocation_ctx_id.as_deref(), Some(ctx('d').as_str()));
+    assert_eq!(kr.basis, None);
+
+    let mut e = keyless_revocation_bundle(true);
+    let other = e.contexts[&ctx('a')].clone();
+    e.contexts.insert(ctx('e'), other);
+    let kr = key_revocation_of_b(&e, &accepting());
+    assert_eq!(kr.value, KeyRevocationValue::Unknown);
+}
+
+/// §9.2 (0.5.0-draft.3): a registry-actor `retracted` event admitted on
+/// the attester's RFC-ACDP-0013 §10.3 event receipt counts, unsigned.
+#[cfg(feature = "keyless")]
+#[test]
+fn kl_008_d_receipted_registry_event_withdraws() {
+    let mut e = keyless_bundle(true);
+    let registry = Signer {
+        did: REGISTRY_DID.into(),
+        seed: REGISTRY_SEED,
+        key_id: format!("{REGISTRY_DID}#receipt-key-1"),
+    };
+    let mut ev = event(
+        &registry,
+        'e',
+        0,
+        LifecycleEventType::Retracted,
+        "2026-09-10T00:00:00.000Z",
+    );
+    ev.as_object_mut().unwrap().remove("signature");
+    let k = e.contexts.get_mut(&ctx('e')).unwrap();
+    k.event_receipts = Some(vec![event_receipt('e', &ev, 0, "2026-09-10T00:00:01.000Z")]);
+    k.lifecycle_events = Some(vec![ev]);
+    let n = run(&e, &accepting());
+    for p in [&n.latest, n.as_of.as_ref().unwrap()] {
+        let kr = p.stages.key_revocation.as_ref().unwrap();
+        assert_eq!(kr.value, KeyRevocationValue::Revoked);
+        assert_eq!(key(p).value, KeyValue::Revoked);
+    }
+}
+
+/// RFC-ACDP-0021 §6.3, §10: a lifecycle event signed with a keyless key
+/// is not admitted, so it never retracts the body.
+#[cfg(feature = "keyless")]
+#[test]
+fn keyless_signed_event_is_not_admitted() {
+    use acdp_types::lifecycle::LifecycleEvent;
+    let mut e = keyless_bundle(true);
+    let key_id = ephemeral().key_id(CONTROLLER).unwrap();
+    let ev = LifecycleEvent::new(
+        "00000000-0000-4000-8000-000000000097",
+        CtxId::parse(ctx('a')).unwrap(),
+        LifecycleEventType::Retracted,
+        at("2026-09-10T00:00:00.000Z"),
+        AgentDid::new(CONTROLLER),
+        None,
+    )
+    .unwrap();
+    // `sign_with` refuses a keyless key id; sign by hand as a rogue
+    // producer would.
+    assert!(ev
+        .clone()
+        .sign_with(SigningKey::from_bytes(&EPHEMERAL_SEED), &key_id)
+        .is_err());
+    let hash = ev.preimage_hash().unwrap();
+    let mut raw = serde_json::to_value(&ev).unwrap();
+    raw["signature"] = json!({
+        "algorithm": "ed25519",
+        "key_id": key_id,
+        "value": SigningKey::from_bytes(&EPHEMERAL_SEED).sign_string(hash.as_str()),
+    });
+    let a = e.contexts.get_mut(&ctx('a')).unwrap();
+    a.event_receipts = Some(vec![event_receipt(
+        'a',
+        &raw,
+        0,
+        "2026-09-10T00:00:01.000Z",
+    )]);
+    a.lifecycle_events = Some(vec![raw]);
+    let n = run(&e, &accepting());
+    for p in [&n.latest, n.as_of.as_ref().unwrap()] {
+        assert_ne!(
+            p.stages.retraction.as_ref().map(|r| r.value),
+            Some(RetractionValue::Retracted)
+        );
+    }
 }

@@ -1015,3 +1015,107 @@ async fn kl_009_unevaluable_keyless_revocation_is_unknown() {
     assert_eq!(chain, Outcome::Unknown);
     assert_eq!(ctx_id.as_deref(), Some(case.revocation.ctx_id.as_str()));
 }
+
+/// kl-005 L (0.5.0-draft.2): a keyless-signed revocation whose signer is
+/// definitively invalid is ignored, as is any revocation whose signature
+/// fails, in both verifiers.
+#[tokio::test]
+async fn kl_005_l_invalid_keyless_signer_is_ignored() {
+    let mut case = keyless_revocation_case(true);
+    // The signature is outside the content hash, so the receipt still
+    // binds the revocation; only its signature fails (§8.1 step 6).
+    case.revocation_ctx["body"]["signature"]["value"] =
+        json!(SigningKey::from_bytes(&[0x77; 32]).sign_string("x"));
+    assert_eq!(
+        client_outcome(&case, KeylessPolicy::attesters([REGISTRY_DID])).await,
+        Outcome::NotRevoked
+    );
+    assert_eq!(chain_outcome(&case, &[REGISTRY_DID]).0, Outcome::NotRevoked);
+}
+
+/// §9.3 (0.5.0-draft.3): a signer whose attestation cannot be obtained
+/// is unavailable, so the revocation is unknown, not ignored.
+#[tokio::test]
+async fn kl_005_k_unavailable_attestation_is_unknown() {
+    let case = keyless_revocation_case(true);
+    let h = harness().await;
+    // The attestation is not served.
+    h.serve(&case.revocation_ctx);
+    let policy = VerificationPolicy {
+        keyless: KeylessPolicy::attesters([REGISTRY_DID]),
+        revocations: RevocationPolicy::new(vec![])
+            .with_discovery(acdp::client::RevocationDiscovery::producer_signed_only()),
+        ..VerificationPolicy::default()
+    };
+    match verify(&h, &case.body_ctx, &policy).await {
+        Err(AcdpError::RevocationUnknown { reason, .. }) => {
+            assert_eq!(reason, acdp::client::UnknownReason::UnverifiableCandidate)
+        }
+        other => panic!("expected unknown, got {other:?}"),
+    }
+}
+
+/// Re-hash and re-sign `body` with `seed` and store it with a receipt.
+fn resealed(mut body: Body, seed: [u8; 32], fingerprint: &str) -> Value {
+    body.content_hash =
+        acdp::crypto::compute_content_hash(&serde_json::to_value(&body).unwrap()).unwrap();
+    body.signature.value = SigningKey::from_bytes(&seed).sign_string(body.content_hash.as_str());
+    let receipt = signer(REGISTRY_DID)
+        .mint(
+            &body.ctx_id,
+            &body.lineage_id,
+            AUTHORITY,
+            body.created_at,
+            &body.content_hash,
+            fingerprint,
+        )
+        .unwrap();
+    json!({
+        "body": body,
+        "registry_state": {"status": "active"},
+        "registry_receipt": receipt,
+    })
+}
+
+/// §6.2 (0.5.0-draft.2) presence rules: a keyless key id with no
+/// `key_attestation` is `attestation_invalid`; the member on a body
+/// whose key id is not keyless is `attestation_mismatch`.
+#[tokio::test]
+async fn kl_005_key_attestation_presence() {
+    let h = harness().await;
+    let fx = fixture("active");
+    h.serve(&fx.attestation_ctx);
+    let (mut body, _) = stored(&fx.body_req, fx.created_at, None, &fx.fingerprint, "active");
+    let reference = body
+        .extensions
+        .remove(acdp::types::keyless::KEY_ATTESTATION_FIELD)
+        .unwrap();
+    let ctx = resealed(body, EPHEMERAL_SEED, &fx.fingerprint);
+    assert_eq!(
+        reason(verify(&h, &ctx, &accepting()).await),
+        KeylessReason::AttestationInvalid
+    );
+
+    let req = Producer::new(
+        SigningKey::from_bytes(&CONTROLLER_SEED),
+        AgentDid::new(CONTROLLER),
+        format!("{CONTROLLER}#key-1"),
+    )
+    .publish_request()
+    .title("Signed by key-1")
+    .context_type(ContextType::Analysis)
+    .build()
+    .unwrap();
+    let (mut body, _) = stored(&req, fx.created_at, None, "", "active");
+    body.extensions.insert(
+        acdp::types::keyless::KEY_ATTESTATION_FIELD.into(),
+        reference,
+    );
+    let key1_fp =
+        fingerprint_ed25519(&SigningKey::from_bytes(&CONTROLLER_SEED).verifying_key_bytes());
+    let ctx = resealed(body, CONTROLLER_SEED, &key1_fp);
+    assert_eq!(
+        reason(verify(&h, &ctx, &accepting()).await),
+        KeylessReason::AttestationMismatch
+    );
+}

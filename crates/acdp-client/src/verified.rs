@@ -1262,6 +1262,12 @@ impl VerifiedContext {
         // offline, before any crypto or network work.
         acdp_verify::verify_registry_assigned_bindings(&ctx.body)?;
 
+        // RFC-ACDP-0021 §6.2, §12: an `acdp-consumer-keyless` consumer
+        // fails closed on a `key_attestation` beside a key id that is not
+        // keyless (`attestation_mismatch`), whatever the schema policy.
+        #[cfg(feature = "keyless")]
+        super::keyless::check_presence(&ctx.body)?;
+
         if policy.validate_body_schema {
             acdp_validation::validate_body(&ctx.body)?;
         }

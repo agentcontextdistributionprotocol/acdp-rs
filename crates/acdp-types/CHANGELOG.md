@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-types-v0.18.3...acdp-types-v0.19.0) - 2026-10-30
+
+### Added
+
+- *(keyless)* [**breaking**] typed issuer_unreachable and keyless_event_unsupported reasons ([#496](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/496))
+
 ## [0.18.2](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-types-v0.18.1...acdp-types-v0.18.2) - 2026-10-30
 
 No enum change: no new `KeyAuthorization` or `RevocationTrustClass` variant (and no new `KeylessReason` or `AcdpError` variant). `acdp-chain`'s `Options::keyless_attesters` is deprecated in favour of `pinned.keyless_attesters`.

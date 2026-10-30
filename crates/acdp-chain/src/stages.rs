@@ -69,9 +69,13 @@ pub(crate) struct Basic {
     pub key: KeyStage,
     /// The fingerprint of the located producer key.
     pub fingerprint: Option<String>,
-    /// A keyless node's attestation, when it checked (RFC-ACDP-0021).
+    /// A keyless node's attestation, when it checked through §8.1 steps
+    /// 1–5 (RFC-ACDP-0021).
     #[cfg(feature = "keyless")]
     pub keyless: Option<crate::keyless::Attested>,
+    /// Why a keyless node's signer did not check through steps 1–3.
+    #[cfg(feature = "keyless")]
+    pub keyless_failure: Option<crate::keyless::Unattested>,
 }
 
 impl Basic {
@@ -133,13 +137,12 @@ impl Engine<'_, '_> {
 
         // RFC-ACDP-0021 §10: a keyless key is located by its attestation.
         #[cfg(feature = "keyless")]
-        let attested = acdp_types::keyless::is_keyless_key_id(&body.signature.key_id)
-            .then(|| self.keyless_attested(body, pass));
+        let attested = Self::is_keyless_node(body).then(|| self.keyless_attested(body, pass));
         let check = match () {
             #[cfg(feature = "keyless")]
             () if attested.is_some() => match attested.as_ref().unwrap() {
                 Ok(a) => Ok(a.key_check()),
-                Err(m) => Err(*m),
+                Err(u) => Err(u.missing()),
             },
             () => self.keys.check(
                 &body.signature,
@@ -210,43 +213,7 @@ impl Engine<'_, '_> {
         };
 
         let (signature, key_stage) = match check {
-            // §7.6: a key that cannot resolve whatever the evidence is
-            // unresolvable in both passes, and so is the signature.
-            Err(Missing::Malformed) => (
-                Some(SignatureStage {
-                    value: SignatureValue::Unresolvable,
-                    basis: None,
-                }),
-                KeyStage {
-                    value: KeyValue::Unresolvable,
-                    basis: None,
-                    evidence_time: None,
-                    reason: None,
-                },
-            ),
-            Err(Missing::NoEvidence) => match pass {
-                PassAt::AsOf(_) => (
-                    None,
-                    KeyStage {
-                        value: KeyValue::Unknown,
-                        basis: None,
-                        evidence_time: None,
-                        reason: pass.no_evidence_reason(),
-                    },
-                ),
-                PassAt::Latest => (
-                    Some(SignatureStage {
-                        value: SignatureValue::Unresolvable,
-                        basis: None,
-                    }),
-                    KeyStage {
-                        value: KeyValue::Unresolvable,
-                        basis: None,
-                        evidence_time: None,
-                        reason: None,
-                    },
-                ),
-            },
+            Err(m) => missing_stages(m, pass),
             Ok(c) => {
                 let signature = SignatureStage {
                     value: if c.valid {
@@ -282,14 +249,27 @@ impl Engine<'_, '_> {
                 (Some(signature), key_stage)
             }
         };
+        // RFC-ACDP-0021 §10: steps 4–5 place the signature; any other
+        // failure on present evidence is unresolvable in both passes.
         #[cfg(feature = "keyless")]
-        let (signature, key_stage, keyless) = match attested {
-            Some(Ok(a)) => {
-                let (signature, key_stage) = self.keyless_stages(body, &a, receipt.as_ref(), pass);
-                let placed = key_stage.value != KeyValue::Unresolvable;
-                (signature, key_stage, placed.then_some(a))
-            }
-            _ => (signature, key_stage, None),
+        let (signature, key_stage, keyless, keyless_failure) = match attested {
+            Some(Ok(a)) => match receipt
+                .as_ref()
+                .filter(|r| Self::keyless_placed(body, &a, Some(r)))
+            {
+                Some(r) => {
+                    let (signature, key_stage) = self
+                        .keyless_stages(body, &a, r, pass)
+                        .unwrap_or_else(|m| missing_stages(m, pass));
+                    (signature, key_stage, Some(a), None)
+                }
+                None => {
+                    let (signature, key_stage) = missing_stages(Missing::Malformed, pass);
+                    (signature, key_stage, None, None)
+                }
+            },
+            Some(Err(u)) => (signature, key_stage, None, Some(u)),
+            None => (signature, key_stage, None, None),
         };
 
         Basic {
@@ -311,6 +291,8 @@ impl Engine<'_, '_> {
             fingerprint,
             #[cfg(feature = "keyless")]
             keyless,
+            #[cfg(feature = "keyless")]
+            keyless_failure,
         }
     }
 
@@ -438,16 +420,15 @@ impl Engine<'_, '_> {
             if !dated {
                 continue;
             }
-            if !strict {
-                if let Some(pending) = self.unevaluated_keyless(key, pc, b) {
-                    out.push(pending);
+            // RFC-ACDP-0021 §9.3: a keyless-signed revocation is judged by
+            // its signer's §8.1 steps 1–7, not by the key stage.
+            if acdp_types::keyless::is_keyless_key_id(&pc.body.signature.key_id) {
+                if let Some(r) = self.keyless_signed_revocation(key, pc, b, pass) {
+                    out.push(r);
                 }
                 continue;
             }
-            // RFC-ACDP-0021 §9.3: only an org-wide keyless key may sign a
-            // revocation.
-            #[cfg(feature = "keyless")]
-            if b.keyless.as_ref().is_some_and(|a| !a.attestation.org_wide) {
+            if !strict {
                 continue;
             }
             let Ok(revocation) = KeyRevocation::from_body(&pc.body) else {
@@ -473,31 +454,45 @@ impl Engine<'_, '_> {
         out
     }
 
-    /// A key-revocation context signed by a keyless key that did not
-    /// verify in this pass: carried as `unevaluated` when it is present
-    /// with an intact hash and speaks for its producer. Without the
-    /// `keyless` feature every keyless-signed revocation lands here.
-    fn unevaluated_keyless(
+    /// A key-revocation context signed by a keyless key (RFC-ACDP-0021
+    /// §9.3), when it is admitted: applied (org-wide signer that checks),
+    /// or unevaluated (no RFC-ACDP-0021 support, an unaccepted attester,
+    /// an attestation not in evidence), which never applies but makes a
+    /// stage naming the key `unknown`. A definitively invalid signer, or
+    /// a non-org-wide one, gives `None`: ignored.
+    fn keyless_signed_revocation(
         &self,
         key: &str,
         pc: &ParsedContext<'_>,
         b: &Basic,
+        pass: PassAt,
     ) -> Option<AppliedRevocation> {
-        if !acdp_types::keyless::is_keyless_key_id(&pc.body.signature.key_id)
-            || b.presence.value != PresenceValue::Present
+        if b.presence.value != PresenceValue::Present
             || b.content_hash.value != ContentHashValue::Ok
+            || b.identity.value == IdentityValue::Mismatch
         {
             return None;
         }
         let revocation = KeyRevocation::from_body(&pc.body).ok()?;
-        (revocation.trust_class == RevocationTrustClass::ProducerSigned
-            && revocation.publisher == revocation.revoked_key_controller)
-            .then(|| AppliedRevocation {
+        if revocation.trust_class != RevocationTrustClass::ProducerSigned
+            || revocation.publisher != revocation.revoked_key_controller
+        {
+            return None;
+        }
+        #[cfg(feature = "keyless")]
+        {
+            self.keyless_revocation(key, pc, b, pass)
+        }
+        #[cfg(not(feature = "keyless"))]
+        {
+            let _ = pass;
+            Some(AppliedRevocation {
                 ctx_id: key.to_string(),
                 revocation,
                 evidence_time: b.receipt.as_ref().map(|r| r.created_at),
                 unevaluated: true,
             })
+        }
     }
 
     /// The full pass over one present node: §7.7–§7.9 on top of
@@ -1142,5 +1137,38 @@ fn finish(stages: Stages, undated: bool) -> Pass {
         verdict,
         caveats,
         stages,
+    }
+}
+
+/// §7.6: the `signature` and `key` stages for a key that could not be
+/// located. One that cannot resolve whatever the evidence is
+/// unresolvable in both passes, and so is the signature; missing
+/// evidence is `unknown` in the as-of pass, with the signature omitted.
+fn missing_stages(m: Missing, pass: PassAt) -> (Option<SignatureStage>, KeyStage) {
+    let unresolvable = || {
+        (
+            Some(SignatureStage {
+                value: SignatureValue::Unresolvable,
+                basis: None,
+            }),
+            KeyStage {
+                value: KeyValue::Unresolvable,
+                basis: None,
+                evidence_time: None,
+                reason: None,
+            },
+        )
+    };
+    match (m, pass) {
+        (Missing::NoEvidence, PassAt::AsOf(_)) => (
+            None,
+            KeyStage {
+                value: KeyValue::Unknown,
+                basis: None,
+                evidence_time: None,
+                reason: pass.no_evidence_reason(),
+            },
+        ),
+        _ => unresolvable(),
     }
 }

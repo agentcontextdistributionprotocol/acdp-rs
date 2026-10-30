@@ -110,6 +110,12 @@ impl BundleKeys {
 
     /// The DID document chosen for `did` in a pass, with its basis and
     /// evidence time. `None` when there is no evaluable snapshot.
+    /// Whether any snapshot of `did` is selectable (≤ `at` when given).
+    #[cfg(feature = "keyless")]
+    pub(crate) fn has_snapshot(&self, did: &str, at: Option<DateTime<Utc>>) -> bool {
+        self.select(did, at).is_some()
+    }
+
     pub(crate) fn document(
         &self,
         did: &str,

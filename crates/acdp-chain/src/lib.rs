@@ -146,13 +146,16 @@ fn run<S: AsRef<str>>(
     }
     let parsed = evidence.parse()?;
     let pinned = options.pinned.clone().unwrap_or_default().normalized();
+    // RFC-ACDP-0021 §10: accepted attesters come from `pinned` only.
+    #[cfg(feature = "keyless")]
+    let keyless_attesters = pinned.keyless_attesters.clone();
     let engine = Engine {
+        #[cfg(feature = "keyless")]
+        keyless_attesters,
         parsed: &parsed,
         keys: BundleKeys::new(&parsed, &pinned),
         pinned,
         require_attested_events: options.require_attested_events,
-        #[cfg(feature = "keyless")]
-        keyless_attesters: options.keyless_attesters.clone(),
     };
 
     let walk = walk::walk(&roots, &parsed, options.limits, should_stop);

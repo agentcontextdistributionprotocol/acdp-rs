@@ -1032,6 +1032,15 @@ token rides on the message. Read it with `KeylessReason::of(&err)`:
 The registry-side tokens of `POST /key-attestations` (`issuer_not_accepted`,
 `pop_invalid`, …) come back on the wire error and parse the same way.
 
+**Presence rules (§6.2).** A keyless key id with no `key_attestation` fails
+with `attestation_invalid`. A `key_attestation` on a body whose key id is
+not keyless fails with `attestation_mismatch`, even with the key in the DID
+document.
+
+**Lifecycle events (§6.3).** A keyless key never signs an RFC-ACDP-0013
+event: `LifecycleEvent::sign_with` refuses a keyless key id
+(`keyless_event_unsupported`), and a hand-signed one is not admitted.
+
 **Keyless-signed revocations (§9.3).** Revocation discovery sets aside a
 candidate signed by a keyless key. It then verifies that key through §8.1,
 steps 1–7, using the same `VerificationPolicy.keyless` attesters as for
@@ -1040,26 +1049,43 @@ bodies. The outcome depends on the attestation:
 - **Org-wide:** the revocation counts as producer-signed and applies.
 - **Not org-wide:** it never applies, and is reported in
   `revocation_hints()` (`kl-005` G).
-- **Cannot be evaluated** (built without the `keyless` feature, attester
-  not accepted, attestation doesn't verify): the verdict for the key it
-  names is `unknown` (`unverifiable_candidate`), never not-revoked. Under
-  `FailClosed` this is `RevocationUnknown`.
+- **Cannot be evaluated** (built without the `keyless` feature, the
+  attester is not accepted, or the evidence is *unavailable*): the verdict
+  for the key it names is `unknown` (`unverifiable_candidate`), never
+  not-revoked. Under `FailClosed` this is `RevocationUnknown`. Evidence is
+  unavailable when it cannot be obtained: the attestation, its receipt or
+  the attester's DID document, or the wrong attestation was served.
+- **Definitively invalid** (the obtained attestation fails its hash,
+  signature, receipt or §5.3 checks, steps 3–6 fail, or the attestation is
+  withdrawn): the revocation is ignored, as is any revocation whose
+  signature fails (`kl-005` L).
 
 `find_revocations_verdict` accepts no keyless attester. So does the
 standalone `find_revocations` family, which returns
 `RevocationCandidateUnverifiable` for such a candidate. `acdp-chain`
 applies the same rules: when it cannot evaluate such a revocation, the
-`key_revocation` stage is `unknown` and its `revocation_ctx_id` names the
-revocation.
+`key_revocation` stage is `{value: unknown, revocation_ctx_id}` (the lowest
+such ctx_id), with no basis or evidence_time (`kl-008` F). `revoked` and
+`unplaceable` still win over it.
 
 **Chains (§10).** `acdp-chain` with the `keyless` feature reads the
-attestation from the bundle's `contexts`, like a revocation body. Set the
-accepted attesters with `Options::with_keyless_attesters`. The `key` stage
-is `current` or `historical_receipt_attested` with basis `registry`. An
-attestation missing from the bundle gives `unresolvable` in the latest
-pass and `unknown` (`no_evidence_at_as_of`) in the as-of pass. An admitted
-retraction of the attestation shows up in the `key_revocation` stage as
-`revoked`.
+attestation from the bundle's `contexts`, like a revocation body. The
+accepted attesters come only from `pinned.keyless_attesters`, so
+`options_digest` covers them; `Options::with_keyless_attesters` sets it.
+No trust list is consulted inside `verify_chain`: evaluate the lists first
+and pin the registry DIDs they accept. (The `Options::keyless_attesters`
+field is deprecated and a non-empty value is refused.) The `key` stage is
+`current` or `historical_receipt_attested` with basis `registry` and
+`evidence_time` = the body receipt's `created_at`. A forged signature is
+`signature: invalid` with the key stage as located.
+
+An attestation missing from the bundle, not admitted at T, or with no
+controller DID-document snapshot selectable at T gives `unresolvable` in
+the latest pass and `unknown` (`no_evidence_at_as_of`) in the as-of pass.
+Any other failure, including a `key_attestation` that breaks the presence
+rules, gives `key` and `signature` `unresolvable`. An admitted retraction
+of the attestation (signed by the attester or admitted on its event
+receipt) shows up in the `key_revocation` stage as `revoked`.
 
 ## Fetching data references
 

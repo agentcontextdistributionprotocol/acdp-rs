@@ -314,6 +314,43 @@ fn kl_001_proof_of_possession() {
     );
 }
 
+/// kl-001 vector 6 (0.5.0-draft.2): an ecdsa-p256 proof of possession is
+/// the 64-byte `r||s` form; the same signature DER-encoded is rejected
+/// (§5.1). Verify-only: ECDSA signatures are not deterministic.
+#[test]
+fn kl_001_proof_of_possession_p256() {
+    let Some(fx) = kl_001() else { return };
+    let v = vector(&fx, "pop_p256");
+    let exp = &v["expected"];
+    let kp = &fx["p256_test_keypair"];
+    let jwk: Jwk = serde_json::from_value(kp["public_key_jwk"].clone()).unwrap();
+    assert_eq!(jwk.algorithm().unwrap(), "ecdsa-p256");
+    assert_eq!(jwk.thumbprint().unwrap(), kp["jwk_thumbprint"]);
+    assert_eq!(jwk.fingerprint().unwrap(), kp["key_fingerprint"]);
+    let token = v["token"].as_str().unwrap();
+    let p = &v["pop_preimage"];
+    assert_eq!(token_hash(token), p["token_hash"]);
+    assert_eq!(p["key_fingerprint"], kp["key_fingerprint"]);
+    let pre = pop_preimage(
+        p["controller"].as_str().unwrap(),
+        p["registry_did"].as_str().unwrap(),
+        p["token_hash"].as_str().unwrap(),
+        p["key_fingerprint"].as_str().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(pre, exp["pop_canonical_form"].as_str().unwrap());
+    let p1363 = v["pop_value_base64"].as_str().unwrap();
+    let der = v["pop_value_der_base64"].as_str().unwrap();
+    assert_eq!(exp["p1363_accepted"], true);
+    assert_eq!(exp["der_rejected"], true);
+    jwk.verify("ecdsa-p256", p1363, &pre)
+        .expect("the r||s form verifies");
+    assert!(
+        jwk.verify("ecdsa-p256", der, &pre).is_err(),
+        "the DER form is rejected"
+    );
+}
+
 /// kl-001 vector 4: the §8.1/§8.2 key-status table, all 21 cases.
 #[test]
 fn kl_001_key_status_table() {
@@ -495,7 +532,7 @@ fn kl_fixtures_each_have_tests() {
     const BOUND: &[(&str, &str)] = &[
         (
             "kl-001",
-            "keyless::kl_001_{attestation_body,keyless_body,proof_of_possession,key_status_table,supersession_table}",
+            "keyless::kl_001_{attestation_body,keyless_body,proof_of_possession,proof_of_possession_p256,key_status_table,supersession_table}",
         ),
         (
             "kl-002",

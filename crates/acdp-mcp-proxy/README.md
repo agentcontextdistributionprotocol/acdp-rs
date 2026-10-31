@@ -19,8 +19,13 @@ The signature means *the operator observed this call and this result*. It does *
 
 ## Install and run
 
+The crate is not on crates.io yet, so build it from a checkout of
+[acdp-rs](https://github.com/agentcontextdistributionprotocol/acdp-rs). Once it is
+published, `cargo install acdp-mcp-proxy` will replace the first two lines.
+
 ```bash
-cargo install acdp-mcp-proxy
+cargo build --release -p acdp-mcp-proxy
+export PATH="$PWD/target/release:$PATH"
 acdp-mcp-proxy --config proxy.json --print-did   # the agent_id your records carry
 ```
 

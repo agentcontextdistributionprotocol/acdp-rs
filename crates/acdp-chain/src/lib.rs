@@ -12,9 +12,11 @@
 //! [`ChainVerdict`] (§9.3), whose `as_of_digest` is the value to seal
 //! at T: it stays fixed as evidence dated after T accumulates.
 //!
-//! The online collector (`collect_evidence`, `verify_chain_online`)
-//! lives in `acdp-client`; it fetches first, then runs this same
-//! function over what it collected.
+//! There is no online collector: the caller assembles the
+//! `acdp-evidence/1` bundle (contexts, DID documents, receipts,
+//! revocations) and parses it with [`Evidence::from_value`]. To also
+//! evaluate trust lists, use [`verify_chain_with_trust`] or
+//! [`verify_chain_with_trust_policy`]; the chain verdict is the same.
 //!
 //! ```no_run
 //! use acdp_chain::{verify_chain, Evidence, Options};

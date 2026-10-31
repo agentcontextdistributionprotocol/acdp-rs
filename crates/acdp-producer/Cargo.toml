@@ -13,8 +13,9 @@ categories  = ["web-programming", "cryptography"]
 rust-version = "1.87"
 
 [features]
-# RFC-ACDP-0021 keyless signing (0.5.0 Draft): ephemeral keys, the
-# attestation request and its proof of possession, `Producer::keyless`.
+# RFC-ACDP-0021 keyless signing: ephemeral keys and `Producer::keyless`
+# (Final at 0.5.0), and the attestation request with its proof of
+# possession (0.5.0 Draft).
 keyless = []
 
 [dependencies]

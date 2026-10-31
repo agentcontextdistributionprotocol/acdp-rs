@@ -739,7 +739,7 @@ impl RegistryClient {
     }
 }
 
-// ── Keyless signing (RFC-ACDP-0021, 0.5.0 Draft) ─────────────────────────────
+// ── Keyless signing (RFC-ACDP-0021 §5.1/§5.4, 0.5.0 Draft) ───────────────────
 
 #[cfg(feature = "keyless")]
 impl RegistryClient {

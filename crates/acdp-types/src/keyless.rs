@@ -1,4 +1,5 @@
-//! Keyless signing — RFC-ACDP-0021 (0.5.0, Draft).
+//! Keyless signing — RFC-ACDP-0021 (0.5.0; Final for the consumer side,
+//! the registry side and its request/capabilities types Draft).
 //!
 //! A workload signs bodies with an ephemeral key that a registry has
 //! attested for the producer DID (the *controller*) after checking the

@@ -1,4 +1,4 @@
-//! Keyless-signing reason tokens (RFC-ACDP-0021 §13.3, 0.5.0 Draft).
+//! Keyless-signing reason tokens (RFC-ACDP-0021 §13.3, Final at 0.5.0).
 //!
 //! RFC-ACDP-0021 adds no wire error code and this library adds no
 //! [`AcdpError`] variant for it. A refusal reuses the variant of an

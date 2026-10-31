@@ -968,7 +968,7 @@ key, meaning `revoked` or `unplaceable` (spec 25f8d3a). An `unknown` status
 The trust step never changes the chain verdict. Refusing a chain because of
 an untrusted node is consumer policy, for example `TrustReport::all_trusted`.
 
-## Keyless-signed bodies (RFC-ACDP-0021, Draft)
+## Keyless-signed bodies (RFC-ACDP-0021, Final at 0.5.0)
 
 A keyless body is signed by a short-lived key that a registry attested
 for a workload identity (an OIDC token or a SPIFFE SVID). The key id is

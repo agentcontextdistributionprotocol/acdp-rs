@@ -132,7 +132,7 @@ pub struct VerificationPolicy {
     pub witness_quorum: Option<WitnessQuorumPolicy>,
 
     /// Which registries are accepted as attesters of keyless keys
-    /// (RFC-ACDP-0021 §11, 0.5.0 Draft). The default accepts none, so a
+    /// (RFC-ACDP-0021 §11, Final at 0.5.0). The default accepts none, so a
     /// keyless-signed body fails closed with `untrusted_attester`. Read
     /// only in builds with the `keyless` feature; without it every
     /// keyless-signed body fails closed in key resolution.

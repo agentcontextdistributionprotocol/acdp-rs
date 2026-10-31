@@ -214,7 +214,11 @@ builder.omit_acdp_version()   // drops the field, matching the 0.1.x wire form
 > round-trip tests will surprise you. New lineages should keep the explicit
 > default.
 
-## Keyless signing (RFC-ACDP-0021, Draft)
+## Keyless signing (RFC-ACDP-0021)
+
+The key id and `key_attestation` field (§6.1–§6.2) are Final at 0.5.0. The
+attestation request, `POST /key-attestations` (§5.1), is on the registry
+side and remains Draft.
 
 With the `keyless` feature, a workload with no long-lived key can sign
 under its OIDC or SPIFFE identity:

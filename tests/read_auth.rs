@@ -396,3 +396,103 @@ async fn bearer_static_provider_is_asked_per_read_and_never_for_did_hosts() {
         assert!(seen.iter().all(Option::is_none), "{prefix}: {seen:?}");
     }
 }
+
+/// RFC-ACDP-0008 §6.2 (spec #119): a `bearer_static` token goes only to
+/// the issuing registry's origin, never across a cross-origin redirect.
+/// The client refuses a cross-origin redirect before following it
+/// (RFC-ACDP-0006 §7.5), so the other origin never sees a request at all;
+/// a same-origin redirect is followed and keeps the token.
+#[tokio::test]
+async fn bearer_static_token_never_follows_a_cross_origin_redirect() {
+    use axum::{http::StatusCode, response::IntoResponse, Router};
+    use common::TlsTestServer;
+    use std::sync::Mutex;
+
+    type Seen = Arc<Mutex<Vec<(String, Option<String>)>>>;
+    fn record(seen: &Seen, req: &axum::extract::Request) {
+        let auth = req
+            .headers()
+            .get(axum::http::header::AUTHORIZATION)
+            .map(|v| v.to_str().unwrap().to_string());
+        seen.lock()
+            .unwrap()
+            .push((req.uri().path().to_string(), auth));
+    }
+    fn not_found() -> axum::response::Response {
+        (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({"error": {"code": "not_found", "message": "x"}})),
+        )
+            .into_response()
+    }
+
+    let other_seen: Seen = Arc::default();
+    let other = TlsTestServer::start(Router::new().fallback({
+        let seen = other_seen.clone();
+        move |req: axum::extract::Request| {
+            let seen = seen.clone();
+            async move {
+                record(&seen, &req);
+                not_found()
+            }
+        }
+    }))
+    .await;
+    let other_base = other.base_url();
+
+    let home_seen: Seen = Arc::default();
+    let home = TlsTestServer::start(Router::new().fallback({
+        let seen = home_seen.clone();
+        move |req: axum::extract::Request| {
+            let (seen, other_base) = (seen.clone(), other_base.clone());
+            async move {
+                record(&seen, &req);
+                let to = match req.uri().path() {
+                    "/contexts/same" => "/contexts/final".to_string(),
+                    "/contexts/cross" => format!("{other_base}/contexts/final"),
+                    _ => return not_found(),
+                };
+                (StatusCode::FOUND, [(axum::http::header::LOCATION, to)]).into_response()
+            }
+        }
+    }))
+    .await;
+
+    let client =
+        RegistryClient::with_test_endpoint(&home.base_url(), home.addr, &home.root_cert_pem)
+            .unwrap()
+            .with_auth_provider(Arc::new(StaticBearerToken::new(
+                home.host(),
+                token("static-origin-bound"),
+            )));
+    let bearer = Some("Bearer static-origin-bound".to_string());
+
+    // Same origin: followed, token kept on both hops.
+    let err = client
+        .retrieve(&acdp::types::CtxId("same".into()))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AcdpError::NotFound(_)), "{err:?}");
+    assert_eq!(
+        *home_seen.lock().unwrap(),
+        vec![
+            ("/contexts/same".to_string(), bearer.clone()),
+            ("/contexts/final".to_string(), bearer.clone()),
+        ]
+    );
+
+    // Cross origin (same host, other port): refused before following.
+    let err = client
+        .retrieve(&acdp::types::CtxId("cross".into()))
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("cross-authority redirect"),
+        "{err:?}"
+    );
+    assert!(
+        other_seen.lock().unwrap().is_empty(),
+        "the other origin MUST NOT be contacted: {:?}",
+        other_seen.lock().unwrap()
+    );
+}

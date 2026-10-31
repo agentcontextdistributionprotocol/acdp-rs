@@ -20,15 +20,19 @@ registry receipts, offline `did:key` verification, a transparency log,
 witness cosigning, key revocation, and lifecycle/retraction events.
 
 > Spec: [agentcontextdistributionprotocol/agentcontextdistributionprotocol](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol)
-> — RFC-ACDP-0001 through 0018 (0009 reserved; see the spec's
+> — RFC-ACDP-0001 through 0021 (0009 reserved; see the spec's
 > [RFC index](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/README.md)).
 > This crate implements 0001–0008 (core + retrieval/lineage/search), 0010
 > (registry receipts), 0011 (lineage-head receipts), 0012 (transparency log),
 > 0013 (lifecycle/retraction), 0014 (key revocation), 0015 (witness
 > cosigning), 0017 (offline chain verification, Final at 0.5.0; its §10–§11
-> registry event and lineage-member receipts remain Draft), and, on the Draft
-> line, 0016 (typed external anchors) and 0018 (retraction recall: the changes
-> feed, change hints and the `acdp-consumer-recall` profile).
+> registry event and lineage-member receipts remain Draft), 0019 (MCP
+> tool-result provenance, Final at 0.5.0; the proxy obligations in §5, §7 and
+> the §10 `acdp-producer-mcp-proxy` profile remain Draft), 0020 (registry trust
+> lists, Final at 0.5.0), and, on the Draft line, 0016 (typed external
+> anchors), 0018 (retraction recall: the changes feed, change hints and the
+> `acdp-consumer-recall` profile) and 0021 (keyless signing, behind the
+> `keyless` feature).
 
 This is a **Cargo workspace**: the umbrella `acdp` crate is a thin facade that
 re-exports a fine-grained set of crates under [`crates/`](./crates/)
@@ -119,7 +123,8 @@ The `acdp` binary is its own crate (`cargo run -p acdp-cli -- …`). Offline
 `did:key` verification and the receipt types work under
 `--no-default-features` (no HTTP stack).
 
-The MCP signing proxy of RFC-ACDP-0019 (0.5.0 Draft) is the
+The MCP signing proxy of RFC-ACDP-0019 (Final at 0.5.0; the proxy
+obligations in §5, §7 and §10 remain Draft) is the
 `acdp-mcp-proxy` binary (`cargo install acdp-mcp-proxy`). It relays any
 stdio MCP server unchanged and publishes a signed `acdp:mcp-tool-result`
 record of every `tools/call`; see

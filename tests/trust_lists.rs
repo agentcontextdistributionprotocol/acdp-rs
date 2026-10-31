@@ -1,4 +1,4 @@
-//! Registry trust lists (RFC-ACDP-0020, 0.5.0 Draft) — trust-001..006.
+//! Registry trust lists (RFC-ACDP-0020, Final at 0.5.0) — trust-001..006.
 //!
 //! - trust-001 is executed: the golden list's canonical form,
 //!   `content_hash` and Ed25519 signature, every row of the evaluation

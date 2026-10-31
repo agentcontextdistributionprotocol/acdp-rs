@@ -909,7 +909,7 @@ feed's **own** cursor and never the hint's `head_cursor`. Registries sign
 with `sign_hint`. `SubscriptionRequest`, `Subscription` and `ChangeHint`
 are the closed wire types.
 
-## Registry trust lists (RFC-ACDP-0020, Draft)
+## Registry trust lists (RFC-ACDP-0020, Final at 0.5.0)
 
 A trust list is a signed body of type `acdp:trust-list`. Its issuer is a DID
 the consumer pins in configuration. The list names the registries the

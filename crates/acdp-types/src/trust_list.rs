@@ -1,4 +1,4 @@
-//! Registry trust lists — RFC-ACDP-0020 (0.5.0, Draft).
+//! Registry trust lists — RFC-ACDP-0020 (Final at 0.5.0).
 //!
 //! A trust list is an ordinary body of type `acdp:trust-list` whose
 //! `metadata` is an `acdp-trust-list/1` object ([`TrustList`]). This

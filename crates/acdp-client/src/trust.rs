@@ -1,4 +1,4 @@
-//! Registry trust lists online (RFC-ACDP-0020, 0.5.0 Draft): the
+//! Registry trust lists online (RFC-ACDP-0020, Final at 0.5.0): the
 //! consumer profile `acdp-consumer-trust-list` over [`VerifiedContext`].
 //!
 //! [`TrustLists`] holds the consumer's issuer pins, every list version

@@ -1,4 +1,4 @@
-//! # acdp-mcp-proxy — the MCP signing proxy (RFC-ACDP-0019, Draft)
+//! # acdp-mcp-proxy — the MCP signing proxy (RFC-ACDP-0019; proxy obligations Draft)
 //!
 //! Sits between an MCP client and any stdio MCP server, relays every
 //! message unchanged, and for each `tools/call` publishes one signed

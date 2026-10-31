@@ -1,6 +1,6 @@
 # acdp-mcp-proxy
 
-The MCP signing proxy of [RFC-ACDP-0019](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0019-mcp-tool-result-provenance.md) (0.5.0 **Draft**), profile `acdp-producer-mcp-proxy`.
+The MCP signing proxy of [RFC-ACDP-0019](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0019-mcp-tool-result-provenance.md) (Final at 0.5.0, except the proxy obligations in §5, §7 and the §10 profile `acdp-producer-mcp-proxy`, which remain **Draft**).
 
 It sits between an MCP client and any stdio MCP server and relays every message unchanged. For each `tools/call` it publishes one signed `acdp:mcp-tool-result` body to an ACDP registry, signed with **your** key. It then returns the result with one key added to `_meta`:
 

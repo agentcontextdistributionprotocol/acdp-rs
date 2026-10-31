@@ -120,8 +120,3 @@ version_group = "acdp"
 [[package]]
 name = "acdp-mcp-proxy"
 version_group = "acdp"
-# Trusted Publishing cannot create a crate. Until the owner publishes
-# acdp-mcp-proxy once by hand and adds its trusted publisher on crates.io,
-# release-plz bumps its version but does not try to publish it (a failed
-# create would abort the rest of the release run).
-publish = false

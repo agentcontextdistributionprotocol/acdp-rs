@@ -190,20 +190,37 @@ fn data_period_rejects_unknown_field() {
     );
 }
 
-/// BUG-06 / schema-010 — the closed `limits` sub-object rejects an
-/// unknown field even though the capabilities document is open at its
-/// top level.
+/// schema-010 — since 0.20.0 the `limits` sub-object is open: an unknown
+/// field is tolerated and kept in `extensions`, and survives a round trip.
 #[test]
-fn limits_rejects_unknown_field() {
-    let bad = json!({
+fn limits_tolerates_and_keeps_unknown_field() {
+    let doc = json!({
         "max_payload_bytes": 1_048_576u64,
         "max_embedded_bytes": 65_536u64,
         "extra": "x"
     });
-    assert!(
-        serde_json::from_value::<Limits>(bad).is_err(),
-        "schema-010: an unknown limits field MUST be rejected"
-    );
+    let limits: Limits = serde_json::from_value(doc.clone())
+        .expect("schema-010: an unknown limits field MUST be tolerated");
+    assert_eq!(limits.extensions.get("extra"), Some(&json!("x")));
+    assert_eq!(serde_json::to_value(&limits).unwrap(), doc);
+}
+
+/// Opening `limits` does not loosen its known fields: a wrong type or an
+/// explicit `null` on a known key is still rejected.
+#[test]
+fn limits_known_fields_stay_typed() {
+    for bad in [
+        json!({"max_payload_bytes": "big", "max_embedded_bytes": 65_536u64}),
+        json!({"max_payload_bytes": 1_048_576u64, "max_embedded_bytes": 65_536u64,
+               "max_reads_per_minute": null}),
+        json!({"max_payload_bytes": 1_048_576u64, "max_embedded_bytes": 65_536u64,
+               "max_reads_per_minute": 1.5}),
+    ] {
+        assert!(
+            serde_json::from_value::<Limits>(bad.clone()).is_err(),
+            "{bad}"
+        );
+    }
 }
 
 // ── Absent-vs-null on Body / PublishRequest bare-typed Option fields ────────

@@ -88,13 +88,13 @@ impl CapabilitiesDocument {
 
 /// Resource limits declared by the registry.
 ///
-/// The capabilities document is OPEN at the top level, but `limits` is a
-/// CLOSED sub-object (`additionalProperties: false`): new limit keys are
-/// added by a spec version bump, not by registries inventing fields, so
-/// `deny_unknown_fields` rejects an unknown key (RFC-ACDP-0007 §3.3.1,
-/// conformance fixture schema-010).
+/// Since 0.20.0 `limits` is OPEN, like the capabilities document around
+/// it (RFC-ACDP-0007 §3.3.1, fixture `schema-010`). An unknown key is
+/// tolerated and kept verbatim in [`Self::extensions`], so a limit added
+/// by a later spec revision never locks out a deployed consumer. Known
+/// keys are still type-checked here and range-checked by
+/// `acdp_validation::validate_capabilities`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Limits {
     /// Maximum total publish request size in bytes.
     pub max_payload_bytes: u64,
@@ -193,4 +193,10 @@ pub struct Limits {
         deserialize_with = "crate::serde_helpers::de_present"
     )]
     pub max_anonymous_reads_per_minute: Option<u64>,
+
+    /// Forward-compatible extensions: any `limits` key this version does
+    /// not know appears here verbatim (0.20.0+; earlier versions rejected
+    /// it).
+    #[serde(flatten)]
+    pub extensions: serde_json::Map<String, serde_json::Value>,
 }

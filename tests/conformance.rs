@@ -951,13 +951,25 @@ fn closed_schema_conformance_fixtures() {
                     );
                 }
             }
-            // schema-010 — `limits` is a closed sub-object inside the
-            // otherwise-open capabilities document (BUG-06).
+            // schema-010 — `limits` is open (spec decision 2026-10-31): an
+            // unknown key is tolerated and kept in `Limits::extensions`.
             "schema-010-capabilities-limits-extra-field.json" => {
-                if let Some(limits) = v.pointer("/input/response_body_excerpt/limits") {
-                    let r: Result<acdp::types::Limits, _> = serde_json::from_value(limits.clone());
-                    assert!(r.is_err(), "{name}: unknown limits field MUST be rejected");
-                }
+                let limits = v
+                    .pointer("/input/response_body/limits")
+                    .or_else(|| v.pointer("/input/response_body_excerpt/limits"))
+                    .unwrap_or_else(|| panic!("{name}: no limits object"));
+                assert!(
+                    matches!(outcome, "accept" | "success"),
+                    "{name}: expected an accept fixture, got '{outcome}'"
+                );
+                let parsed: acdp::types::Limits = serde_json::from_value(limits.clone())
+                    .unwrap_or_else(|e| {
+                        panic!("{name}: unknown limits field MUST be tolerated: {e}")
+                    });
+                assert!(
+                    !parsed.extensions.is_empty(),
+                    "{name}: the unknown key is kept in Limits::extensions"
+                );
             }
             _ => {}
         }
@@ -2151,6 +2163,7 @@ fn pub_002_hash_mismatch_rejected_by_validator() {
             max_subscriptions_per_requester: None,
             max_reads_per_minute: None,
             max_anonymous_reads_per_minute: None,
+            extensions: Default::default(),
         },
         read_authentication_methods: vec![],
         anonymous_public_reads: true,
@@ -2556,6 +2569,7 @@ mod registry_behavior {
                 max_subscriptions_per_requester: None,
                 max_reads_per_minute: None,
                 max_anonymous_reads_per_minute: None,
+                extensions: Default::default(),
             },
             read_authentication_methods: vec![],
             anonymous_public_reads,
@@ -3198,6 +3212,7 @@ fn dk_fixtures_did_key_rejections() {
                     max_subscriptions_per_requester: None,
                     max_reads_per_minute: None,
                     max_anonymous_reads_per_minute: None,
+                    extensions: Default::default(),
                 },
                 read_authentication_methods: vec![],
                 anonymous_public_reads: true,
@@ -3940,6 +3955,7 @@ mod idempotency_fixtures {
                 max_subscriptions_per_requester: None,
                 max_reads_per_minute: None,
                 max_anonymous_reads_per_minute: None,
+                extensions: Default::default(),
             },
             read_authentication_methods: vec![],
             anonymous_public_reads: true,

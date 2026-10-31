@@ -66,6 +66,7 @@ fn caps_at(version: &str) -> CapabilitiesDocument {
             max_subscriptions_per_requester: None,
             max_reads_per_minute: None,
             max_anonymous_reads_per_minute: None,
+            extensions: Default::default(),
         },
         read_authentication_methods: vec![],
         anonymous_public_reads: true,

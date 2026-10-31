@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.19.0...acdp-v0.19.1) - 2026-10-31
+
+### Other
+
+- point acdp-chain at its real API; build acdp-mcp-proxy from source ([#500](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/500))
+- escape pipes in a consuming.md table code span ([#499](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/499))
+- add DEFERRED.md with overnight below-bar items ([#498](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/498))
+
 ## [0.19.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.18.3...acdp-v0.19.0) - 2026-10-30
 
 No `KeyAuthorization` or `RevocationTrustClass` change. `KeylessReason` gains `IssuerUnreachable` (RFC-ACDP-0021 §5.2: the registry could not fetch the token issuer's keys; transient, so a publishing client retries) and `KeylessEventUnsupported` (§6.3). `KeylessReason` stays `#[non_exhaustive]` and new variants go last. **Breaking:** `KeylessReason::ALL` is now `&'static [KeylessReason]` (was `[KeylessReason; 20]`), so future spec reason tokens are additive. To iterate it by value, use `.iter().copied()`.

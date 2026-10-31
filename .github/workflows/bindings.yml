@@ -187,7 +187,7 @@ jobs:
           # job automatically by bump-spec.yml. (85088a6 adopted 2026-10-16
           # for spec #79/#80; bump-spec rewrites only the SHA, so refresh
           # this note on each bump.)
-          ref: 1560e0f389875be8addaa7b7908751e020db50fe
+          ref: 0ba958247f0aaa4b6e307ff88555d1b23ba5fb7f
           path: acdp-spec
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:

@@ -513,7 +513,7 @@ fn all_conformance_fixtures_are_bucketed_into_known_families() {
     );
 }
 
-/// FEAT-03 — capabilities conformance fixtures (caps-001..006).
+/// FEAT-03 — capabilities conformance fixtures (caps-001..008).
 #[test]
 fn capabilities_conformance_fixtures() {
     let Some(root) = spec_root() else { return };
@@ -2149,6 +2149,8 @@ fn pub_002_hash_mismatch_rejected_by_validator() {
             max_change_filters: None,
             max_changes_page: None,
             max_subscriptions_per_requester: None,
+            max_reads_per_minute: None,
+            max_anonymous_reads_per_minute: None,
         },
         read_authentication_methods: vec![],
         anonymous_public_reads: true,
@@ -2253,6 +2255,132 @@ fn rate_001_response_shape_parses() {
     }
     let fixture = read_json(&path);
     assert!(fixture.get("expected").is_some());
+}
+
+/// caps-008 *(0.5.0)* — `limits.max_reads_per_minute` and
+/// `limits.max_anonymous_reads_per_minute`. The accept case also runs in
+/// `capabilities_conformance_fixtures`; here it is checked field by field,
+/// and every `reject_variants` override (a dotted path into
+/// `response_body`) MUST be refused at deserialize or validation time.
+#[test]
+fn caps_008_read_limits() {
+    let Some(root) = spec_root() else { return };
+    let path = root.join("schemas/conformance/caps-008-max-read-limits.json");
+    if fixture_missing(&path) {
+        return;
+    }
+    let fixture = read_json(&path);
+    let body = fixture["input"]["response_body"].clone();
+    let caps: acdp::types::CapabilitiesDocument =
+        serde_json::from_value(body.clone()).expect("caps-008 accept case deserializes");
+    acdp::validation::validate_capabilities(&caps).expect("caps-008 accept case validates");
+    assert_eq!(
+        caps.limits.max_reads_per_minute,
+        body.pointer("/limits/max_reads_per_minute")
+            .and_then(|v| v.as_u64())
+    );
+    assert_eq!(
+        caps.limits.max_anonymous_reads_per_minute,
+        body.pointer("/limits/max_anonymous_reads_per_minute")
+            .and_then(|v| v.as_u64())
+    );
+    assert!(caps.limits.max_reads_per_minute.is_some());
+    assert!(caps.limits.max_anonymous_reads_per_minute.is_some());
+    // bearer_static is an ordinary member of the open method vocabulary.
+    assert!(caps
+        .read_authentication_methods
+        .iter()
+        .any(|m| m == "bearer_static"));
+
+    let variants = fixture["reject_variants"]
+        .as_array()
+        .expect("caps-008 reject_variants");
+    assert!(
+        variants.len() >= 3,
+        "caps-008: expected >=3 reject variants"
+    );
+    for variant in variants {
+        let name = variant["name"].as_str().unwrap_or("?");
+        assert_eq!(
+            variant["expected"]["error_code"], "schema_violation",
+            "{name}"
+        );
+        let mut doc = body.clone();
+        for (dotted, value) in variant["response_body_override"]
+            .as_object()
+            .expect("override object")
+        {
+            let pointer = format!("/{}", dotted.replace('.', "/"));
+            *doc.pointer_mut(&pointer)
+                .unwrap_or_else(|| panic!("caps-008 {name}: no {pointer}")) = value.clone();
+        }
+        let refused = match serde_json::from_value::<acdp::types::CapabilitiesDocument>(doc) {
+            Err(_) => true,
+            Ok(c) => matches!(
+                acdp::validation::validate_capabilities(&c),
+                Err(acdp::error::AcdpError::SchemaViolation(_))
+            ),
+        };
+        assert!(
+            refused,
+            "caps-008 {name}: MUST be rejected as schema_violation"
+        );
+    }
+}
+
+/// rate-002 *(0.5.0)* — a read refused by a rate limit: HTTP 429,
+/// `rate_limited` envelope, mandatory `Retry-After`. The registry trigger
+/// is black-box-untestable; the consumer obligation is bound here by
+/// serving the fixture's own envelope and asserting the client surfaces
+/// `RateLimited` with the `Retry-After` delay (RFC-ACDP-0008 §4.3:
+/// consumers MUST honor it), never `not_found` / `not_authorized`.
+#[cfg(feature = "client")]
+#[tokio::test]
+async fn rate_002_read_rate_limited_consumer() {
+    use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+
+    let Some(root) = spec_root() else { return };
+    let path = root.join("schemas/conformance/rate-002-read-rate-limited-response-shape.json");
+    if fixture_missing(&path) {
+        return;
+    }
+    let fixture = read_json(&path);
+    let expected = &fixture["expected"];
+    assert_eq!(expected["http_status"], 429);
+    assert_eq!(expected["response_body"]["error"]["code"], "rate_limited");
+    assert!(expected["headers"]["Retry-After"].is_string());
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("Content-Type", "application/acdp+json")
+                .insert_header("Retry-After", "30")
+                .set_body_json(expected["response_body"].clone()),
+        )
+        .mount(&server)
+        .await;
+    let client = acdp::client::RegistryClient::with_test_transport(&server.uri()).unwrap();
+    let err = client
+        .retrieve(&acdp::types::CtxId("ctx_01HZXR7K3M9N4P5Q6R7S8T9V0W".into()))
+        .await
+        .expect_err("rate-002: a 429 read is an error");
+    match &err {
+        acdp::error::AcdpError::RateLimited {
+            message,
+            retry_after,
+        } => {
+            assert_eq!(
+                message,
+                expected["response_body"]["error"]["message"]
+                    .as_str()
+                    .unwrap()
+            );
+            assert_eq!(*retry_after, Some(std::time::Duration::from_secs(30)));
+        }
+        other => panic!("rate-002: expected RateLimited, got {other:?}"),
+    }
+    assert!(err.is_transient());
 }
 
 /// ret-001 + err-001 — assert these descriptive fixtures parse.
@@ -2426,6 +2554,8 @@ mod registry_behavior {
                 max_change_filters: None,
                 max_changes_page: None,
                 max_subscriptions_per_requester: None,
+                max_reads_per_minute: None,
+                max_anonymous_reads_per_minute: None,
             },
             read_authentication_methods: vec![],
             anonymous_public_reads,
@@ -3066,6 +3196,8 @@ fn dk_fixtures_did_key_rejections() {
                     max_change_filters: None,
                     max_changes_page: None,
                     max_subscriptions_per_requester: None,
+                    max_reads_per_minute: None,
+                    max_anonymous_reads_per_minute: None,
                 },
                 read_authentication_methods: vec![],
                 anonymous_public_reads: true,
@@ -3806,6 +3938,8 @@ mod idempotency_fixtures {
                 max_change_filters: None,
                 max_changes_page: None,
                 max_subscriptions_per_requester: None,
+                max_reads_per_minute: None,
+                max_anonymous_reads_per_minute: None,
             },
             read_authentication_methods: vec![],
             anonymous_public_reads: true,

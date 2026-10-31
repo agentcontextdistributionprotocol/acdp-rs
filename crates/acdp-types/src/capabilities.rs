@@ -168,4 +168,29 @@ pub struct Limits {
         deserialize_with = "crate::serde_helpers::de_present"
     )]
     pub max_subscriptions_per_requester: Option<u64>,
+
+    /// *(0.5.0, Draft)* OPTIONAL nominal read ceiling per authenticated
+    /// principal (`effective_requester_did`) across the registry's read
+    /// endpoints, in requests per minute (integer ≥ 1). Advisory: a
+    /// consumer SHOULD pace reads below it; `Retry-After` on a 429 stays
+    /// the authoritative signal. RFC-ACDP-0007 §3.2, RFC-ACDP-0008 §4.3,
+    /// fixture `caps-008`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::serde_helpers::de_present"
+    )]
+    pub max_reads_per_minute: Option<u64>,
+
+    /// *(0.5.0, Draft)* OPTIONAL nominal read ceiling per source address
+    /// on anonymous reads, in requests per minute (integer ≥ 1).
+    /// Meaningful only with `anonymous_public_reads: true`. Advisory, like
+    /// [`Self::max_reads_per_minute`]. RFC-ACDP-0007 §3.2,
+    /// RFC-ACDP-0008 §4.3, fixture `caps-008`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::serde_helpers::de_present"
+    )]
+    pub max_anonymous_reads_per_minute: Option<u64>,
 }

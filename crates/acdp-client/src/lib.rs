@@ -39,7 +39,7 @@ pub use receipt::{
     verify_event_receipt_value, verify_lineage_head_receipt_value, verify_receipt_value,
     verify_receipt_value_since, verify_receipt_value_with_status_since,
 };
-pub use registry::{RegistryClient, RegistryClientBuilder, ACDP_ACCEPT};
+pub use registry::{RegistryClient, RegistryClientBuilder, ACDP_ACCEPT, MAX_RETRY_AFTER_WAIT};
 pub use revocation::{
     classify_under_revocation, classify_under_revocation_placed,
     find_registry_attested_revocations, find_revocations, find_revocations_in_lineage,

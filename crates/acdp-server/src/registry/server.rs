@@ -1799,6 +1799,8 @@ mod tests {
                 max_change_filters: None,
                 max_changes_page: None,
                 max_subscriptions_per_requester: None,
+                max_reads_per_minute: None,
+                max_anonymous_reads_per_minute: None,
             },
             read_authentication_methods: vec![],
             anonymous_public_reads: true,
@@ -2813,7 +2815,10 @@ mod tests {
     struct AlwaysDeny;
     impl crate::registry::RateLimiter for AlwaysDeny {
         fn check_publish(&self, agent_id: &AgentDid) -> Result<(), AcdpError> {
-            Err(AcdpError::RateLimited(format!("blocked: {agent_id}")))
+            Err(AcdpError::rate_limited(
+                format!("blocked: {agent_id}"),
+                None,
+            ))
         }
     }
 
@@ -2830,7 +2835,7 @@ mod tests {
             .build()
             .unwrap();
         let err = server.publish_unverified_for_tests(&req).unwrap_err();
-        assert!(matches!(err, AcdpError::RateLimited(_)));
+        assert!(matches!(err, AcdpError::RateLimited { .. }));
         // And the store is empty — the limiter MUST short-circuit before persist.
         let resp = server.search(&SearchParams::default(), None).unwrap();
         assert!(

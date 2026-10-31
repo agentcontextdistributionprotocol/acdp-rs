@@ -320,3 +320,179 @@ async fn cross_registry_resolver_presents_per_authority_tokens() {
         .await
         .expect("own provider kept");
 }
+
+// ── bearer_static (RFC-ACDP-0008 §6.2, 0.5.0) ───────────────────────────────
+//
+// `bearer_static` needs no new client surface: a registry-issued static
+// token is held by `StaticBearerToken` / `PerAuthorityTokens`, which are
+// per authority, https-only, reads-only and asked per request. These
+// tests pin the §6.2 rule that the token goes only to the issuing
+// registry, never to another authority and never to a DID host.
+
+/// An authority is host *and* port: a static token issued for the same
+/// host on another port is another registry's token, and is not sent.
+#[tokio::test]
+async fn bearer_static_token_is_not_sent_to_same_host_on_another_port() {
+    let w = World::start(both_keys()).await;
+    let ctx = w.publish("key-1", K1, ContextType::Analysis, None).await;
+    let client = w
+        .client()
+        .with_auth_provider(Arc::new(StaticBearerToken::new(
+            format!("{REGISTRY_AUTHORITY}:8443"),
+            token("static-for-8443"),
+        )));
+    client.retrieve(&ctx.body.ctx_id).await.unwrap();
+    let seen = w.auth_headers_for("/contexts");
+    assert!(!seen.is_empty());
+    assert!(seen.iter().all(Option::is_none), "{seen:?}");
+}
+
+/// A provider that records every authority it is asked about.
+struct Recording {
+    inner: StaticBearerToken,
+    asked: std::sync::Mutex<Vec<String>>,
+}
+
+impl AuthProvider for Recording {
+    fn bearer_token<'a>(&'a self, authority: &'a str) -> AuthFuture<'a> {
+        self.asked.lock().unwrap().push(authority.to_string());
+        self.inner.bearer_token(authority)
+    }
+}
+
+/// Across a full fetch-and-verify (registry reads plus `did:web`
+/// resolution), the provider is asked once per registry read and only
+/// ever for the registry's authority: DID resolution has no path to it,
+/// and no DID document request carries the token.
+#[tokio::test]
+async fn bearer_static_provider_is_asked_per_read_and_never_for_did_hosts() {
+    let w = World::start(both_keys()).await;
+    let ctx = w.publish("key-1", K1, ContextType::Analysis, None).await;
+    let provider = Arc::new(Recording {
+        inner: StaticBearerToken::new(REGISTRY_AUTHORITY, token("static-read-token")),
+        asked: std::sync::Mutex::new(Vec::new()),
+    });
+    let client = w.client().with_auth_provider(provider.clone());
+    VerifiedContext::fetch(&client, &w.resolver(), &ctx.body.ctx_id)
+        .await
+        .unwrap();
+    client.retrieve(&ctx.body.ctx_id).await.unwrap();
+
+    let asked = provider.asked.lock().unwrap().clone();
+    assert!(asked.len() >= 2, "{asked:?}");
+    assert!(asked.iter().all(|a| a == REGISTRY_AUTHORITY), "{asked:?}");
+    let reads = w.auth_headers_for("/contexts");
+    assert_eq!(
+        reads
+            .iter()
+            .filter(|a| a.as_deref() == Some("Bearer static-read-token"))
+            .count(),
+        asked.len(),
+        "one ask per read: {asked:?} vs {reads:?}"
+    );
+    for prefix in ["/.well-known/did.json", "/agent"] {
+        let seen = w.auth_headers_for(prefix);
+        assert!(!seen.is_empty(), "{prefix}: DID host was fetched");
+        assert!(seen.iter().all(Option::is_none), "{prefix}: {seen:?}");
+    }
+}
+
+/// RFC-ACDP-0008 §6.2 (spec #119): a `bearer_static` token goes only to
+/// the issuing registry's origin, never across a cross-origin redirect.
+/// The client refuses a cross-origin redirect before following it
+/// (RFC-ACDP-0006 §7.5), so the other origin never sees a request at all;
+/// a same-origin redirect is followed and keeps the token.
+#[tokio::test]
+async fn bearer_static_token_never_follows_a_cross_origin_redirect() {
+    use axum::{http::StatusCode, response::IntoResponse, Router};
+    use common::TlsTestServer;
+    use std::sync::Mutex;
+
+    type Seen = Arc<Mutex<Vec<(String, Option<String>)>>>;
+    fn record(seen: &Seen, req: &axum::extract::Request) {
+        let auth = req
+            .headers()
+            .get(axum::http::header::AUTHORIZATION)
+            .map(|v| v.to_str().unwrap().to_string());
+        seen.lock()
+            .unwrap()
+            .push((req.uri().path().to_string(), auth));
+    }
+    fn not_found() -> axum::response::Response {
+        (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({"error": {"code": "not_found", "message": "x"}})),
+        )
+            .into_response()
+    }
+
+    let other_seen: Seen = Arc::default();
+    let other = TlsTestServer::start(Router::new().fallback({
+        let seen = other_seen.clone();
+        move |req: axum::extract::Request| {
+            let seen = seen.clone();
+            async move {
+                record(&seen, &req);
+                not_found()
+            }
+        }
+    }))
+    .await;
+    let other_base = other.base_url();
+
+    let home_seen: Seen = Arc::default();
+    let home = TlsTestServer::start(Router::new().fallback({
+        let seen = home_seen.clone();
+        move |req: axum::extract::Request| {
+            let (seen, other_base) = (seen.clone(), other_base.clone());
+            async move {
+                record(&seen, &req);
+                let to = match req.uri().path() {
+                    "/contexts/same" => "/contexts/final".to_string(),
+                    "/contexts/cross" => format!("{other_base}/contexts/final"),
+                    _ => return not_found(),
+                };
+                (StatusCode::FOUND, [(axum::http::header::LOCATION, to)]).into_response()
+            }
+        }
+    }))
+    .await;
+
+    let client =
+        RegistryClient::with_test_endpoint(&home.base_url(), home.addr, &home.root_cert_pem)
+            .unwrap()
+            .with_auth_provider(Arc::new(StaticBearerToken::new(
+                home.host(),
+                token("static-origin-bound"),
+            )));
+    let bearer = Some("Bearer static-origin-bound".to_string());
+
+    // Same origin: followed, token kept on both hops.
+    let err = client
+        .retrieve(&acdp::types::CtxId("same".into()))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AcdpError::NotFound(_)), "{err:?}");
+    assert_eq!(
+        *home_seen.lock().unwrap(),
+        vec![
+            ("/contexts/same".to_string(), bearer.clone()),
+            ("/contexts/final".to_string(), bearer.clone()),
+        ]
+    );
+
+    // Cross origin (same host, other port): refused before following.
+    let err = client
+        .retrieve(&acdp::types::CtxId("cross".into()))
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("cross-authority redirect"),
+        "{err:?}"
+    );
+    assert!(
+        other_seen.lock().unwrap().is_empty(),
+        "the other origin MUST NOT be contacted: {:?}",
+        other_seen.lock().unwrap()
+    );
+}

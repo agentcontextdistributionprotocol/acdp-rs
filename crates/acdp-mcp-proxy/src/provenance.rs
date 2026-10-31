@@ -90,7 +90,7 @@ pub fn registry_error_code(e: &AcdpError) -> Option<String> {
         E::SchemaViolation(_) => "schema_violation",
         E::NotAuthorized(_) => "not_authorized",
         E::NotFound(_) => "not_found",
-        E::RateLimited(_) => "rate_limited",
+        E::RateLimited { .. } => "rate_limited",
         E::PayloadTooLarge(_) => "payload_too_large",
         E::EmbeddedTooLarge(_) => "embedded_too_large",
         E::KeyResolution(_) => "key_resolution_failed",

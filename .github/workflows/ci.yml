@@ -75,9 +75,9 @@ jobs:
           repository: agentcontextdistributionprotocol/agentcontextdistributionprotocol
           # Pinned so a spec-repo push cannot change this repo's CI result
           # without a commit here. Bump deliberately when adopting new
-          # fixtures. (97ac873 adopted 2026-10-31 for RFC-ACDP-0021 consumer-side Final; bump-spec
+          # fixtures. (32887b7 adopted 2026-10-31 for caps-008 / rate-002 read rate limits; bump-spec
           # rewrites only the SHA, so refresh this note on each bump.)
-          ref: 97ac8730a56e8e622dea67ea28ef9b7c0c692e0e
+          ref: 32887b708d08102cc4576f94c449d75f08d55163
           path: acdp-spec
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:

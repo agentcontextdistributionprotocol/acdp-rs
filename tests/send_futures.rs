@@ -110,6 +110,37 @@ fn revocation_discovery_futures_are_send() {
     ));
 }
 
+/// Seam's ask #4: the recall and discovery entry points a handler drives
+/// directly. `RegistryClient::changes` and `::capabilities` hold the
+/// client's auth provider and budget across `.await`;
+/// `RegistryClientBuilder::build` resolves DNS in pinned mode; and
+/// `verify_change` walks DID resolution and revocation lookups. Any of
+/// them going `!Send` would break `axum::handler::Handler` callers.
+#[test]
+fn recall_and_discovery_futures_are_send() {
+    use acdp::client::{verify_change, RegistryClient, Since, VerificationPolicy};
+    use acdp::did::WebResolver;
+    use acdp::types::change::{Change, WatchFilter};
+
+    let client = RegistryClient::new("https://registry.example.com").unwrap();
+    let filter = WatchFilter::default();
+    assert_send(client.changes(&Since::Head, &filter, Some(100)));
+    assert_send(client.capabilities());
+    assert_send(RegistryClient::builder("https://registry.example.com").build());
+
+    // `Change` has no cheap constructor; a never-called fn is enough for
+    // a compile-time check.
+    #[allow(dead_code)]
+    fn verify_change_is_send(
+        client: &RegistryClient,
+        resolver: &WebResolver,
+        change: &Change,
+        policy: &VerificationPolicy,
+    ) {
+        assert_send(verify_change(client, resolver, change, None, policy));
+    }
+}
+
 /// `RegistryServer::prove_publish_identity` (the did:web path) also holds
 /// a `WebResolver` across DID-resolution `.await` points, same shape as
 /// the consumer-side entry points above. It has never regressed, but
@@ -142,6 +173,8 @@ fn prove_publish_identity_future_is_send() {
             max_change_filters: None,
             max_changes_page: None,
             max_subscriptions_per_requester: None,
+            max_reads_per_minute: None,
+            max_anonymous_reads_per_minute: None,
         },
         read_authentication_methods: vec![],
         anonymous_public_reads: false,

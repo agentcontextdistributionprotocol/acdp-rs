@@ -66,7 +66,10 @@ A registry that sets `anonymous_public_reads: false`, or serves non-public
 contexts, refuses an anonymous read with `not_authorized` (RFC-ACDP-0008
 §6.2). Revocation discovery against it then reports `unknown`
 (`unanswerable`), never not-revoked. Attach an `AuthProvider` to present a
-`bearer_jwt` token:
+`bearer_jwt` token or a `bearer_static` token (0.5.0 Draft, RFC-ACDP-0008
+§6.2: an opaque, long-lived read token the registry issues out of band and
+binds to one requester DID). Both go out as `Authorization: Bearer`, so the
+same providers serve both methods:
 
 ```rust,no_run
 # #[cfg(feature = "client")]
@@ -102,8 +105,36 @@ The rules:
   `b64token`, so a token cannot inject a header, and its `Debug` output is
   redacted.
 
-Minting the token (the signed-challenge exchange) is deployment-defined, so
-it is the provider's job.
+Minting the token (the `bearer_jwt` signed-challenge exchange) and issuing a
+`bearer_static` token are both deployment-defined, so they are the
+provider's job. A `bearer_static` token usually comes from a secret store:
+wrap it in `StaticBearerToken` for its one issuing registry. Never put it in
+`PerAuthorityTokens` under any other authority, because §6.2 forbids
+sending it to another registry, a DID host or a cross-registry hop.
+
+### Rate limiting and `Retry-After`
+
+A registry may rate-limit reads as well as publishes (RFC-ACDP-0008 §4.3,
+fixture `rate-002`). A refusal is `AcdpError::RateLimited { message,
+retry_after }`, read or write. `retry_after` is the delay from the
+response's `Retry-After` header. Both forms are parsed (delay-seconds and
+an HTTP-date) by `acdp::time::parse_retry_after`. It is `None` when a
+non-conformant registry omits the header. `AcdpError::retry_after()` reads
+it without a match.
+
+On the 0.5.0 line a consumer **MUST NOT** retry the refused request before
+`retry_after` has elapsed, and SHOULD hold further requests to that
+registry under the same principal until then. With `None`, it must still
+back off, preferably exponentially with jitter. `publish_with_retry` does
+this for you: it sleeps at least `retry_after` before its next attempt,
+and returns the error at once when `retry_after` is longer than
+`MAX_RETRY_AFTER_WAIT` (60 s). The client does not retry reads itself, so
+apply the same rule in your own read loop.
+
+`limits.max_reads_per_minute` (per authenticated principal) and
+`limits.max_anonymous_reads_per_minute` (per source address) on
+`CapabilitiesDocument` are the registry's advisory ceilings. Pace below
+them. `Retry-After` stays authoritative.
 
 ### Searching
 

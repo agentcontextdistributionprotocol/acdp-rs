@@ -81,6 +81,9 @@ fn version_at_least(v: &str, major: u64, minor: u64) -> bool {
 ///    `limits.idempotency_key_ttl_seconds` MUST be present and in
 ///    `86400..=604800`.
 /// 8. `limits.max_payload_bytes` MUST be at least 1024 bytes.
+/// 9. *(0.3.0, item 11)* `limits.max_publish_per_minute`, and *(0.5.0,
+///    item 12)* `limits.max_reads_per_minute` and
+///    `limits.max_anonymous_reads_per_minute`, are >= 1 when present.
 ///
 /// Wired into `acdp::client::RegistryClient::capabilities` and
 /// `acdp::client::CrossRegistryResolver::resolve`.
@@ -96,6 +99,22 @@ pub fn validate_capabilities(caps: &acdp_types::CapabilitiesDocument) -> Result<
                  (RFC-ACDP-0007 \u{a7}3.5 item 11)"
                     .into(),
             ));
+        }
+    }
+
+    // §3.5 item 12 *(0.5.0)*: the read ceilings, when present, MUST be
+    // integers >= 1 (schema minimum; fixture caps-008).
+    for (name, value) in [
+        ("max_reads_per_minute", caps.limits.max_reads_per_minute),
+        (
+            "max_anonymous_reads_per_minute",
+            caps.limits.max_anonymous_reads_per_minute,
+        ),
+    ] {
+        if value == Some(0) {
+            return Err(AcdpError::SchemaViolation(format!(
+                "capabilities.limits.{name} MUST be >= 1 (RFC-ACDP-0007 \u{a7}3.5 item 12)"
+            )));
         }
     }
 
@@ -1803,6 +1822,8 @@ mod capabilities_0_3_0_tests {
                 max_change_filters: None,
                 max_changes_page: None,
                 max_subscriptions_per_requester: None,
+                max_reads_per_minute: None,
+                max_anonymous_reads_per_minute: None,
             },
             read_authentication_methods: vec![],
             anonymous_public_reads: false,
@@ -1819,6 +1840,27 @@ mod capabilities_0_3_0_tests {
         let err = validate_capabilities(&caps("0.1.0", false, Some(0)))
             .expect_err("zero MUST be rejected");
         assert!(matches!(err, AcdpError::SchemaViolation(_)));
+    }
+
+    /// RFC-ACDP-0007 §3.5 item 12 *(0.5.0)* — caps-008's zero variants.
+    #[test]
+    fn read_ceilings_bounds() {
+        let mut c = caps("0.5.0", true, None);
+        c.limits.max_reads_per_minute = Some(600);
+        c.limits.max_anonymous_reads_per_minute = Some(60);
+        assert!(validate_capabilities(&c).is_ok());
+        let mut z = c.clone();
+        z.limits.max_reads_per_minute = Some(0);
+        assert!(matches!(
+            validate_capabilities(&z),
+            Err(AcdpError::SchemaViolation(_))
+        ));
+        let mut z = c;
+        z.limits.max_anonymous_reads_per_minute = Some(0);
+        assert!(matches!(
+            validate_capabilities(&z),
+            Err(AcdpError::SchemaViolation(_))
+        ));
     }
 
     /// RFC-ACDP-0003 §6.4 / RFC-ACDP-0007 §3.5 item 10 *(0.3.0)* — the

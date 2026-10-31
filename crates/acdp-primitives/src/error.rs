@@ -344,9 +344,25 @@ pub enum AcdpError {
     #[error("not authorized: {0}")]
     NotAuthorized(String),
 
-    /// Wire code: `rate_limited`.
-    #[error("rate limited: {0}")]
-    RateLimited(String),
+    /// Wire code: `rate_limited` (HTTP 429, RFC-ACDP-0008 §4.3).
+    ///
+    /// A struct variant since 0.20.0 (was `RateLimited(String)`): it now
+    /// also carries the delay from the response's `Retry-After` header.
+    /// Match with `RateLimited { .. }`; [`AcdpError::retry_after`] reads
+    /// the delay without a match.
+    #[error("rate limited: {message}")]
+    RateLimited {
+        /// The registry's `error.message`.
+        message: String,
+        /// The delay the registry's `Retry-After` header asked for, parsed
+        /// by [`crate::time::parse_retry_after`]. `None` when the header
+        /// was absent or unparsable (a non-conformant registry), or when
+        /// the error did not come from an HTTP response (e.g.
+        /// [`AcdpError::from_wire_error`]). A 0.5.0 consumer MUST NOT
+        /// retry the refused request before this delay has elapsed; with
+        /// `None` it MUST still back off.
+        retry_after: Option<std::time::Duration>,
+    },
 
     // ── Pagination ───────────────────────────────────────────────────────
     /// Wire code: `cursor_expired`.
@@ -494,6 +510,27 @@ pub enum SupersessionReason {
 }
 
 impl AcdpError {
+    /// Build an [`AcdpError::RateLimited`].
+    pub fn rate_limited(
+        message: impl Into<String>,
+        retry_after: Option<std::time::Duration>,
+    ) -> Self {
+        AcdpError::RateLimited {
+            message: message.into(),
+            retry_after,
+        }
+    }
+
+    /// The `Retry-After` delay a [`AcdpError::RateLimited`] carries, or
+    /// `None` for every other variant and for a 429 without a usable
+    /// header. RFC-ACDP-0008 §4.3: do not retry before it elapses.
+    pub fn retry_after(&self) -> Option<std::time::Duration> {
+        match self {
+            AcdpError::RateLimited { retry_after, .. } => *retry_after,
+            _ => None,
+        }
+    }
+
     /// Whether this error is plausibly transient and worth retrying
     /// with the same request body (and, if applicable, the same
     /// `Idempotency-Key`).
@@ -532,7 +569,7 @@ impl AcdpError {
         matches!(
             self,
             AcdpError::KeyResolutionUnreachable(_)
-                | AcdpError::RateLimited(_)
+                | AcdpError::RateLimited { .. }
                 | AcdpError::CrossRegistryResolutionFailed(_)
                 | AcdpError::RegistryInternal(_)
                 | AcdpError::Http(_)
@@ -634,7 +671,10 @@ impl AcdpError {
             "schema_violation" => AcdpError::SchemaViolation(msg),
             "not_authorized" => AcdpError::NotAuthorized(msg),
             "not_found" => AcdpError::NotFound(msg),
-            "rate_limited" => AcdpError::RateLimited(msg),
+            "rate_limited" => AcdpError::RateLimited {
+                message: msg,
+                retry_after: None,
+            },
             "payload_too_large" => AcdpError::PayloadTooLarge(msg),
             "embedded_too_large" => AcdpError::EmbeddedTooLarge(msg),
             "key_resolution_failed" => AcdpError::KeyResolution(msg),
@@ -898,7 +938,9 @@ mod tests {
             ("unsupported_algorithm", |e| {
                 matches!(e, AcdpError::UnsupportedAlgorithm(_))
             }),
-            ("rate_limited", |e| matches!(e, AcdpError::RateLimited(_))),
+            ("rate_limited", |e| {
+                matches!(e, AcdpError::RateLimited { .. })
+            }),
             ("payload_too_large", |e| {
                 matches!(e, AcdpError::PayloadTooLarge(_))
             }),
@@ -1061,7 +1103,7 @@ mod tests {
     #[test]
     fn is_transient_for_known_retryables() {
         assert!(AcdpError::KeyResolutionUnreachable("x".into()).is_transient());
-        assert!(AcdpError::RateLimited("x".into()).is_transient());
+        assert!(AcdpError::rate_limited("x", None).is_transient());
         assert!(AcdpError::CrossRegistryResolutionFailed("x".into()).is_transient());
         assert!(AcdpError::RegistryInternal("x".into()).is_transient());
         assert!(AcdpError::Http("x".into()).is_transient());

@@ -148,7 +148,8 @@ need to opt in explicitly. The intended seams:
 
 ## Read authentication
 
-As of 0.15.0 the client **presents** `bearer_jwt` read credentials
+As of 0.15.0 the client **presents** `bearer_jwt` read credentials, and
+the same providers carry 0.5.0 `bearer_static` tokens,
 ([RFC-ACDP-0008 §6.2](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0008-security.md#62-read-authentication),
 [`registries/auth-methods.md`](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/registries/auth-methods.md))
 through an `AuthProvider` attached to `RegistryClient` or

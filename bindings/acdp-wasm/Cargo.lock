@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "acdp"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "acdp-chain",
  "acdp-crypto",
@@ -20,7 +20,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-chain"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "acdp-crypto",
  "acdp-did",
@@ -39,7 +39,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-crypto"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "acdp-did",
  "acdp-jcs",
@@ -60,7 +60,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-did"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "acdp-primitives",
  "acdp-safe-http",
@@ -75,7 +75,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-jcs"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "acdp-primitives",
  "serde",
@@ -84,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-primitives"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "chrono",
  "serde",
@@ -95,7 +95,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-producer"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "acdp-crypto",
  "acdp-did",
@@ -110,7 +110,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-safe-http"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "acdp-primitives",
  "url",
@@ -118,7 +118,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-types"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "acdp-crypto",
  "acdp-did",
@@ -136,7 +136,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-validation"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "acdp-crypto",
  "acdp-did",
@@ -152,7 +152,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-verify"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "acdp-crypto",
  "acdp-did",

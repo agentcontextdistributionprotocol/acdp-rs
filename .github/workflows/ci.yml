@@ -77,7 +77,7 @@ jobs:
           # without a commit here. Bump deliberately when adopting new
           # fixtures. (1560e0f adopted 2026-10-30 for RFC-ACDP-0021 0.5.0-draft.4; bump-spec
           # rewrites only the SHA, so refresh this note on each bump.)
-          ref: 1560e0f389875be8addaa7b7908751e020db50fe
+          ref: 97ac8730a56e8e622dea67ea28ef9b7c0c692e0e
           path: acdp-spec
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:

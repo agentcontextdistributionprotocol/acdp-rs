@@ -1,4 +1,4 @@
-//! RFC-ACDP-0021 keyless signing (0.5.0, Draft): the `kl-001` known
+//! RFC-ACDP-0021 keyless signing (Final at 0.5.0 for the consumer side): the `kl-001` known
 //! answers and decision tables, the consumer-side fail-closed rules of
 //! `kl-007`, and the fixture binding for the `kl-` family.
 //!

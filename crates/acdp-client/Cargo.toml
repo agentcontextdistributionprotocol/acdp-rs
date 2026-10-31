@@ -13,8 +13,8 @@ categories  = ["web-programming::http-client", "cryptography"]
 rust-version = "1.87"
 
 [features]
-# RFC-ACDP-0021 keyless signing (0.5.0 Draft): `/key-attestations` calls
-# and §8.1 verification of keyless-signed bodies.
+# RFC-ACDP-0021 keyless signing: `/key-attestations` calls (0.5.0 Draft)
+# and §8.1 verification of keyless-signed bodies (Final at 0.5.0).
 keyless = []
 # `acdp_client::blocking`: a synchronous facade with a per-call deadline
 # that runs on its own tokio runtime thread.

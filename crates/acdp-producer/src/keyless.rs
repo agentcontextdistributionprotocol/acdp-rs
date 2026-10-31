@@ -1,4 +1,6 @@
-//! Keyless signing, producer side (RFC-ACDP-0021, 0.5.0 Draft).
+//! Keyless signing, producer side (RFC-ACDP-0021, 0.5.0; the attestation
+//! request of §5.1 is Draft, the key id and `key_attestation` of §6.1–§6.2
+//! are Final).
 //!
 //! 1. Generate an [`EphemeralKey`].
 //! 2. Build the `POST /key-attestations` request with

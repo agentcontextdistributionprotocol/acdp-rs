@@ -28,7 +28,7 @@ newer registry never breaks an older client.
 | `schema_violation` | `SchemaViolation` |
 | `not_authorized` | `NotAuthorized` |
 | `not_found` | `NotFound` |
-| `rate_limited` | `RateLimited` |
+| `rate_limited` | `RateLimited { message, retry_after }` (a struct variant since 0.20.0; `retry_after` is the parsed `Retry-After` header) |
 | `payload_too_large` | `PayloadTooLarge` |
 | `embedded_too_large` | `EmbeddedTooLarge` |
 | `key_resolution_failed` | `KeyResolution` |
@@ -125,7 +125,7 @@ for the variants the spec marks retryable:
 | Transient (`is_transient() == true`) | Why |
 |---|---|
 | `KeyResolutionUnreachable` | the DID host was temporarily unreachable (RFC-ACDP-0001 §5.11) |
-| `RateLimited` | back off and retry (RFC-ACDP-0008 §4.3) |
+| `RateLimited` | back off and retry, never before `retry_after()` has elapsed (RFC-ACDP-0008 §4.3; a 0.5.0 consumer MUST honor `Retry-After`) |
 | `CrossRegistryResolutionFailed` | a foreign hop failed transiently (RFC-ACDP-0006 §7) |
 | `RegistryInternal` | the registry hit an internal error (HTTP 5xx) |
 | `Http` | a connect/timeout/transport error (never an SSRF-policy refusal; see the note below) |

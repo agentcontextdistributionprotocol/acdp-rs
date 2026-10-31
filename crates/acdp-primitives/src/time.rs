@@ -59,6 +59,58 @@ pub mod canonical_rfc3339 {
     }
 }
 
+/// Parse an HTTP `Retry-After` header value (RFC 9110 §10.2.3, formerly
+/// RFC 7231 §7.1.3) into the delay it asks for, measured from `now`.
+///
+/// Both forms are accepted: `delay-seconds` (a non-negative decimal
+/// integer) and an `HTTP-date`. All three HTTP-date formats a recipient
+/// MUST accept are parsed: IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`),
+/// the obsolete RFC 850 form (`Sunday, 06-Nov-94 08:49:37 GMT`) and
+/// asctime (`Sun Nov  6 08:49:37 1994`). A date in the past yields
+/// [`std::time::Duration::ZERO`]. Anything else (empty, negative,
+/// fractional, garbage) yields `None`, so a caller falls back to its own
+/// backoff, as RFC-ACDP-0008 §4.3 requires when the header is unusable.
+///
+/// ACDP consumers on the 0.5.0 line MUST honor `Retry-After` on every 429
+/// (RFC-ACDP-0008 §4.3, fixture `rate-002`); `RegistryClient` reads it
+/// into [`crate::AcdpError::RateLimited`]'s `retry_after`.
+pub fn parse_retry_after(value: &str, now: DateTime<Utc>) -> Option<std::time::Duration> {
+    let v = value.trim();
+    if v.is_empty() {
+        return None;
+    }
+    if v.bytes().all(|b| b.is_ascii_digit()) {
+        // Saturate absurd values rather than rejecting them: a huge delay
+        // is still a "do not retry yet" instruction.
+        let secs = v.parse::<u64>().unwrap_or(u64::MAX);
+        return Some(std::time::Duration::from_secs(secs));
+    }
+    let at = parse_http_date(v)?;
+    Some((at - now).to_std().unwrap_or(std::time::Duration::ZERO))
+}
+
+fn parse_http_date(v: &str) -> Option<DateTime<Utc>> {
+    use chrono::NaiveDateTime;
+    // IMF-fixdate. RFC 2822 parsing also accepts it (GMT is a valid zone).
+    if let Ok(dt) = DateTime::parse_from_rfc2822(v) {
+        return Some(dt.with_timezone(&Utc));
+    }
+    // Obsolete RFC 850 form: two-digit year, interpreted per RFC 9110
+    // §5.6.7 (chrono's %y maps 00-68 to 20xx, 69-99 to 19xx).
+    if let Some(rest) = v.strip_suffix(" GMT") {
+        if let Some((_, tail)) = rest.split_once(", ") {
+            if let Ok(dt) = NaiveDateTime::parse_from_str(tail, "%d-%b-%y %H:%M:%S") {
+                return Some(dt.and_utc());
+            }
+        }
+    }
+    // asctime: `Sun Nov  6 08:49:37 1994` (day space-padded).
+    let collapsed = v.split_whitespace().collect::<Vec<_>>().join(" ");
+    NaiveDateTime::parse_from_str(&collapsed, "%a %b %e %H:%M:%S %Y")
+        .ok()
+        .map(|dt| dt.and_utc())
+}
+
 /// `Option` twin of [`canonical_rfc3339`]. Pair with
 /// `#[serde(default, skip_serializing_if = "Option::is_none")]`.
 pub mod canonical_rfc3339_option {
@@ -117,5 +169,49 @@ mod tests {
         let s = fmt_rfc3339_ms(dt);
         assert!(s.ends_with("Z"), "got {s}");
         assert!(s.contains(".123"), "got {s}");
+    }
+
+    #[test]
+    fn retry_after_delay_seconds() {
+        let now = Utc::now();
+        assert_eq!(
+            parse_retry_after("120", now),
+            Some(std::time::Duration::from_secs(120))
+        );
+        assert_eq!(
+            parse_retry_after(" 0 ", now),
+            Some(std::time::Duration::ZERO)
+        );
+        assert_eq!(
+            parse_retry_after("99999999999999999999999", now),
+            Some(std::time::Duration::from_secs(u64::MAX))
+        );
+        for bad in ["", "-1", "1.5", "+3", "soon", "1 2"] {
+            assert_eq!(parse_retry_after(bad, now), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn retry_after_http_date_all_three_formats() {
+        let now: DateTime<Utc> = "1994-11-06T08:49:00Z".parse().unwrap();
+        let want = Some(std::time::Duration::from_secs(37));
+        assert_eq!(
+            parse_retry_after("Sun, 06 Nov 1994 08:49:37 GMT", now),
+            want
+        );
+        assert_eq!(
+            parse_retry_after("Sunday, 06-Nov-94 08:49:37 GMT", now),
+            want
+        );
+        assert_eq!(parse_retry_after("Sun Nov  6 08:49:37 1994", now), want);
+    }
+
+    #[test]
+    fn retry_after_past_date_is_zero() {
+        let now: DateTime<Utc> = "2026-10-31T00:00:00Z".parse().unwrap();
+        assert_eq!(
+            parse_retry_after("Sun, 06 Nov 1994 08:49:37 GMT", now),
+            Some(std::time::Duration::ZERO)
+        );
     }
 }

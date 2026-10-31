@@ -291,7 +291,13 @@ async fn rate_limited_maps_to_typed_variant() {
         .await;
     let client = RegistryClient::with_test_transport(&server.uri()).unwrap();
     let err = client.publish(&sample_publish_request()).await.unwrap_err();
-    assert!(matches!(err, AcdpError::RateLimited(_)));
+    assert!(matches!(
+        err,
+        AcdpError::RateLimited {
+            retry_after: None,
+            ..
+        }
+    ));
 }
 
 #[tokio::test]
@@ -792,4 +798,162 @@ async fn publish_with_retry_does_not_retry_ssrf_refusal() {
     );
     assert!(!err.is_transient());
     assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+// ── Retry-After (RFC-ACDP-0008 §4.3, fixture rate-002) ──────────────────────
+
+fn rate_limited_429(retry_after: Option<&str>) -> ResponseTemplate {
+    let t = ResponseTemplate::new(429).set_body_json(json!({
+        "error": { "code": "rate_limited", "message": "Read rate limit exceeded." }
+    }));
+    match retry_after {
+        Some(v) => t.insert_header("Retry-After", v),
+        None => t,
+    }
+}
+
+/// A 429 on a read carries the `Retry-After` delay-seconds value.
+#[tokio::test]
+async fn read_429_exposes_retry_after_seconds() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(rate_limited_429(Some("42")))
+        .mount(&server)
+        .await;
+    let client = RegistryClient::with_test_transport(&server.uri()).unwrap();
+    let err = client
+        .retrieve(&CtxId("ctx_01HZXR7K3M9N4P5Q6R7S8T9V0W".into()))
+        .await
+        .unwrap_err();
+    assert_eq!(err.retry_after(), Some(std::time::Duration::from_secs(42)));
+    assert!(
+        matches!(err, AcdpError::RateLimited { ref message, .. } if message.contains("Read rate"))
+    );
+    assert!(err.is_transient());
+}
+
+/// The HTTP-date form is parsed relative to now.
+#[tokio::test]
+async fn read_429_exposes_retry_after_http_date() {
+    let server = MockServer::start().await;
+    let at = chrono::Utc::now() + chrono::Duration::seconds(120);
+    let date = at.format("%a, %d %b %Y %H:%M:%S GMT").to_string();
+    Mock::given(method("GET"))
+        .respond_with(rate_limited_429(Some(&date)))
+        .mount(&server)
+        .await;
+    let client = RegistryClient::with_test_transport(&server.uri()).unwrap();
+    let err = client
+        .retrieve(&CtxId("ctx_01HZXR7K3M9N4P5Q6R7S8T9V0W".into()))
+        .await
+        .unwrap_err();
+    let ra = err.retry_after().expect("HTTP-date Retry-After parsed");
+    assert!(ra.as_secs() >= 100 && ra.as_secs() <= 120, "{ra:?}");
+}
+
+/// A 429 without the header (non-conformant registry) is still
+/// `RateLimited`, with no delay; one without a readable envelope is too.
+#[tokio::test]
+async fn read_429_without_header_or_envelope_is_rate_limited() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/contexts/a"))
+        .respond_with(rate_limited_429(None))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/contexts/b"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("Retry-After", "7")
+                .set_body_string("<html>slow down</html>"),
+        )
+        .mount(&server)
+        .await;
+    let client = RegistryClient::with_test_transport(&server.uri()).unwrap();
+    let a = client.retrieve(&CtxId("a".into())).await.unwrap_err();
+    assert!(
+        matches!(
+            a,
+            AcdpError::RateLimited {
+                retry_after: None,
+                ..
+            }
+        ),
+        "{a:?}"
+    );
+    let b = client.retrieve(&CtxId("b".into())).await.unwrap_err();
+    assert_eq!(
+        b.retry_after(),
+        Some(std::time::Duration::from_secs(7)),
+        "{b:?}"
+    );
+}
+
+/// `Retry-After` on a non-429 status is not read into any error.
+#[tokio::test]
+async fn retry_after_ignored_off_429() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(503)
+                .insert_header("Retry-After", "5")
+                .set_body_json(json!({"error": {"code": "internal_error", "message": "x"}})),
+        )
+        .mount(&server)
+        .await;
+    let client = RegistryClient::with_test_transport(&server.uri()).unwrap();
+    let err = client.retrieve(&CtxId("a".into())).await.unwrap_err();
+    assert!(matches!(err, AcdpError::RegistryInternal(_)), "{err:?}");
+    assert_eq!(err.retry_after(), None);
+}
+
+/// RFC-ACDP-0008 §4.3 (0.5.0 MUST): `publish_with_retry` does not retry
+/// before `Retry-After` elapses, even though its own backoff is 250 ms.
+#[tokio::test]
+async fn publish_with_retry_waits_at_least_retry_after() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/contexts"))
+        .respond_with(rate_limited_429(Some("1")))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let client = RegistryClient::with_test_transport(&server.uri()).unwrap();
+    let start = std::time::Instant::now();
+    let err = client
+        .publish_with_retry(&sample_publish_request(), "ra-wait", 2)
+        .await
+        .unwrap_err();
+    assert!(
+        start.elapsed() >= std::time::Duration::from_secs(1),
+        "retried after {:?}, before Retry-After: 1",
+        start.elapsed()
+    );
+    assert_eq!(err.retry_after(), Some(std::time::Duration::from_secs(1)));
+}
+
+/// A `Retry-After` beyond `MAX_RETRY_AFTER_WAIT` ends the loop at once,
+/// returning the delay to the caller instead of sleeping or retrying early.
+#[tokio::test]
+async fn publish_with_retry_returns_long_retry_after_without_retrying() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/contexts"))
+        .respond_with(rate_limited_429(Some("3600")))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = RegistryClient::with_test_transport(&server.uri()).unwrap();
+    let start = std::time::Instant::now();
+    let err = client
+        .publish_with_retry(&sample_publish_request(), "ra-long", 4)
+        .await
+        .unwrap_err();
+    assert!(start.elapsed() < std::time::Duration::from_secs(5));
+    assert_eq!(
+        err.retry_after(),
+        Some(std::time::Duration::from_secs(3600))
+    );
+    assert!(std::time::Duration::from_secs(3600) > acdp::client::MAX_RETRY_AFTER_WAIT);
 }

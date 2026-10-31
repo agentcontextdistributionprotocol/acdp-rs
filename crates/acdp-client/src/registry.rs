@@ -555,6 +555,13 @@ impl RegistryClient {
     /// dedupe (RFC-ACDP-0003 §6). Retries only when the error is
     /// transient per [`AcdpError::is_transient`]. Bounded backoff:
     /// 250 ms, 500 ms, 1 s, 2 s.
+    ///
+    /// On `rate_limited` the wait is never shorter than the registry's
+    /// `Retry-After` (RFC-ACDP-0008 §4.3: a 0.5.0 consumer MUST NOT retry
+    /// before it elapses). If `Retry-After` exceeds
+    /// [`MAX_RETRY_AFTER_WAIT`], the error is returned at once instead of
+    /// sleeping, so a registry cannot park the caller indefinitely; read
+    /// the delay with [`AcdpError::retry_after`] and reschedule.
     pub async fn publish_with_retry(
         &self,
         req: &PublishRequest,
@@ -567,15 +574,20 @@ impl RegistryClient {
             match self.publish_idempotent(req, idempotency_key).await {
                 Ok(resp) => return Ok(resp),
                 Err(e) if e.is_transient() && attempt + 1 < attempts => {
-                    let backoff_ms = 250u64 * (1 << attempt.min(3));
+                    let backoff = Duration::from_millis(250u64 * (1 << attempt.min(3)));
+                    let wait = match e.retry_after() {
+                        Some(ra) if ra > MAX_RETRY_AFTER_WAIT => return Err(e),
+                        Some(ra) => ra.max(backoff),
+                        None => backoff,
+                    };
                     last_err = Some(e);
                     #[cfg(feature = "tracing")]
                     tracing::debug!(
                         attempt = attempt + 1,
-                        backoff_ms,
+                        wait_ms = wait.as_millis() as u64,
                         "publish transient failure; retrying"
                     );
-                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                    tokio::time::sleep(wait).await;
                 }
                 Err(e) => return Err(e),
             }
@@ -818,6 +830,13 @@ fn malformed_response(e: serde_json::Error) -> AcdpError {
 /// registries may also emit. Per-request headers (e.g. `Content-Type`,
 /// `If-None-Match`) are added on top.
 pub const ACDP_ACCEPT: &str = "application/acdp+json, application/json;q=0.9";
+
+/// Longest `Retry-After` that [`RegistryClient::publish_with_retry`] will
+/// sleep through before retrying. A longer delay ends the retry loop with
+/// the [`AcdpError::RateLimited`] error, which still carries the delay
+/// (RFC-ACDP-0008 §4.3 forbids retrying sooner, and an unbounded sleep
+/// would let a registry park the caller).
+pub const MAX_RETRY_AFTER_WAIT: Duration = Duration::from_secs(60);
 
 fn acdp_default_headers() -> reqwest::header::HeaderMap {
     let mut h = reqwest::header::HeaderMap::new();
@@ -1145,28 +1164,46 @@ impl RegistryClient {
             let value = serde_json::from_slice(&bytes).map_err(malformed_response)?;
             Ok((value, bytes.len()))
         } else {
+            // RFC-ACDP-0008 §4.3: every 429 carries `Retry-After`, which a
+            // 0.5.0 consumer MUST honor. Read it before the body consumes
+            // the response.
+            let too_many = resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS;
+            let retry_after = if too_many {
+                resp.headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| acdp_primitives::time::parse_retry_after(v, chrono::Utc::now()))
+            } else {
+                None
+            };
             // Error envelopes are tiny — apply the metadata cap so a
             // hostile registry can't exhaust memory via the error path.
-            let bytes = match read_body_capped(resp, MAX_METADATA_BYTES).await {
-                Ok(b) => b,
-                Err(_) => {
-                    return Err(AcdpError::from_wire_error(WireError {
-                        error: acdp_types::publish::WireErrorBody {
-                            code: "unknown".into(),
-                            message: "could not read registry error response".into(),
-                            details: None,
-                        },
-                    }));
-                }
+            let wire = match read_body_capped(resp, MAX_METADATA_BYTES).await {
+                Ok(bytes) => serde_json::from_slice::<WireError>(&bytes).ok(),
+                Err(_) => None,
             };
-            let wire: WireError = serde_json::from_slice(&bytes).unwrap_or_else(|_| WireError {
-                error: acdp_types::publish::WireErrorBody {
-                    code: "unknown".into(),
-                    message: "could not parse registry error response".into(),
-                    details: None,
+            let err = match wire {
+                Some(wire) => AcdpError::from_wire_error(wire),
+                // A 429 is `rate_limited` even when its envelope is
+                // missing or malformed, so the caller still backs off.
+                None if too_many => {
+                    AcdpError::rate_limited("HTTP 429 without a readable error envelope", None)
+                }
+                None => AcdpError::from_wire_error(WireError {
+                    error: acdp_types::publish::WireErrorBody {
+                        code: "unknown".into(),
+                        message: "could not read or parse registry error response".into(),
+                        details: None,
+                    },
+                }),
+            };
+            Err(match err {
+                AcdpError::RateLimited { message, .. } => AcdpError::RateLimited {
+                    message,
+                    retry_after,
                 },
-            });
-            Err(AcdpError::from_wire_error(wire))
+                other => other,
+            })
         }
     }
 }

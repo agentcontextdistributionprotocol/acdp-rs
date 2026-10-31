@@ -178,7 +178,7 @@ fn classify(e: &AcdpError) -> &'static str {
         AcdpError::PayloadTooLarge(_) => "payload_too_large",
         AcdpError::EmbeddedTooLarge(_) => "embedded_too_large",
         AcdpError::UnsupportedAlgorithm(_) => "unsupported_algorithm",
-        AcdpError::RateLimited(_) => "rate_limited",
+        AcdpError::RateLimited { .. } => "rate_limited",
         AcdpError::Http(_) => "http_error",
         AcdpError::ContextIdMismatch { .. } => "context_id_mismatch",
         _ => "internal_error",

@@ -1200,7 +1200,7 @@ let ctx = c.fetch_verified(&ctx_id, &VerificationPolicy::default(), deadline)?;
 | `resolve` | `CrossRegistryResolver::resolve` (after `with_cross_registry`) |
 | `changes` | `RegistryClient::changes` (one feed page; entries are hints) |
 | `verify_change` | `recall::verify_change`; `held` is copied |
-| `run` | any other async call, as `|c| async move { … }` |
+| `run` | any other async call, as `\|c\| async move { … }` |
 
 - **Deadline.** Each method takes a `std::time::Instant`. When it passes,
   the call returns `AcdpError::DeadlineExceeded` and the in-flight work is

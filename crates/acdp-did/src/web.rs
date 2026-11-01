@@ -558,6 +558,9 @@ fn build_http_client_pinned(
 
     let mut builder = reqwest::Client::builder()
         .use_rustls_tls()
+        // Only the `GET /changes` client takes gzip (RFC-ACDP-0018 §5.2); reqwest
+        // features unify across a build, so opt out explicitly here.
+        .no_gzip()
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
         .redirect(policy)

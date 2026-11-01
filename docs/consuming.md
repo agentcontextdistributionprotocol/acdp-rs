@@ -953,6 +953,53 @@ is unrevoked (the producer may have revoked at another registry), so keep
 RFC-ACDP-0014 §8 revocation discovery running, and re-verify high-stakes
 reliance on a schedule (`rec-006` L).
 
+**Page size and compression (§5.2).** `RegistryClient::changes` asks for
+gzip on `/changes` (and only there), and caps the body at 1 MiB **after**
+decoding, so a compressed response cannot exhaust the client. A page over
+the cap is requested again from the same `since` with half the `limit`, so
+callers get a shorter page with `has_more: true`, and no cursor handling
+changes: every caller of `changes`, `ChangeFeed::fetch` and the blocking
+facade gets this. `AcdpError::PayloadTooLarge` reaches the caller only when
+a page of `limit=1` still does not fit, meaning a single entry is over the
+bound. The feed cannot advance past it from this consumer, so alert on it
+rather than retry (`rec-006` N).
+
+**Bucket filters (§6.1).** An exact watch tells the registry what you rely
+on. A bucket tells it only a short prefix of a hash of the value, which
+unrelated values share. Send buckets only to a registry advertising
+`limits.max_change_bucket_length`. `changes` checks this against the
+capabilities (cached for their TTL) and returns
+`AcdpError::SchemaViolation` without touching `/changes` otherwise. That
+is your cue to poll unfiltered, or with exact filters if you accept
+revealing them. The response is a **candidate set**, so keep the values you
+watch in a second, exact filter:
+
+```rust,ignore
+use acdp::types::change::{bucket, WatchFilter};
+
+let n = 4; // Pick n for the crowd you want to hide in (§6.1).
+// Sent to the registry. A context watched by bucket needs its producer's
+// bucket too, or its key revocations go unheard.
+let wire = WatchFilter::new()
+    .lineage_bucket(bucket(lineage.as_str(), n))
+    .agent_bucket(bucket(producer.as_str(), n));
+// Never sent: what this consumer actually relies on.
+let watching = WatchFilter::new().ctx_id(relied_on.clone());
+let producer_of = |c: &CtxId| (c == &relied_on).then(|| producer.clone());
+
+let mut feed = ChangeFeed::new(client, wire).since(position);
+let page = feed.fetch().await?;
+for change in page.changes.iter().filter(|c| watching.matches_exact(c, producer_of)) {
+    // §7 verify_change as above. Anything filtered out changes nothing.
+}
+feed.advance(&page); // Advance whether or not an entry matched.
+```
+
+`matches_exact` applies the §6 rules, including the `ctx_id` rule for a
+producer's key revocations (`rec-010` H), and a filter naming no exact value
+matches nothing. Subscription filters carry no bucket member; §6.1 says to
+subscribe with `kind` values only and pull with your buckets.
+
 **Change hints (§8).** A registry claiming `acdp-registry-events` POSTs a
 contentless `acdp-change-hint/1` to a subscriber's callback. The registry
 signs it with `ACDP-Signature: t=<unix>,v1=<hex HMAC-SHA-256>`. The HMAC

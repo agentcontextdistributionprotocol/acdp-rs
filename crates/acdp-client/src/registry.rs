@@ -2,12 +2,13 @@
 
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use acdp_primitives::error::AcdpError;
 use acdp_primitives::limits::{
-    CONNECT_TIMEOUT, MAX_CONTEXT_BYTES, MAX_METADATA_BYTES, MAX_REDIRECTS, REQUEST_TIMEOUT,
+    CONNECT_TIMEOUT, MAX_CHANGES_PAGE_BYTES, MAX_CONTEXT_BYTES, MAX_METADATA_BYTES, MAX_REDIRECTS,
+    REQUEST_TIMEOUT,
 };
 use acdp_safe_http::SsrfPolicy;
 use acdp_types::{
@@ -55,6 +56,14 @@ use crate::revocation_cache::RevocationCache;
 pub struct RegistryClient {
     base: String,
     http: Client,
+    /// `GET /changes` only: as `http`, but advertises gzip and decodes it
+    /// (RFC-ACDP-0018 §5.2). A separate client because reqwest decides this
+    /// per client, and the other reads have no use for it (a proxy that
+    /// compresses may weaken the `ETag` a conditional retrieval relies on).
+    changes_http: Client,
+    /// The capabilities limits a bucket filter is checked against, shared
+    /// across clones and refreshed on the capabilities cache TTL.
+    change_filter_limits: Arc<Mutex<Option<ChangeFilterLimits>>>,
     budget: Option<DiscoveryBudget>,
     revocation_cache: Option<RevocationCache>,
     revocation_freshness: Duration,
@@ -174,6 +183,18 @@ impl DiscoveryBudget {
         self.inner.bytes_used.fetch_add(n as u64, Ordering::SeqCst);
     }
 }
+
+/// What `limits` says about `GET /changes` filters, cached until `expires`.
+#[derive(Clone, Copy)]
+struct ChangeFilterLimits {
+    max_bucket_length: Option<u16>,
+    max_filters: Option<u64>,
+    expires: Instant,
+}
+
+/// The `limit` a registry applies to `GET /changes` when none is sent
+/// (RFC-ACDP-0018 §5.1).
+const DEFAULT_CHANGES_LIMIT: u32 = 100;
 
 /// Cache and integrity headers returned alongside a retrieved body.
 ///
@@ -694,8 +715,65 @@ impl RegistryClient {
     /// than the registry's retention is [`AcdpError::CursorExpired`]: the
     /// consumer has missed an unknown set of entries, must re-verify every
     /// watched context directly, then resume from [`crate::Since::Head`]
-    /// (§7 "Resync"). Body capped at 1 MB.
+    /// (§7 "Resync").
+    ///
+    /// **Page size (§5.2).** The request advertises gzip, and the decoded
+    /// body is capped at 1 MiB. A larger page is requested again from the
+    /// same `since` with half the `limit` (the registry default, when
+    /// `limit` is `None`), until it fits, so the page returned can be
+    /// shorter than `limit` with `has_more: true`, as any clamped page can.
+    /// Only a page still too large at `limit=1`, one entry over the bound,
+    /// surfaces [`AcdpError::PayloadTooLarge`], after at most one request
+    /// per halving. Any other error returns at once, with no retry.
+    ///
+    /// **Bucket filters (§6.1).** A filter carrying a bucket is checked
+    /// against the capabilities `limits` first (fetched, then cached for the
+    /// capabilities TTL). With no `max_change_bucket_length` advertised, or
+    /// a bucket longer than it, this is [`AcdpError::SchemaViolation`] and
+    /// nothing is sent to `/changes`: the caller decides whether to poll
+    /// unfiltered or to reveal exact filters. The result is a candidate
+    /// set: apply [`acdp_types::change::WatchFilter::matches_exact`] before
+    /// §7 verification. A filter without buckets makes no capabilities
+    /// request.
     pub async fn changes(
+        &self,
+        since: &crate::recall::Since,
+        filter: &acdp_types::change::WatchFilter,
+        limit: Option<u32>,
+    ) -> Result<acdp_types::change::ChangesResponse, AcdpError> {
+        if filter.has_buckets() {
+            self.check_bucket_filter(filter).await?;
+        }
+        let mut limit = limit;
+        let result = loop {
+            match self.changes_page(since, filter, limit).await {
+                Err(AcdpError::PayloadTooLarge(why)) => {
+                    match limit.unwrap_or(DEFAULT_CHANGES_LIMIT) {
+                        0 | 1 => {
+                            break Err(AcdpError::PayloadTooLarge(format!(
+                                "{why}; a changes page of limit=1 still does not fit, so the \
+                                 feed cannot advance past this entry (RFC-ACDP-0018 §5.2)"
+                            )))
+                        }
+                        l => limit = Some(l / 2),
+                    }
+                }
+                other => break other,
+            }
+        };
+        // A registry refusing a filter may have changed what it supports
+        // since the cached capabilities: read them again on the next call.
+        if filter.has_buckets() && matches!(result, Err(AcdpError::SchemaViolation(_))) {
+            *self
+                .change_filter_limits
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = None;
+        }
+        result
+    }
+
+    /// One `GET /changes` request.
+    async fn changes_page(
         &self,
         since: &crate::recall::Since,
         filter: &acdp_types::change::WatchFilter,
@@ -709,11 +787,44 @@ impl RegistryClient {
         if let Some(l) = limit {
             query.push(("limit", l.to_string()));
         }
-        let resp = self.send_read(self.http.get(&url).query(&query)).await?;
+        let resp = self
+            .send_read(self.changes_http.get(&url).query(&query))
+            .await?;
         let (value, _) = self
-            .parse_success::<serde_json::Value>(resp, MAX_CONTEXT_BYTES)
+            .parse_success::<serde_json::Value>(resp, MAX_CHANGES_PAGE_BYTES)
             .await?;
         acdp_types::change::ChangesResponse::from_value(&value)
+    }
+
+    /// The §6.1 consumer gate: `filter`'s buckets may go to this registry.
+    async fn check_bucket_filter(
+        &self,
+        filter: &acdp_types::change::WatchFilter,
+    ) -> Result<(), AcdpError> {
+        // Refuse a malformed value before spending a capabilities request.
+        filter.validate(None)?;
+        let cached = *self
+            .change_filter_limits
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let limits = match cached {
+            Some(limits) if Instant::now() < limits.expires => limits,
+            _ => {
+                let (caps, ttl) = self.capabilities_with_ttl().await?;
+                let limits = ChangeFilterLimits {
+                    max_bucket_length: caps.limits.max_change_bucket_length,
+                    max_filters: caps.limits.max_change_filters,
+                    expires: Instant::now() + ttl,
+                };
+                *self
+                    .change_filter_limits
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = Some(limits);
+                limits
+            }
+        };
+        filter.validate_buckets(limits.max_bucket_length)?;
+        filter.validate(limits.max_filters)
     }
 
     // ── Discovery ────────────────────────────────────────────────────────────
@@ -985,21 +1096,25 @@ impl RegistryClientBuilder {
             .unwrap_or(if parsed.scheme() == "http" { 80 } else { 443 });
         let pinned = self.ssrf_policy.pin_resolved_ip(&host, port).await?;
 
-        let mut builder = Client::builder()
-            .use_rustls_tls()
-            .connect_timeout(self.connect_timeout)
-            .timeout(self.request_timeout)
-            .redirect(redirect_policy())
-            .default_headers(acdp_default_headers())
-            .resolve(&host, pinned);
-        builder = Self::apply_root_cert(builder, self.root_cert_pem.as_deref())?;
-
-        let http = builder
-            .build()
-            .map_err(|e| AcdpError::Http(e.to_string()))?;
+        let client = |gzip: bool| -> Result<Client, AcdpError> {
+            let builder = Client::builder()
+                .use_rustls_tls()
+                .gzip(gzip)
+                .connect_timeout(self.connect_timeout)
+                .timeout(self.request_timeout)
+                .redirect(redirect_policy())
+                .default_headers(acdp_default_headers())
+                .resolve(&host, pinned);
+            Self::apply_root_cert(builder, self.root_cert_pem.as_deref())?
+                .build()
+                .map_err(|e| AcdpError::Http(e.to_string()))
+        };
+        let (http, changes_http) = (client(false)?, client(true)?);
         Ok(RegistryClient {
             base,
             http,
+            changes_http,
+            change_filter_limits: Arc::default(),
             budget: None,
             revocation_cache: None,
             revocation_freshness: Duration::ZERO,
@@ -1025,28 +1140,32 @@ impl RegistryClientBuilder {
             .ok()
             .and_then(|u| u.host_str().map(str::to_string));
 
-        let mut builder = Client::builder()
-            .use_rustls_tls()
-            .connect_timeout(self.connect_timeout)
-            .timeout(self.request_timeout)
-            .redirect(redirect_policy())
-            .default_headers(acdp_default_headers())
-            // DNS-time SSRF filtering for every connection (incl. redirects
-            // and reconnects), defeating DNS rebinding — RFC-ACDP-0006 §7.6.
-            // Mirrors `WebResolver::build_http_client` / `HttpsDataRefFetcher`.
-            .dns_resolver(acdp_safe_http::SafeDnsResolver::arc(self.ssrf_policy));
-        builder = Self::apply_root_cert(builder, self.root_cert_pem.as_deref())?;
-
-        if let (Some(target), Some(host)) = (self.resolve_target, original_authority) {
-            builder = builder.resolve(&host, target);
-        }
-
-        let http = builder
-            .build()
-            .map_err(|e| AcdpError::Http(e.to_string()))?;
+        let client = |gzip: bool| -> Result<Client, AcdpError> {
+            let mut builder = Client::builder()
+                .use_rustls_tls()
+                .gzip(gzip)
+                .connect_timeout(self.connect_timeout)
+                .timeout(self.request_timeout)
+                .redirect(redirect_policy())
+                .default_headers(acdp_default_headers())
+                // DNS-time SSRF filtering for every connection (incl. redirects
+                // and reconnects), defeating DNS rebinding — RFC-ACDP-0006 §7.6.
+                // Mirrors `WebResolver::build_http_client` / `HttpsDataRefFetcher`.
+                .dns_resolver(acdp_safe_http::SafeDnsResolver::arc(
+                    self.ssrf_policy.clone(),
+                ));
+            builder = Self::apply_root_cert(builder, self.root_cert_pem.as_deref())?;
+            if let (Some(target), Some(host)) = (self.resolve_target, &original_authority) {
+                builder = builder.resolve(host, target);
+            }
+            builder.build().map_err(|e| AcdpError::Http(e.to_string()))
+        };
+        let (http, changes_http) = (client(false)?, client(true)?);
         Ok(RegistryClient {
             base,
             http,
+            changes_http,
+            change_filter_limits: Arc::default(),
             budget: None,
             revocation_cache: None,
             revocation_freshness: Duration::ZERO,

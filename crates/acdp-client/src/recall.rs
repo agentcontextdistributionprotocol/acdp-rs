@@ -153,6 +153,10 @@ impl<'a> ChangeFeed<'a> {
     }
 
     /// Read the page after [`Self::position`]. Does not move the cursor.
+    ///
+    /// An oversized page comes back shorter than [`Self::limit`] asked,
+    /// with `has_more: true`, and a bucket filter returns a candidate set:
+    /// see [`RegistryClient::changes`].
     pub async fn fetch(&self) -> Result<ChangesResponse, AcdpError> {
         self.client
             .changes(&self.since, &self.filter, self.limit)

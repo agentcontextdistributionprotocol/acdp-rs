@@ -485,6 +485,9 @@ pub fn safe_client(
 ) -> Result<reqwest::Client, AcdpError> {
     reqwest::Client::builder()
         .use_rustls_tls()
+        // Only the `GET /changes` client takes gzip (RFC-ACDP-0018 §5.2); reqwest
+        // features unify across a build, so opt out explicitly here.
+        .no_gzip()
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(timeout)
         .redirect(reqwest::redirect::Policy::none())

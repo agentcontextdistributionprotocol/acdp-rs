@@ -174,9 +174,9 @@ const KNOWN_FAMILIES: &[&str] = &[
     "pub",
     "rate",
     "rcpt",
-    // RFC-ACDP-0018: rec-006/007/009 (acdp-consumer-recall) are bound by name
-    // in `tests/recall.rs` (`rec_fixtures_for_consumer_recall_each_have_tests`;
-    // rec-009's envelope vectors execute there); the registry-side ones
+    // RFC-ACDP-0018: rec-006/007/009/010 (acdp-consumer-recall) are bound by
+    // name in `tests/recall.rs` (`rec_fixtures_for_consumer_recall_each_have_tests`;
+    // rec-009's envelope and rec-010's bucket vectors execute there); the registry-side ones
     // (acdp-registry-changes/-events) are a registry's to run, and rec-007's
     // HMAC vector runs in `rec_007_hint_hmac_vectors`.
     "rec",
@@ -2161,6 +2161,7 @@ fn pub_002_hash_mismatch_rejected_by_validator() {
             change_retention_seconds: None,
             max_change_filters: None,
             max_changes_page: None,
+            max_change_bucket_length: None,
             max_subscriptions_per_requester: None,
             max_reads_per_minute: None,
             max_anonymous_reads_per_minute: None,
@@ -2567,6 +2568,7 @@ mod registry_behavior {
                 change_retention_seconds: None,
                 max_change_filters: None,
                 max_changes_page: None,
+                max_change_bucket_length: None,
                 max_subscriptions_per_requester: None,
                 max_reads_per_minute: None,
                 max_anonymous_reads_per_minute: None,
@@ -3210,6 +3212,7 @@ fn dk_fixtures_did_key_rejections() {
                     change_retention_seconds: None,
                     max_change_filters: None,
                     max_changes_page: None,
+                    max_change_bucket_length: None,
                     max_subscriptions_per_requester: None,
                     max_reads_per_minute: None,
                     max_anonymous_reads_per_minute: None,
@@ -3953,6 +3956,7 @@ mod idempotency_fixtures {
                 change_retention_seconds: None,
                 max_change_filters: None,
                 max_changes_page: None,
+                max_change_bucket_length: None,
                 max_subscriptions_per_requester: None,
                 max_reads_per_minute: None,
                 max_anonymous_reads_per_minute: None,

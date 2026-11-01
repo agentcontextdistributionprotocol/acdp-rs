@@ -245,6 +245,8 @@ tokio    = { version = "1", features = ["full"] }
 anyhow   = "1"
 criterion = "0.8"
 wiremock = "0.6"
+# Compresses the mock registry's `GET /changes` answers (RFC-ACDP-0018 §5.2).
+flate2 = "1"
 proptest = "1"
 # TLS test harness — used to mock a `did:web` HTTPS endpoint and a
 # foreign registry so conformance fixtures pub-001 / pub-003 / pub-006

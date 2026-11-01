@@ -1,17 +1,19 @@
 //! Retraction recall, consumer side (ACDP 0.5.0 Draft, RFC-ACDP-0018,
 //! profile `acdp-consumer-recall`) — behavioral bindings for `rec-006`
-//! (§7 consumer verification, scenarios A–K and M) and `rec-007` D–E
-//! (§8.2 hint receiver), against the in-process TLS registry world, plus
-//! `rec-009`'s executed envelope known answers.
+//! (§7 consumer verification, scenarios A–K, M and N), `rec-007` D–E
+//! (§8.2 hint receiver) and `rec-010` G–I (§6.1 bucket filters), against
+//! the in-process TLS registry world, plus `rec-009`'s and `rec-010`'s
+//! executed known answers.
 //!
 //! `rec-006` L (feed silence is not non-revocation) is a duty of the
 //! RFC-ACDP-0014 §8 discovery schedule, not of the feed: it is exercised
 //! by the revocation auto-discovery tests in `tests/key_revocation.rs`.
 //!
 //! The registry-side fixtures (`rec-001..005`, `rec-007` A–C/F–H,
-//! `rec-008`) bind the `acdp-registry-changes` / `-events` profiles and
-//! are a registry implementation's to run (this repo's `acdp-server` has
-//! no `GET /changes`, so `rec-001` G's limit clamp is not bound here).
+//! `rec-008`, `rec-010` A–F) bind the `acdp-registry-changes` / `-events`
+//! profiles and are a registry implementation's to run (this repo's
+//! `acdp-server` has no `GET /changes`, so `rec-001` G's limit clamp and H's
+//! page bound are not bound here).
 
 mod common;
 mod world;
@@ -24,7 +26,8 @@ use acdp::client::VerificationPolicy;
 use acdp::crypto::SigningKey;
 use acdp::error::AcdpError;
 use acdp::types::change::{
-    sign_hint, verify_hint_signature, Change, ChangeHint, ChangeKind, EnvelopeReason, WatchFilter,
+    bucket, sign_hint, verify_hint_signature, Change, ChangeHint, ChangeKind, EnvelopeReason,
+    WatchFilter,
 };
 use acdp::types::lifecycle::{LifecycleEvent, LifecycleEventType};
 use acdp::types::receipt::{ReceiptSigner, RegistryReceipt};
@@ -617,6 +620,487 @@ async fn rec_006_m_a_short_page_is_not_the_head() {
     let q = w.changes_queries();
     assert!(q[0].contains("limit=500"), "{q:?}");
     assert!(q[1].contains("since=c1"), "{q:?}");
+}
+
+// ── rec-006 N and §5.2: page size and compression ────────────────────────────
+
+const MIB: usize = 1_048_576;
+
+/// The value of `name` in a raw query string.
+fn query_param<'a>(query: &'a str, name: &str) -> Option<&'a str> {
+    query
+        .split('&')
+        .find_map(|kv| kv.strip_prefix(name)?.strip_prefix('='))
+}
+
+fn gzip(bytes: &[u8]) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    enc.write_all(bytes).unwrap();
+    enc.finish().unwrap()
+}
+
+/// A registry allowing 1000-entry pages over `total` lifecycle entries, as
+/// the real ones are served: entries are large enough that a full page goes
+/// over 1 MiB, and `coding` compresses every answer when set.
+fn serve_big_feed(w: &World, template: &Change, total: u64, coding: Option<&'static str>) -> usize {
+    let wire = serde_json::to_value(template).unwrap();
+    let padding = "x".repeat(200);
+    let entry_at = move |seq: u64| {
+        let mut e = wire.clone();
+        e["seq"] = json!(seq);
+        // Evidence is verbatim and open: this parses, and sizes the entry
+        // like a real one (RFC-ACDP-0018 §5.2, about 1–1.5 KB).
+        e["event"]["reason"] = json!(padding.clone());
+        e
+    };
+    let entry_bytes = serde_json::to_vec(&entry_at(1)).unwrap().len();
+    w.respond_to_changes(move |query| {
+        let after: u64 = query_param(query, "since")
+            .and_then(|c| c.strip_prefix('c'))
+            .map_or(0, |c| c.parse().unwrap());
+        let limit: u64 = query_param(query, "limit").map_or(100, |l| l.parse().unwrap());
+        let last = (after + limit.min(1000)).min(total);
+        let changes: Vec<Value> = (after + 1..=last).map(&entry_at).collect();
+        let body = serde_json::to_vec(&json!({
+            "changes": changes,
+            "next_cursor": format!("c{last}"),
+            "has_more": last < total,
+        }))
+        .unwrap();
+        match coding {
+            Some(c) => (200, Some(c), gzip(&body)),
+            None => (200, None, body),
+        }
+    });
+    entry_bytes
+}
+
+/// The Seam shape: a consumer driving `RegistryClient::changes` directly,
+/// with `limit=1000`, against pages of about 1.4 MB. Before this rule it
+/// backed off on the unchanged request forever.
+#[tokio::test]
+async fn rec_006_n_an_oversized_page_is_retried_smaller() {
+    let (w, ctx, e0, r0) = retracted_world().await;
+    let entry_bytes = serve_big_feed(&w, &lifecycle_change(&ctx, &e0, &r0), 1_800, None);
+    assert!(entry_bytes * 1000 > MIB, "entry is {entry_bytes} bytes");
+    assert!(entry_bytes * 500 < MIB, "entry is {entry_bytes} bytes");
+
+    let client = w.client();
+    let filter = WatchFilter::new();
+    let mut since = Since::Cursor("c0".into());
+    let mut seqs = Vec::new();
+    loop {
+        let page = client.changes(&since, &filter, Some(1000)).await.unwrap();
+        seqs.extend(page.changes.iter().map(Change::seq));
+        since = Since::Cursor(page.next_cursor.clone());
+        if !page.has_more {
+            break;
+        }
+    }
+    // Nothing skipped or repeated, and the walk reached the head.
+    assert_eq!(seqs, (1..=1_800).collect::<Vec<u64>>());
+
+    let q = w.changes_queries();
+    assert!(q[0].contains("limit=1000"), "{q:?}");
+    assert!(q[1].contains("limit=500"), "{q:?}");
+    assert_eq!(
+        query_param(&q[0], "since"),
+        query_param(&q[1], "since"),
+        "the retry is of the same page: {q:?}"
+    );
+    assert_eq!(query_param(&q[2], "since"), Some("c500"), "{q:?}");
+    // One oversized read per page, plus the fitting one: bounded.
+    assert!(q.len() <= 8, "{q:?}");
+}
+
+/// The same through `ChangeFeed`, whose cursor only moves on `advance`.
+#[tokio::test]
+async fn rec_006_n_a_feed_keeps_its_position() {
+    let (w, ctx, e0, r0) = retracted_world().await;
+    serve_big_feed(&w, &lifecycle_change(&ctx, &e0, &r0), 1_000, None);
+    let client = w.client();
+    let mut feed = ChangeFeed::new(&client, WatchFilter::new())
+        .since(Since::Cursor("c0".into()))
+        .limit(1000);
+    let page = feed.fetch().await.unwrap();
+    assert_eq!(page.changes.len(), 500);
+    assert!(page.has_more, "a shrunk page is not the head");
+    assert_eq!(feed.position(), &Since::Cursor("c0".into()));
+    feed.advance(&page);
+    assert_eq!(feed.position(), &Since::Cursor("c500".into()));
+}
+
+/// A `limit` left to the registry is halved from its default, 100.
+#[tokio::test]
+async fn rec_006_n_default_limit_is_halved_from_100() {
+    let w = world().await;
+    w.respond_to_changes(|query| {
+        if query_param(query, "limit") == Some("50") {
+            let page = json!({ "changes": [], "next_cursor": "c1", "has_more": false });
+            (200, None, serde_json::to_vec(&page).unwrap())
+        } else {
+            (200, None, vec![b' '; MIB + 1])
+        }
+    });
+    let page = w
+        .client()
+        .changes(&Since::Head, &WatchFilter::new(), None)
+        .await
+        .unwrap();
+    assert_eq!(page.next_cursor, "c1");
+    let q = w.changes_queries();
+    assert_eq!(q.len(), 2, "{q:?}");
+    assert_eq!(query_param(&q[0], "limit"), None, "{q:?}");
+    assert_eq!(query_param(&q[1], "limit"), Some("50"), "{q:?}");
+}
+
+/// "A consumer MUST accept a response body of up to 1 MiB": exactly at the
+/// bound is one request; one byte over is the retry.
+#[tokio::test]
+async fn rec_006_n_one_mib_is_accepted_and_one_byte_more_is_not() {
+    let w = world().await;
+    let page = serde_json::to_vec(&json!({ "changes": [], "next_cursor": "c", "has_more": false }))
+        .unwrap();
+    let padded = |n: usize| {
+        let mut b = page.clone();
+        b.resize(n, b' ');
+        b
+    };
+    let exact = padded(MIB);
+    w.respond_to_changes(move |_| (200, None, exact.clone()));
+    let client = w.client();
+    client
+        .changes(&Since::Head, &WatchFilter::new(), Some(8))
+        .await
+        .unwrap();
+    assert_eq!(w.changes_queries().len(), 1);
+
+    let over = padded(MIB + 1);
+    w.respond_to_changes(move |_| (200, None, over.clone()));
+    let err = client
+        .changes(&Since::Head, &WatchFilter::new(), Some(8))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AcdpError::PayloadTooLarge(_)), "{err:?}");
+    assert!(!err.is_transient(), "{err:?}");
+    // 8, 4, 2, 1, then the error: never an unbounded loop. This is the one
+    // entry over the bound that §5.2 says a registry still serves alone.
+    assert_eq!(w.changes_queries().len(), 1 + 4);
+    assert!(err.to_string().contains("limit=1"), "{err}");
+}
+
+/// Only a size failure shrinks the request: a 429 goes back to the caller
+/// with its delay, on the first request.
+#[tokio::test]
+async fn rec_006_n_other_errors_do_not_shrink_the_limit() {
+    let w = world().await;
+    w.queue_changes(
+        429,
+        json!({ "error": { "code": "rate_limited", "message": "slow down" } }),
+    );
+    let err = w
+        .client()
+        .changes(&Since::Head, &WatchFilter::new(), Some(1000))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AcdpError::RateLimited { .. }), "{err:?}");
+    assert_eq!(w.changes_queries().len(), 1);
+}
+
+/// §5.2: gzip is requested on `/changes` and only there, and is decoded.
+#[tokio::test]
+async fn rec_006_n_changes_requests_and_decodes_gzip() {
+    let (w, ctx, e0, r0) = retracted_world().await;
+    serve_big_feed(&w, &lifecycle_change(&ctx, &e0, &r0), 3, Some("gzip"));
+    let client = w.client();
+    let page = client
+        .changes(&Since::Cursor("c0".into()), &WatchFilter::new(), Some(10))
+        .await
+        .unwrap();
+    assert_eq!(page.changes.len(), 3);
+    assert_eq!(
+        w.accept_encodings_of("/changes"),
+        vec![Some("gzip".to_string())]
+    );
+
+    client.retrieve(&ctx.body.ctx_id).await.unwrap();
+    let path = format!(
+        "/contexts/{}",
+        urlencoding::encode(ctx.body.ctx_id.as_str())
+    );
+    let seen = w.accept_encodings_of(&path);
+    assert!(!seen.is_empty(), "{path}");
+    assert!(seen.iter().all(Option::is_none), "{seen:?}");
+}
+
+/// The 1 MiB bound is on the DECODED body: a small compressed bomb costs
+/// the client at most the bound per request, never its expansion.
+#[tokio::test]
+async fn rec_006_n_a_compressed_bomb_is_bounded_by_its_decoded_size() {
+    let w = world().await;
+    let bomb = gzip(&vec![b' '; 64 * MIB]);
+    assert!(bomb.len() < MIB, "the wire size alone would pass the bound");
+    w.respond_to_changes(move |_| (200, Some("gzip"), bomb.clone()));
+    let err = w
+        .client()
+        .changes(&Since::Head, &WatchFilter::new(), Some(2))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AcdpError::PayloadTooLarge(_)), "{err:?}");
+    assert_eq!(w.changes_queries().len(), 2);
+}
+
+/// A page small on the wire but over the bound once decoded is retried like
+/// any other oversized page.
+#[tokio::test]
+async fn rec_006_n_gzip_page_over_the_decoded_bound_is_retried_smaller() {
+    let (w, ctx, e0, r0) = retracted_world().await;
+    serve_big_feed(&w, &lifecycle_change(&ctx, &e0, &r0), 1_000, Some("gzip"));
+    let page = w
+        .client()
+        .changes(&Since::Cursor("c0".into()), &WatchFilter::new(), Some(1000))
+        .await
+        .unwrap();
+    assert_eq!(page.changes.len(), 500);
+    assert_eq!(w.changes_queries().len(), 2);
+}
+
+// ── rec-010: bucket filters, consumer side ───────────────────────────────────
+
+/// `rec-010` G: the fixture's bucket-derivation vectors, every length, and
+/// the wrong readings it pins.
+#[test]
+fn rec_010_g_bucket_derivation_known_answers() {
+    let Some(root) = spec_root() else {
+        eprintln!("ACDP spec not found; skipping rec-010");
+        return;
+    };
+    let path = root.join("schemas/conformance/rec-010-bucket-filters.json");
+    if !path.exists() {
+        assert!(
+            std::env::var("ACDP_REQUIRE_CONFORMANCE").is_err(),
+            "ACDP_REQUIRE_CONFORMANCE is set but {} is missing",
+            path.display()
+        );
+        return;
+    }
+    let fixture: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let vectors = fixture["vectors"].as_array().expect("rec-010 vectors[]");
+    assert_eq!(vectors.len(), 5, "rec-010 vectors changed");
+    for v in vectors {
+        let name = v["name"].as_str().unwrap();
+        let value = v["bucket_of"].as_str().unwrap();
+        assert_eq!(
+            bucket(value, 64),
+            v["sha256_hex"].as_str().unwrap(),
+            "{name}"
+        );
+        for (n, want) in v["expected"].as_object().unwrap() {
+            let n: usize = n.parse().unwrap();
+            assert_eq!(bucket(value, n), want.as_str().unwrap(), "{name} n={n}");
+        }
+        if let Some(wrong) = v["not_bucket_4"].as_str() {
+            assert_ne!(bucket(value, 4), wrong, "{name}");
+        }
+    }
+}
+
+/// `rec-010` H: a bucket response is a candidate set. The consumer keeps
+/// the entry it watches, drops the neighbour sharing its bucket, and a
+/// `ctx_id` watch keeps its producer's key revocation.
+#[tokio::test]
+async fn rec_010_h_consumer_filters_a_bucket_response_locally() {
+    let (w, x, e0, r0) = retracted_world().await;
+    *w.bucket_limit.write().unwrap() = Some(8);
+    let lx = x.body.lineage_id.clone();
+    let producer = agent();
+    let n = 1;
+    let wire = WatchFilter::new()
+        .lineage_bucket(bucket(lx.as_str(), n))
+        .agent_bucket(bucket(producer.as_str(), n));
+
+    // Another producer's context in the same 1-digit bucket as X.
+    let change_x = lifecycle_change(&x, &e0, &r0);
+    let mut neighbour = serde_json::to_value(&change_x).unwrap();
+    neighbour["seq"] = json!(RELIER_SEQ + 1);
+    neighbour["lineage_id"] =
+        json!("lin:sha256:9eb5e0ee5d9a110edc81f7e1fdafca3e3f521650fb58b8bb09c53f29bec58592");
+    neighbour["agent_id"] = json!("did:web:other.example.com");
+    neighbour["ctx_id"] = json!("acdp://localhost/dddddddd-dddd-4ddd-8ddd-dddddddddddd");
+    let revocation = json!({
+        "change_version": "acdp-change/1",
+        "seq": RELIER_SEQ + 2,
+        "kind": "key_revocation",
+        "ctx_id": "acdp://localhost/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+        "lineage_id": "lin:sha256:a3cb6a87c1601b9f6dddd8d54709b01df3e05f1095b43e6d58e3a862bf9906fa",
+        "agent_id": AGENT,
+        "recorded_at": "2026-10-03T00:00:01.000Z",
+        "registry_receipt": serde_json::to_value(receipt_of(&x)).unwrap(),
+    });
+    w.queue_changes(
+        200,
+        json!({
+            "changes": [serde_json::to_value(&change_x).unwrap(), neighbour, revocation],
+            "next_cursor": "c9",
+            "has_more": false,
+        }),
+    );
+    let client = w.client();
+    let mut feed = ChangeFeed::new(&client, wire).since(Since::Cursor("c0".into()));
+    let page = feed.fetch().await.unwrap();
+    assert_eq!(page.changes.len(), 3, "the registry returned the bucket");
+
+    // Watching lineage Lx only: X's retraction, nothing else.
+    let by_lineage = WatchFilter::new().lineage_id(lx);
+    let none = |_: &acdp::types::CtxId| None;
+    let kept: Vec<u64> = page
+        .changes
+        .iter()
+        .filter(|c| by_lineage.matches_exact(c, none))
+        .map(Change::seq)
+        .collect();
+    assert_eq!(kept, vec![RELIER_SEQ]);
+
+    // Watching context X: also its producer's key revocation.
+    let by_ctx = WatchFilter::new().ctx_id(x.body.ctx_id.clone());
+    let producer_of = |c: &acdp::types::CtxId| (c == &x.body.ctx_id).then(|| producer.clone());
+    let kept: Vec<u64> = page
+        .changes
+        .iter()
+        .filter(|c| by_ctx.matches_exact(c, producer_of))
+        .map(Change::seq)
+        .collect();
+    assert_eq!(kept, vec![RELIER_SEQ, RELIER_SEQ + 2]);
+
+    // The bucket-only wire filter names nothing exactly, so it keeps
+    // nothing rather than everything; the cursor moves regardless.
+    assert!(!page
+        .changes
+        .iter()
+        .any(|c| feed.filter().matches_exact(c, none)));
+    feed.advance(&page);
+    assert_eq!(feed.position(), &Since::Cursor("c9".into()));
+}
+
+/// `rec-010` I: no bucket parameter reaches a registry that does not
+/// advertise the limit, nor one longer than it advertises. An exact filter
+/// reads no capabilities at all.
+#[tokio::test]
+async fn rec_010_i_no_buckets_without_the_limit() {
+    let w = world().await;
+    let client = w.client();
+    let buckets = WatchFilter::new().lineage_bucket("1f54");
+
+    let err = client
+        .changes(&Since::Head, &buckets, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AcdpError::SchemaViolation(_)), "{err:?}");
+    assert!(
+        err.to_string().contains("max_change_bucket_length"),
+        "{err}"
+    );
+    assert!(w.changes_queries().is_empty());
+
+    // Unfiltered and exact polls still work, without a capabilities read.
+    let hits = w.caps_hits.load(std::sync::atomic::Ordering::SeqCst);
+    client
+        .changes(&Since::Head, &WatchFilter::new(), None)
+        .await
+        .unwrap();
+    assert_eq!(w.changes_queries().len(), 1);
+    assert_eq!(w.caps_hits.load(std::sync::atomic::Ordering::SeqCst), hits);
+}
+
+#[tokio::test]
+async fn rec_010_i_bucket_within_the_advertised_limit_is_sent() {
+    let w = world().await;
+    *w.bucket_limit.write().unwrap() = Some(4);
+    let client = w.client();
+
+    let too_long = WatchFilter::new().agent_bucket("ad90e");
+    let err = client
+        .changes(&Since::Head, &too_long, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AcdpError::SchemaViolation(_)), "{err:?}");
+    assert!(w.changes_queries().is_empty());
+
+    // A malformed value is refused locally too (rec-010 E is what a registry
+    // would answer).
+    for bad in ["", "AD90", "zz"] {
+        let f = WatchFilter::new().lineage_bucket(bad);
+        assert!(
+            client.changes(&Since::Head, &f, None).await.is_err(),
+            "{bad:?}"
+        );
+    }
+    assert!(w.changes_queries().is_empty());
+
+    let fits = WatchFilter::new()
+        .lineage_bucket("1f54")
+        .agent_bucket("ad90")
+        .kind(ChangeKind::KeyRevocation);
+    client.changes(&Since::Head, &fits, None).await.unwrap();
+    client.changes(&Since::Head, &fits, None).await.unwrap();
+    let q = w.changes_queries();
+    assert_eq!(q.len(), 2);
+    assert!(q[0].contains("lineage_bucket=1f54"), "{q:?}");
+    assert!(q[0].contains("agent_bucket=ad90"), "{q:?}");
+    assert!(q[0].contains("kind=key_revocation"), "{q:?}");
+}
+
+/// The limit is cached for the capabilities TTL, not read on every poll, and
+/// a registry refusing a filter forces a fresh read.
+#[tokio::test]
+async fn rec_010_i_a_refused_filter_rereads_the_limit() {
+    let w = world().await;
+    *w.bucket_limit.write().unwrap() = Some(4);
+    let client = w.client();
+    let f = WatchFilter::new().lineage_bucket("1f54");
+    let hits = || w.caps_hits.load(std::sync::atomic::Ordering::SeqCst);
+
+    client.changes(&Since::Head, &f, None).await.unwrap();
+    client.changes(&Since::Head, &f, None).await.unwrap();
+    assert_eq!(hits(), 1, "cached between polls");
+
+    // The registry stopped supporting buckets.
+    *w.bucket_limit.write().unwrap() = None;
+    w.queue_changes(
+        400,
+        json!({ "error": { "code": "schema_violation", "message": "unknown parameter" } }),
+    );
+    let refused = client.changes(&Since::Head, &f, None).await.unwrap_err();
+    assert!(
+        matches!(refused, AcdpError::SchemaViolation(_)),
+        "{refused:?}"
+    );
+    let sent = w.changes_queries().len();
+
+    let err = client.changes(&Since::Head, &f, None).await.unwrap_err();
+    assert!(
+        err.to_string().contains("max_change_bucket_length"),
+        "{err}"
+    );
+    assert_eq!(hits(), 2);
+    assert_eq!(w.changes_queries().len(), sent, "nothing more was sent");
+}
+
+/// `limits.max_change_bucket_length` keeps its schema range (4 to 16).
+#[tokio::test]
+async fn rec_010_i_an_out_of_range_limit_is_a_bad_document() {
+    let w = world().await;
+    for bad in [3, 17] {
+        *w.bucket_limit.write().unwrap() = Some(bad);
+        let err = w.client().capabilities().await.unwrap_err();
+        assert!(matches!(err, AcdpError::SchemaViolation(_)), "{err:?}");
+    }
+    for ok in [4, 16] {
+        *w.bucket_limit.write().unwrap() = Some(ok);
+        let caps = w.client().capabilities().await.unwrap();
+        assert_eq!(caps.limits.max_change_bucket_length, Some(ok));
+    }
 }
 
 #[tokio::test]

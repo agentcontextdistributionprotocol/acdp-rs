@@ -159,6 +159,17 @@ pub struct Limits {
     )]
     pub max_changes_page: Option<u64>,
 
+    /// *(0.5.0, Draft)* OPTIONAL longest `lineage_bucket` / `agent_bucket`
+    /// value, in hex digits, the registry accepts on `GET /changes` (4 to
+    /// 16). Its presence advertises bucket-filter support; a consumer MUST
+    /// NOT send a bucket without it (RFC-ACDP-0018 §6.1, §9).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::serde_helpers::de_present"
+    )]
+    pub max_change_bucket_length: Option<u16>,
+
     /// *(0.5.0, Draft)* Maximum change-hint subscriptions one requester
     /// DID may hold (≥ 1). MUST be present with `acdp-registry-events`
     /// (RFC-ACDP-0018 §8.1, §9).

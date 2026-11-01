@@ -1636,6 +1636,7 @@ mod tests {
                 change_retention_seconds: None,
                 max_change_filters: None,
                 max_changes_page: None,
+                max_change_bucket_length: None,
                 max_subscriptions_per_requester: None,
                 max_reads_per_minute: None,
                 max_anonymous_reads_per_minute: None,

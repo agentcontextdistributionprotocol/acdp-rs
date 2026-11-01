@@ -118,13 +118,21 @@ fn revocation_discovery_futures_are_send() {
 /// them going `!Send` would break `axum::handler::Handler` callers.
 #[test]
 fn recall_and_discovery_futures_are_send() {
-    use acdp::client::{verify_change, RegistryClient, Since, VerificationPolicy};
+    use acdp::client::{verify_change, ChangeFeed, RegistryClient, Since, VerificationPolicy};
     use acdp::did::WebResolver;
     use acdp::types::change::{Change, WatchFilter};
 
     let client = RegistryClient::new("https://registry.example.com").unwrap();
     let filter = WatchFilter::default();
     assert_send(client.changes(&Since::Head, &filter, Some(100)));
+    // A bucket filter also reads capabilities and the shared limits cache
+    // on the way; the oversized-page retry lives in the same future.
+    let buckets = WatchFilter::new()
+        .lineage_bucket("1f54")
+        .agent_bucket("ad90");
+    assert_send(client.changes(&Since::Head, &buckets, None));
+    let feed = ChangeFeed::new(&client, buckets.clone());
+    assert_send(feed.fetch());
     assert_send(client.capabilities());
     assert_send(RegistryClient::builder("https://registry.example.com").build());
 
@@ -172,6 +180,7 @@ fn prove_publish_identity_future_is_send() {
             change_retention_seconds: None,
             max_change_filters: None,
             max_changes_page: None,
+            max_change_bucket_length: None,
             max_subscriptions_per_requester: None,
             max_reads_per_minute: None,
             max_anonymous_reads_per_minute: None,

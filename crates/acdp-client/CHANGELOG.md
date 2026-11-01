@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-client-v0.19.0...acdp-client-v0.20.0) - 2026-11-01
+
+### Added
+
+- [**breaking**] honor Retry-After, typed read rate limits, bearer_static (spec 32887b7) ([#514](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/514))
+
+### Other
+
+- RFC-0021 keyless labels: consumer side Final; pin spec 97ac873 ([#509](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/509))
+- bring RFC-0019 and RFC-0020 status labels current ([#506](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/506))
+
 ## [0.18.3](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-client-v0.18.2...acdp-client-v0.18.3) - 2026-10-30
 
 No enum change: no new `KeyAuthorization` or `RevocationTrustClass` variant (and no new `KeylessReason` or `AcdpError` variant). RFC-ACDP-0021 draft.4: a key attestation signed under an attester key that was rotated out of `assertionMethod` but kept in `verificationMethod` now verifies through its receipt (`kl-005` M). A key removed from `verificationMethod` is `attestation_invalid` (`kl-005` N).

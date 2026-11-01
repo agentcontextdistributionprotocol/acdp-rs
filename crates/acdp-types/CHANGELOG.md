@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-types-v0.19.0...acdp-types-v0.20.0) - 2026-11-01
+
+### Added
+
+- [**breaking**] capabilities limits tolerates unknown fields (spec de7af59) ([#517](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/517))
+- [**breaking**] honor Retry-After, typed read rate limits, bearer_static (spec 32887b7) ([#514](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/514))
+
+### Other
+
+- RFC-0021 keyless labels: consumer side Final; pin spec 97ac873 ([#509](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/509))
+- bring RFC-0019 and RFC-0020 status labels current ([#506](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/506))
+
 ## [0.19.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-types-v0.18.3...acdp-types-v0.19.0) - 2026-10-30
 
 No `KeyAuthorization` or `RevocationTrustClass` change. `KeylessReason` gains `IssuerUnreachable` (RFC-ACDP-0021 §5.2: the registry could not fetch the token issuer's keys; transient, so a publishing client retries) and `KeylessEventUnsupported` (§6.3). `KeylessReason` stays `#[non_exhaustive]` and new variants go last. **Breaking:** `KeylessReason::ALL` is now `&'static [KeylessReason]` (was `[KeylessReason; 20]`), so future spec reason tokens are additive. To iterate it by value, use `.iter().copied()`.

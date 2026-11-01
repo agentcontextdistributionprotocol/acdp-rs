@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-cli-v0.19.0...acdp-cli-v0.20.0) - 2026-11-01
+
+### Added
+
+- [**breaking**] honor Retry-After, typed read rate limits, bearer_static (spec 32887b7) ([#514](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/514))
+
 ## [0.17.2](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-cli-v0.17.1...acdp-cli-v0.17.2) - 2026-10-26
 
 ### Other

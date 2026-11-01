@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-validation-v0.19.0...acdp-validation-v0.20.0) - 2026-11-01
+
+### Added
+
+- [**breaking**] capabilities limits tolerates unknown fields (spec de7af59) ([#517](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/517))
+- [**breaking**] honor Retry-After, typed read rate limits, bearer_static (spec 32887b7) ([#514](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/514))
+
 ## [0.18.2](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-validation-v0.18.1...acdp-validation-v0.18.2) - 2026-10-30
 
 ### Added

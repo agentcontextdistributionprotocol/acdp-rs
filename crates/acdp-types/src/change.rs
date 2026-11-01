@@ -292,81 +292,199 @@ impl Change {
     }
 
     /// The pure cross-checks between an entry's envelope and its
-    /// evidence (RFC-ACDP-0018 §4), run before any network round-trip:
-    ///
-    /// - `lifecycle`: the event's and the receipt's `ctx_id` are the
-    ///   entry's; `recorded_at` equals `event_receipt.accepted_at`.
-    /// - `superseded`: the receipt is for `superseded_by` (not the
-    ///   entry's own context) in the entry's lineage; `recorded_at`
-    ///   equals `registry_receipt.created_at`.
-    /// - `key_revocation`: the receipt is for the entry's context and
-    ///   lineage; `recorded_at` equals `registry_receipt.created_at`.
+    /// evidence (RFC-ACDP-0018 §4, §7 "Envelope consistency"), run before
+    /// any network round-trip. This is [`Self::check_envelope`] with no
+    /// served evidence, mapped to [`AcdpError::SchemaViolation`].
     ///
     /// Signatures and the receipt's binding to the event are NOT checked
-    /// here. Failures are [`AcdpError::SchemaViolation`].
+    /// here.
     pub fn check_consistency(&self) -> Result<(), AcdpError> {
-        let recorded = |at: DateTime<Utc>, what: &str| {
-            if at == self.recorded_at {
-                Ok(())
-            } else {
-                Err(bad(format!(
-                    "change {} recorded_at {} ≠ {what} {} (RFC-ACDP-0018 §4)",
-                    self.seq,
-                    fmt_ms(self.recorded_at),
-                    fmt_ms(at)
-                )))
+        self.check_envelope(None).map_err(|f| bad(f.message))
+    }
+
+    /// The §7 envelope-consistency rule, in the order fixture `rec-009`
+    /// lists (`check_order`), reporting the first failing check:
+    ///
+    /// 1. `recorded_at` equals `event_receipt.accepted_at` (`lifecycle`)
+    ///    or `registry_receipt.created_at` (otherwise), as **strings**:
+    ///    `…00Z` is not `…00.000Z`
+    ///    ([`EnvelopeReason::RecordedAtMismatch`]).
+    /// 2. Context naming: `lifecycle` — the event's and the event
+    ///    receipt's `ctx_id` are the entry's; `key_revocation` — the
+    ///    receipt's `ctx_id` is the entry's; `superseded` — the receipt's
+    ///    `ctx_id` is `superseded_by` ([`EnvelopeReason::CtxIdMismatch`]).
+    /// 3. `superseded`: `superseded_by` differs from `ctx_id`
+    ///    ([`EnvelopeReason::SelfSupersession`]).
+    /// 4. `superseded`: the receipt's `lineage_id` is the entry's
+    ///    ([`EnvelopeReason::LineageIdMismatch`]). (`key_revocation`
+    ///    checks the same here.)
+    /// 5. When `served` is given — the evidence the consumer retrieved:
+    ///    `lifecycle_events[index]` for a `lifecycle` entry, the
+    ///    `registry_receipt` otherwise — it is JCS-equal to the entry's
+    ///    ([`EnvelopeReason::EvidenceMismatch`]).
+    ///
+    /// Signatures are NOT checked here.
+    pub fn check_envelope(&self, served: Option<&Value>) -> Result<(), EnvelopeFault> {
+        let fault = |reason, message: String| Err(EnvelopeFault { reason, message });
+        let seq = self.seq;
+        let recorded = fmt_ms(self.recorded_at);
+        let (stamp_owner, stamp_name, evidence) = match &self.evidence {
+            ChangeEvidence::Lifecycle {
+                event,
+                event_receipt,
+            } => (event_receipt, "event_receipt.accepted_at", event),
+            ChangeEvidence::Superseded {
+                registry_receipt, ..
             }
+            | ChangeEvidence::KeyRevocation { registry_receipt } => (
+                registry_receipt,
+                "registry_receipt.created_at",
+                registry_receipt,
+            ),
         };
+        let field = stamp_name.rsplit('.').next().unwrap_or(stamp_name);
+        let stamp = stamp_owner.get(field).and_then(Value::as_str).unwrap_or("");
+        if stamp != recorded {
+            return fault(
+                EnvelopeReason::RecordedAtMismatch,
+                format!("change {seq} recorded_at {recorded} ≠ {stamp_name} {stamp}"),
+            );
+        }
+        let str_of = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
+        let ctx = self.ctx_id.as_str();
         match &self.evidence {
             ChangeEvidence::Lifecycle {
                 event,
                 event_receipt,
             } => {
-                let e = LifecycleEvent::from_value(event)?;
-                let r = EventReceipt::from_value(event_receipt)?;
-                if e.ctx_id != self.ctx_id || r.ctx_id != self.ctx_id {
-                    return Err(bad(format!(
-                        "change {} names ctx_id {} but its event or event receipt names another \
-                         context",
-                        self.seq, self.ctx_id
-                    )));
+                if str_of(event, "ctx_id").as_deref() != Some(ctx)
+                    || str_of(event_receipt, "ctx_id").as_deref() != Some(ctx)
+                {
+                    return fault(
+                        EnvelopeReason::CtxIdMismatch,
+                        format!(
+                            "change {seq} names ctx_id {ctx} but its event or event receipt \
+                             names another context"
+                        ),
+                    );
                 }
-                recorded(r.accepted_at, "event_receipt.accepted_at")
             }
             ChangeEvidence::Superseded {
                 superseded_by,
                 registry_receipt,
             } => {
-                let r = RegistryReceipt::from_value(registry_receipt)?;
+                if str_of(registry_receipt, "ctx_id").as_deref() != Some(superseded_by.as_str()) {
+                    return fault(
+                        EnvelopeReason::CtxIdMismatch,
+                        format!("change {seq}: registry_receipt is not for superseded_by {superseded_by}"),
+                    );
+                }
                 if superseded_by == &self.ctx_id {
-                    return Err(bad(format!(
-                        "change {}: a context cannot supersede itself",
-                        self.seq
-                    )));
+                    return fault(
+                        EnvelopeReason::SelfSupersession,
+                        format!("change {seq}: a context cannot supersede itself"),
+                    );
                 }
-                if &r.ctx_id != superseded_by || r.lineage_id != self.lineage_id {
-                    return Err(bad(format!(
-                        "change {}: registry_receipt is not for superseded_by {superseded_by} in \
-                         lineage {}",
-                        self.seq, self.lineage_id
-                    )));
+                if str_of(registry_receipt, "lineage_id").as_deref()
+                    != Some(self.lineage_id.as_str())
+                {
+                    return fault(
+                        EnvelopeReason::LineageIdMismatch,
+                        format!(
+                            "change {seq}: registry_receipt is not in lineage {}",
+                            self.lineage_id
+                        ),
+                    );
                 }
-                recorded(r.created_at, "registry_receipt.created_at")
             }
             ChangeEvidence::KeyRevocation { registry_receipt } => {
-                let r = RegistryReceipt::from_value(registry_receipt)?;
-                if r.ctx_id != self.ctx_id || r.lineage_id != self.lineage_id {
-                    return Err(bad(format!(
-                        "change {}: registry_receipt is not for the revocation context {} in \
-                         lineage {}",
-                        self.seq, self.ctx_id, self.lineage_id
-                    )));
+                if str_of(registry_receipt, "ctx_id").as_deref() != Some(ctx) {
+                    return fault(
+                        EnvelopeReason::CtxIdMismatch,
+                        format!(
+                            "change {seq}: registry_receipt is not for the revocation context {ctx}"
+                        ),
+                    );
                 }
-                recorded(r.created_at, "registry_receipt.created_at")
+                if str_of(registry_receipt, "lineage_id").as_deref()
+                    != Some(self.lineage_id.as_str())
+                {
+                    return fault(
+                        EnvelopeReason::LineageIdMismatch,
+                        format!(
+                            "change {seq}: registry_receipt is not in lineage {}",
+                            self.lineage_id
+                        ),
+                    );
+                }
             }
+        }
+        if let Some(served) = served {
+            let equal = match (
+                acdp_jcs::try_canonicalize_value(evidence),
+                acdp_jcs::try_canonicalize_value(served),
+            ) {
+                (Ok(a), Ok(b)) => a == b,
+                _ => false,
+            };
+            if !equal {
+                return fault(
+                    EnvelopeReason::EvidenceMismatch,
+                    format!("change {seq}: the served evidence is not JCS-equal to the entry's"),
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Why [`Change::check_envelope`] refused an entry. The reasons are the
+/// `rec-009` fixture vocabulary, not wire error codes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum EnvelopeReason {
+    /// `recorded_at` is not, as a string, the evidence's timestamp.
+    RecordedAtMismatch,
+    /// The evidence names another context.
+    CtxIdMismatch,
+    /// A `superseded` entry names its own context as `superseded_by`.
+    SelfSupersession,
+    /// The receipt is for another lineage.
+    LineageIdMismatch,
+    /// The served evidence is not JCS-equal to the entry's.
+    EvidenceMismatch,
+}
+
+impl EnvelopeReason {
+    /// The `rec-009` reason token, e.g. `"recorded_at_mismatch"`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EnvelopeReason::RecordedAtMismatch => "recorded_at_mismatch",
+            EnvelopeReason::CtxIdMismatch => "ctx_id_mismatch",
+            EnvelopeReason::SelfSupersession => "self_supersession",
+            EnvelopeReason::LineageIdMismatch => "lineage_id_mismatch",
+            EnvelopeReason::EvidenceMismatch => "evidence_mismatch",
         }
     }
 }
+
+/// A failed [`Change::check_envelope`]: the first failing check and a
+/// human-readable message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvelopeFault {
+    /// The first failing check.
+    pub reason: EnvelopeReason,
+    /// What disagreed.
+    pub message: String,
+}
+
+impl std::fmt::Display for EnvelopeFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} (RFC-ACDP-0018 §7)", self.message)
+    }
+}
+
+impl std::error::Error for EnvelopeFault {}
 
 fn fmt_ms(t: DateTime<Utc>) -> String {
     t.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()

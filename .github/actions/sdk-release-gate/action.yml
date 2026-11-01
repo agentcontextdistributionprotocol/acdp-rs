@@ -1,0 +1,44 @@
+name: SDK release gate
+description: >-
+  Decides whether an SDK release workflow should skip because its version is
+  already published, and pushes the release tag if an earlier run published
+  but never tagged. Needs a checkout with push credentials.
+inputs:
+  registry:
+    description: "'pypi' or 'npm'"
+    required: true
+  package:
+    description: Package name on that registry
+    required: true
+  tag-prefix:
+    description: Release tag prefix, e.g. acdp-py-v
+    required: true
+  version:
+    description: The workflow's version input (empty on a tag push)
+    required: false
+    default: ''
+  dry-run:
+    description: The workflow's dry_run input. A dry run always builds.
+    required: false
+    default: 'false'
+  min-files:
+    description: PyPI only. Files a complete release has; fewer is a partial upload.
+    required: false
+    default: '1'
+outputs:
+  skip:
+    description: "'true' when the version is already published and there is nothing to do"
+    value: ${{ steps.gate.outputs.skip }}
+runs:
+  using: composite
+  steps:
+    - id: gate
+      shell: bash
+      env:
+        REGISTRY: ${{ inputs.registry }}
+        PACKAGE: ${{ inputs.package }}
+        TAG_PREFIX: ${{ inputs.tag-prefix }}
+        INPUT_VERSION: ${{ inputs.version }}
+        DRY_RUN: ${{ inputs.dry-run }}
+        MIN_FILES: ${{ inputs.min-files }}
+      run: bash "$GITHUB_ACTION_PATH/gate.sh"

@@ -5,7 +5,7 @@ name: acdp-py-release
 # Trigger: either push a tag of the form `acdp-py-v0.3.0`, or a
 # `workflow_dispatch` — the latter is how `release-plz.yml`'s SDK cascade
 # fires this workflow automatically whenever the core `acdp` crate
-# releases (see release-plz.yml's "Release SDK bindings at the acdp
+# releases (see release-plz.yml's "Release SDK bindings missing at the acdp
 # version" step). The build matrix cross-builds one cp39-abi3 wheel per
 # OS/arch (matching the Node SDK's platform set) plus a source
 # distribution; the publish job uploads them all to PyPI in one shot.
@@ -38,6 +38,12 @@ on:
         type: boolean
         default: true
 
+# Same-version runs queue rather than race: the second one's gate then sees what
+# the first published.
+concurrency:
+  group: acdp-py-release-${{ inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
@@ -45,8 +51,30 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # No-ops the whole run if this version is already published, so the SDK
+  # cascade in release-plz.yml can dispatch without risking a double publish.
+  check:
+    name: already published?
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # tag a release an earlier run published but did not tag
+    outputs:
+      skip: ${{ steps.gate.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: gate
+        uses: ./.github/actions/sdk-release-gate
+        with:
+          registry: pypi
+          package: 'acdp'
+          tag-prefix: acdp-py-v
+          version: ${{ inputs.version }}
+          dry-run: ${{ inputs.dry_run }}
+          min-files: '5' # the 4 wheels in the matrix below, plus the sdist
   wheels:
     name: wheel ${{ matrix.target }}
+    needs: check
+    if: ${{ needs.check.outputs.skip != 'true' }}
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -115,6 +143,8 @@ jobs:
 
   sdist:
     name: sdist
+    needs: check
+    if: ${{ needs.check.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -198,6 +228,9 @@ jobs:
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1 (v1.14.0)
         with:
           packages-dir: dist
+          # Completes a partial upload on a re-run instead of failing on the
+          # files that did arrive.
+          skip-existing: true
           # PEP 740 attestations: the action mints a digital attestation for
           # each uploaded file from this run's OIDC id-token and uploads it to
           # PyPI. Default-on when id-token: write is present; set explicitly so
@@ -252,7 +285,7 @@ jobs:
         run: |
           # Prefer the dispatch input (always set, to a real resolved version, on the
           # release-plz workflow_dispatch cascade — see release-plz.yml's "Release SDK
-          # bindings at the acdp version" step); fall back to the ref-derived tag suffix
+          # bindings missing at the acdp version" step); fall back to the ref-derived tag suffix
           # for a plain tag push, where `inputs.version` is unset. On workflow_dispatch,
           # github.ref_name is the dispatched ref (e.g. "main"), never a version — the
           # guard below exists specifically to catch that and fail loudly instead of

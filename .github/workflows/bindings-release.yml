@@ -5,7 +5,7 @@ name: bindings-release
 # Trigger: either push a tag of the form `acdp-node-v0.3.0`, or a
 # `workflow_dispatch` — the latter is how `release-plz.yml`'s SDK cascade
 # fires this workflow automatically whenever the core `acdp` crate
-# releases (see release-plz.yml's "Release SDK bindings at the acdp
+# releases (see release-plz.yml's "Release SDK bindings missing at the acdp
 # version" step). The job matrix cross-builds the native `.node` for
 # every target in `bindings/acdp-node/package.json`'s `napi.triples`,
 # then a single publish job assembles the per-platform npm packages
@@ -30,6 +30,12 @@ on:
         type: boolean
         default: true
 
+# Same-version runs queue rather than race: the second one's gate then sees what
+# the first published.
+concurrency:
+  group: bindings-release-${{ inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
@@ -41,8 +47,32 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # No-ops the whole run if this version is already published, so the SDK
+  # cascade in release-plz.yml can dispatch without risking a double publish.
+  # Keyed on the root loader, which is published last, so a run that stopped
+  # after the platform packages still goes on to the publish job's recovery path.
+  check:
+    name: already published?
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # tag a release an earlier run published but did not tag
+    outputs:
+      skip: ${{ steps.gate.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: gate
+        uses: ./.github/actions/sdk-release-gate
+        with:
+          registry: npm
+          package: '@agentcontextdistributionprotocol/acdp'
+          tag-prefix: acdp-node-v
+          version: ${{ inputs.version }}
+          dry-run: ${{ inputs.dry_run }}
+
   build:
     name: build ${{ matrix.target }}
+    needs: check
+    if: ${{ needs.check.outputs.skip != 'true' }}
     runs-on: ${{ matrix.host }}
     permissions:
       contents: read
@@ -324,7 +354,7 @@ jobs:
         run: |
           # Prefer the dispatch input (always set, to a real resolved version, on the
           # release-plz workflow_dispatch cascade — see release-plz.yml's "Release SDK
-          # bindings at the acdp version" step); fall back to the ref-derived tag suffix
+          # bindings missing at the acdp version" step); fall back to the ref-derived tag suffix
           # for a plain tag push, where `inputs.version` is unset. On workflow_dispatch,
           # github.ref_name is the dispatched ref (e.g. "main"), never a version — the
           # guard below exists specifically to catch that and fail loudly instead of

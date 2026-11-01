@@ -32,6 +32,12 @@ on:
         type: boolean
         default: true
 
+# Same-version runs queue rather than race: the second one's gate then sees what
+# the first published.
+concurrency:
+  group: acdp-wasm-release-${{ inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
@@ -43,8 +49,30 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # No-ops the whole run if this version is already published, so the SDK
+  # cascade in release-plz.yml can dispatch without risking a double publish.
+  check:
+    name: already published?
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # tag a release an earlier run published but did not tag
+    outputs:
+      skip: ${{ steps.gate.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: gate
+        uses: ./.github/actions/sdk-release-gate
+        with:
+          registry: npm
+          package: '@agentcontextdistributionprotocol/acdp-wasm'
+          tag-prefix: acdp-wasm-v
+          version: ${{ inputs.version }}
+          dry-run: ${{ inputs.dry_run }}
+
   publish:
     name: build + publish to npm
+    needs: check
+    if: ${{ needs.check.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write # push the release tag

@@ -130,13 +130,34 @@ jobs:
       # building, so the published artifact version == the acdp version.
       # workflow_dispatch is exempt from the GITHUB_TOKEN "no recursive
       # workflow runs" rule, so these dispatched runs DO execute.
-      - name: Release SDK bindings at the acdp version
-        if: ${{ steps.acdp.outputs.released == 'true' }}
+      #
+      # Decided from tags, not from whether this run published `acdp`: a run
+      # that fails after publishing `acdp`, and the re-run that then finds it
+      # "already up to date", both report no `acdp` release, which skipped the
+      # SDKs for 0.20.0 and 0.20.1. `!cancelled()` so a failure on an unrelated
+      # later crate doesn't hold them back either: the `acdp-v` tag proves
+      # `acdp` is published, and that's all the SDKs depend on. The version comes
+      # from main, not this run's checkout, because the dispatch builds main and
+      # the sync step above may have left the checkout on the release branch.
+      # Dispatching again is safe: each workflow no-ops on a published version.
+      # An SDK release that keeps failing is retried on each push to main.
+      - name: Release SDK bindings missing at the acdp version
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VER: ${{ steps.acdp.outputs.version }}
         run: |
-          for wf in acdp-py-release.yml bindings-release.yml acdp-wasm-release.yml; do
-            echo "dispatching $wf for acdp $VER"
-            gh workflow run "$wf" --ref main -f version="$VER" -f dry_run=false
+          git fetch -q origin main
+          VER=$(git show FETCH_HEAD:Cargo.toml | python3 -c 'import sys, tomllib; print(tomllib.load(sys.stdin.buffer)["workspace"]["package"]["version"])')
+          if ! git ls-remote --exit-code --tags origin "refs/tags/acdp-v$VER" >/dev/null; then
+            echo "acdp $VER has not been released; nothing to do"
+            exit 0
+          fi
+          for pair in acdp-py-release.yml:acdp-py-v bindings-release.yml:acdp-node-v acdp-wasm-release.yml:acdp-wasm-v; do
+            wf="${pair%%:*}"; tag="${pair##*:}$VER"
+            if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+              echo "$tag exists; not dispatching $wf"
+            else
+              echo "$tag is missing; dispatching $wf for acdp $VER"
+              gh workflow run "$wf" --ref main -f version="$VER" -f dry_run=false
+            fi
           done

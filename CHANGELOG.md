@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.20.0...acdp-v0.20.1) - 2026-11-01
+
+### Added
+
+- resync on invalid_cursor, clear seq dedup on resync, rec-009 (spec c40671e) ([#521](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/521))
+
 ## [0.20.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.19.0...acdp-v0.20.0) - 2026-11-01
 
 Read rate limits, `Retry-After`, `bearer_static`, and an open `limits` object (RFC-ACDP-0008 §4.3 and §6.2, RFC-ACDP-0007 §3.2 and §3.3.1; 0.5.0 Draft; spec pin de7af59). No `KeyAuthorization`, `RevocationTrustClass` or `KeylessReason` change. No new `AcdpError` variant.

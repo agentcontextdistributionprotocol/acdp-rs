@@ -9,9 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.20.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.19.0...acdp-v0.20.0) - 2026-11-01
 
+Read rate limits, `Retry-After`, `bearer_static`, and an open `limits` object (RFC-ACDP-0008 §4.3 and §6.2, RFC-ACDP-0007 §3.2 and §3.3.1; 0.5.0 Draft; spec pin de7af59). No `KeyAuthorization`, `RevocationTrustClass` or `KeylessReason` change. No new `AcdpError` variant.
+
+**Breaking:** `AcdpError::RateLimited(String)` is now `RateLimited { message: String, retry_after: Option<Duration> }`. `retry_after` is the parsed `Retry-After` header of a 429, read or write; both the delay-seconds and the HTTP-date form are accepted. To migrate, match `RateLimited { .. }`, build the error with `AcdpError::rate_limited(msg, None)`, and read the delay with `AcdpError::retry_after()`. `publish_with_retry` now waits at least `Retry-After` before retrying. A delay over `MAX_RETRY_AFTER_WAIT` (60 s) returns the error at once instead.
+
+**Breaking:** `Limits` gains `max_reads_per_minute`, `max_anonymous_reads_per_minute` (both ≥ 1) and `extensions`. A struct literal must add `max_reads_per_minute: None, max_anonymous_reads_per_minute: None, extensions: Default::default()`.
+
+**Behaviour change:** `limits` now tolerates unknown fields (spec #120, schema-010 now expects accept). It no longer rejects them, and keeps them in `Limits::extensions`, so a future limit never locks out a deployed consumer. Known fields stay typed and range-checked. Consumers on 0.19.0 or earlier still reject a document carrying `max_reads_per_minute` or `max_anonymous_reads_per_minute`, or any other unknown limit. Upgrade them to 0.20.0 before a registry advertises these fields.
+
+`bearer_static` needs no new API. `StaticBearerToken` and `PerAuthorityTokens` already present a token only to its issuing origin, never to a DID host and never across a cross-origin redirect.
+
 ### Added
 
 - [**breaking**] honor Retry-After, typed read rate limits, bearer_static (spec 32887b7) ([#514](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/514))
+- [**breaking**] capabilities limits tolerates unknown fields (spec de7af59) ([#517](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/517))
 
 ### Other
 

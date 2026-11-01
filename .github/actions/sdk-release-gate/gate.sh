@@ -3,7 +3,7 @@
 #
 # Any doubt means skip=false, so the release goes ahead: an unreachable registry
 # must not lose a release, and PyPI and npm both refuse to overwrite a published
-# version, so the worst case is a red run rather than a double publish.
+# version, so the worst case is a wasted build or a red run, not a double publish.
 set -euo pipefail
 
 skip=false
@@ -41,6 +41,15 @@ case "$REGISTRY" in
     published="$(npm view "$PACKAGE@$VER" version 2>/dev/null || true)"
     echo "npm serves '$published' for $PACKAGE@$VER"
     [ "$published" = "$VER" ] || finish
+    # The Node root still publishes when its platform packages fail, so the root
+    # alone doesn't prove the release is complete. Rerunning retries them.
+    deps="$(npm view "$PACKAGE@$VER" optionalDependencies --json 2>/dev/null || true)"
+    for dep in $(printf '%s' "$deps" | jq -r 'select(type == "object" and (has("error") | not)) | keys[]' 2>/dev/null || true); do
+      if [ "$(npm view "$dep@$VER" version 2>/dev/null || true)" != "$VER" ]; then
+        echo "$dep@$VER is missing, so the release is incomplete"
+        finish
+      fi
+    done
     ;;
   *)
     echo "::error::unknown registry '$REGISTRY'"

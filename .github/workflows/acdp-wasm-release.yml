@@ -32,10 +32,11 @@ on:
         type: boolean
         default: true
 
-# Same-version runs queue rather than race: the second one's gate then sees what
-# the first published.
+# Same-version dispatches queue rather than race: the second one's gate then sees
+# what the first published. A dry run has its own group, because a newer pending
+# run replaces an older one and a dry run must not displace a real release.
 concurrency:
-  group: acdp-wasm-release-${{ inputs.version || github.ref_name }}
+  group: acdp-wasm-release-${{ inputs.version || github.ref_name }}-${{ inputs.dry_run }}
   cancel-in-progress: false
 
 permissions:

@@ -882,23 +882,10 @@ async fn rec_009_entry_envelope_known_answers() {
     let vectors = fixture["vectors"].as_array().expect("rec-009 vectors[]");
     assert!(!vectors.is_empty());
     let w = world().await;
-    let mut refused_at_parse = 0;
     for v in vectors {
         let name = v["name"].as_str().unwrap_or("?");
-        let change = match Change::from_value(&v["entry"]) {
-            Ok(c) => c,
-            // An entry outside the closed schema (e.g. a non-canonical
-            // `recorded_at`, which acdp-change.schema.json forbids) is
-            // refused at parse: the same reject verdict, one step earlier.
-            Err(e) => {
-                assert_eq!(
-                    v["expected"]["verdict"], "reject",
-                    "{name}: entry does not parse: {e}"
-                );
-                refused_at_parse += 1;
-                continue;
-            }
-        };
+        let change = Change::from_value(&v["entry"])
+            .unwrap_or_else(|e| panic!("{name}: entry does not parse: {e}"));
         let served = &v["served"];
         let served = served
             .get("lifecycle_event")
@@ -924,10 +911,5 @@ async fn rec_009_entry_envelope_known_answers() {
             other => panic!("{name}: unknown verdict {other:?}"),
         }
     }
-    // Only env-sup-recorded-at's `…00Z` entry is outside the schema.
-    assert!(
-        refused_at_parse <= 1,
-        "{refused_at_parse} vectors refused at parse"
-    );
     assert_eq!(w.changes_queries().len(), 0);
 }

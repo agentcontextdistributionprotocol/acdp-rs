@@ -118,6 +118,19 @@ pub fn validate_capabilities(caps: &acdp_types::CapabilitiesDocument) -> Result<
         }
     }
 
+    // RFC-ACDP-0018 §6.1 / capabilities schema *(0.5.0)*: the advertised
+    // bucket length, when present, is 4 to 16 hex digits.
+    if let Some(n) = caps.limits.max_change_bucket_length {
+        use acdp_types::change::{MAX_CHANGE_BUCKET_LENGTH, MIN_ADVERTISED_CHANGE_BUCKET_LENGTH};
+        if !(MIN_ADVERTISED_CHANGE_BUCKET_LENGTH..=MAX_CHANGE_BUCKET_LENGTH).contains(&n) {
+            return Err(AcdpError::SchemaViolation(format!(
+                "capabilities.limits.max_change_bucket_length {n} is outside \
+                 {MIN_ADVERTISED_CHANGE_BUCKET_LENGTH}..={MAX_CHANGE_BUCKET_LENGTH} \
+                 (RFC-ACDP-0007 \u{a7}3.2)"
+            )));
+        }
+    }
+
     // §3.5 item 10 *(0.3.0)* / RFC-ACDP-0003 §6.4: a registry
     // advertising acdp_version >= 0.3.0 MUST support Idempotency-Key;
     // supports_idempotency_key absent-or-false alongside such a version
@@ -1821,6 +1834,7 @@ mod capabilities_0_3_0_tests {
                 change_retention_seconds: None,
                 max_change_filters: None,
                 max_changes_page: None,
+                max_change_bucket_length: None,
                 max_subscriptions_per_requester: None,
                 max_reads_per_minute: None,
                 max_anonymous_reads_per_minute: None,

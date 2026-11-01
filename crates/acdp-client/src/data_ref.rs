@@ -154,6 +154,9 @@ fn build_data_ref_http_client(policy: &SsrfPolicy) -> Result<reqwest::Client, Ac
 
     reqwest::Client::builder()
         .use_rustls_tls()
+        // Only the `GET /changes` client takes gzip (RFC-ACDP-0018 §5.2); reqwest
+        // features unify across a build, so opt out explicitly here.
+        .no_gzip()
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(30))
         .redirect(redirect_policy)

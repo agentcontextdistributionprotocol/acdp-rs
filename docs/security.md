@@ -42,7 +42,7 @@ you do not opt in:
 | **IP-literal rejection** | `https://1.2.3.4/…` is rejected — forces a DNS lookup so the resolved IP can be filtered. | RFC-ACDP-0006 §7 |
 | **Private/loopback/link-local/multicast/IMDS blocking** | Resolved IPs in RFC 1918, loopback, link-local, CGNAT, multicast, ULA (`fc00::/7`), `fe80::/10`, and the metadata endpoint (`169.254.169.254`) are refused — IPv4 **and** IPv6, including IPv4-mapped. | RFC-ACDP-0008 §4.8/§4.9 |
 | **DNS-rebinding pin** | IPs are filtered **at DNS-resolution time, before any TCP connect** — a hostname whose answers fall in a forbidden range is refused. See below. | RFC-ACDP-0006 §7.6 |
-| **Body-size caps** | 1 MB for context retrievals; 64 KB for capabilities and DID documents. | RFC-ACDP-0006 §7 |
+| **Body-size caps** | 1 MB for context retrievals; 64 KB for capabilities and DID documents; 1 MiB for a `GET /changes` page, measured after gzip decoding (the only endpoint that accepts a content coding). | RFC-ACDP-0006 §7, RFC-ACDP-0018 §5.2 |
 | **Redirect cap** | Max 3 redirects, **same-authority only**. | RFC-ACDP-0006 §7 |
 | **Timeouts** | 5 s connect, 30 s total. | RFC-ACDP-0006 §7.4 |
 | **Algorithm-downgrade rejection** | The signature algorithm must match the algorithm of the resolved DID verification method. | RFC-ACDP-0001 §5.10 |

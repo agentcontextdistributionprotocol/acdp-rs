@@ -52,6 +52,10 @@ audit-as-crates-io = false
 [policy.acdp-verify]
 audit-as-crates-io = false
 
+[[exemptions.adler2]]
+version = "2.0.1"
+criteria = "safe-to-deploy"
+
 [[exemptions.aho-corasick]]
 version = "1.1.5"
 criteria = "safe-to-run"
@@ -91,6 +95,10 @@ criteria = "safe-to-run"
 [[exemptions.assert-json-diff]]
 version = "2.0.2"
 criteria = "safe-to-run"
+
+[[exemptions.async-compression]]
+version = "0.4.51"
+criteria = "safe-to-deploy"
 
 [[exemptions.autocfg]]
 version = "1.5.1"
@@ -156,6 +164,18 @@ criteria = "safe-to-run"
 version = "1.1.0"
 criteria = "safe-to-run"
 
+[[exemptions.compression-codecs]]
+version = "0.4.46"
+criteria = "safe-to-deploy"
+
+[[exemptions.compression-core]]
+version = "0.4.34"
+criteria = "safe-to-deploy"
+
+[[exemptions.crc32fast]]
+version = "1.5.3"
+criteria = "safe-to-deploy"
+
 [[exemptions.criterion]]
 version = "0.8.2"
 criteria = "safe-to-run"
@@ -214,6 +234,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.find-msvc-tools]]
 version = "0.1.11"
+criteria = "safe-to-deploy"
+
+[[exemptions.flate2]]
+version = "1.1.10"
 criteria = "safe-to-deploy"
 
 [[exemptions.fs-err]]
@@ -395,6 +419,10 @@ criteria = "safe-to-deploy"
 [[exemptions.minimal-lexical]]
 version = "0.2.1"
 criteria = "safe-to-run"
+
+[[exemptions.miniz_oxide]]
+version = "0.9.1"
+criteria = "safe-to-deploy"
 
 [[exemptions.mio]]
 version = "1.2.2"
@@ -606,6 +634,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.signal-hook-registry]]
 version = "1.4.8"
+criteria = "safe-to-deploy"
+
+[[exemptions.simd-adler32]]
+version = "0.3.10"
 criteria = "safe-to-deploy"
 
 [[exemptions.slab]]
@@ -890,6 +922,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.zerovec-derive]]
 version = "0.11.6"
+criteria = "safe-to-deploy"
+
+[[exemptions.zlib-rs]]
+version = "0.6.8"
 criteria = "safe-to-deploy"
 
 [[exemptions.zmij]]

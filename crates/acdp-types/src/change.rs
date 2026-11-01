@@ -42,6 +42,11 @@ pub const HINT_MAX_SKEW_SECONDS: i64 = 300;
 pub const MAX_CURSOR_LEN: usize = 2048;
 /// The minimum `limits.change_retention_seconds` (30 days, §5.4).
 pub const MIN_CHANGE_RETENTION_SECONDS: u64 = 2_592_000;
+/// The longest `lineage_bucket` / `agent_bucket` value any registry may
+/// accept: the `limits.max_change_bucket_length` schema maximum (§6.1).
+pub const MAX_CHANGE_BUCKET_LENGTH: u16 = 16;
+/// The smallest `limits.max_change_bucket_length` a registry may advertise.
+pub const MIN_ADVERTISED_CHANGE_BUCKET_LENGTH: u16 = 4;
 
 fn bad(msg: impl Into<String>) -> AcdpError {
     AcdpError::SchemaViolation(msg.into())
@@ -711,12 +716,32 @@ fn check_cursor(c: &str, what: &str) -> Result<(), AcdpError> {
 
 // ── Watch filters ────────────────────────────────────────────────────────────
 
-/// A §6 watch filter: the `ctx_id`, `lineage_id`, `agent_id` and `kind`
-/// values of a `GET /changes` request or a subscription.
+/// The bucket of length `n` of a watched value (RFC-ACDP-0018 §6.1): the
+/// first `n` characters of lowercase hex(SHA-256(UTF-8(`value`))), at most
+/// the digest's 64.
 ///
-/// Values within a member are OR'd; `ctx_id`, `lineage_id` and
-/// `agent_id` are OR'd with each other; `kind` is AND'd with the result.
-/// With no id value at all, every visible entry matches.
+/// `value` is the `lineage_id` or `agent_id` string exactly as it appears
+/// in change entries, prefix and percent-encoding included (`lin:sha256:…`,
+/// `did:web:…%3A8443`). Fixture `rec-010` pins known answers.
+pub fn bucket(value: &str, n: usize) -> String {
+    use sha2::Digest as _;
+    let mut hex = hex::encode(Sha256::digest(value.as_bytes()));
+    hex.truncate(n);
+    hex
+}
+
+/// A §6 watch filter: the `ctx_id`, `lineage_id`, `agent_id`, `kind` and
+/// bucket values of a `GET /changes` request, or the same members minus the
+/// buckets for a subscription.
+///
+/// Values within a member are OR'd; `ctx_id`, `lineage_id`, `agent_id`,
+/// `lineage_bucket` and `agent_bucket` are OR'd with each other; `kind` is
+/// AND'd with the result. With no id or bucket value at all, every visible
+/// entry matches.
+///
+/// A response to a bucket filter is only a **candidate set**: keep the
+/// exact values you watch in a second filter and apply
+/// [`Self::matches_exact`] to each entry before §7 verification (§6.1).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WatchFilter {
@@ -732,6 +757,16 @@ pub struct WatchFilter {
     /// Restrict to these kinds; empty means every kind.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub kind: Vec<ChangeKind>,
+    /// *(§6.1)* Watched lineage buckets: see [`bucket`]. `GET /changes`
+    /// only; a subscription filter refuses them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lineage_bucket: Vec<String>,
+    /// *(§6.1)* Watched producer buckets: see [`bucket`]. A context watched
+    /// by bucket needs its producer's bucket here too, or its key
+    /// revocations go unheard: the `ctx_id` rule has no bucket counterpart.
+    /// `GET /changes` only; a subscription filter refuses them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_bucket: Vec<String>,
 }
 
 impl WatchFilter {
@@ -759,6 +794,21 @@ impl WatchFilter {
         self.kind.push(k);
         self
     }
+    /// Also watch lineage bucket `b` (see [`bucket`]).
+    pub fn lineage_bucket(mut self, b: impl Into<String>) -> Self {
+        self.lineage_bucket.push(b.into());
+        self
+    }
+    /// Also watch producer bucket `b` (see [`bucket`]).
+    pub fn agent_bucket(mut self, b: impl Into<String>) -> Self {
+        self.agent_bucket.push(b.into());
+        self
+    }
+
+    /// True when the filter carries a `lineage_bucket` or `agent_bucket`.
+    pub fn has_buckets(&self) -> bool {
+        !self.lineage_bucket.is_empty() || !self.agent_bucket.is_empty()
+    }
 
     /// True when no member has a value.
     pub fn is_empty(&self) -> bool {
@@ -768,7 +818,12 @@ impl WatchFilter {
     /// The total number of values, which `limits.max_change_filters`
     /// bounds (§5.1).
     pub fn total_values(&self) -> usize {
-        self.ctx_id.len() + self.lineage_id.len() + self.agent_id.len() + self.kind.len()
+        self.ctx_id.len()
+            + self.lineage_id.len()
+            + self.agent_id.len()
+            + self.kind.len()
+            + self.lineage_bucket.len()
+            + self.agent_bucket.len()
     }
 
     /// Check the ids' grammars and, when given, the
@@ -784,6 +839,7 @@ impl WatchFilter {
         for a in &self.agent_id {
             AgentDid::parse(a.as_str())?;
         }
+        self.validate_buckets(Some(MAX_CHANGE_BUCKET_LENGTH))?;
         if let Some(max) = max_change_filters {
             if self.total_values() as u64 > max {
                 return Err(bad(format!(
@@ -795,13 +851,45 @@ impl WatchFilter {
         Ok(())
     }
 
+    /// Check the bucket values against a registry's advertised
+    /// `limits.max_change_bucket_length` (§6.1): each is 1 to that many
+    /// lowercase hex digits. With `None`, the registry does not support
+    /// bucket filters, so any bucket value at all is refused: a consumer
+    /// MUST NOT send one (fixture `rec-010` I). Failures are
+    /// [`AcdpError::SchemaViolation`].
+    pub fn validate_buckets(&self, max_change_bucket_length: Option<u16>) -> Result<(), AcdpError> {
+        if !self.has_buckets() {
+            return Ok(());
+        }
+        let Some(max) = max_change_bucket_length else {
+            return Err(bad(
+                "this registry does not advertise limits.max_change_bucket_length, so a \
+                 consumer MUST NOT send it a bucket filter (RFC-ACDP-0018 §6.1)",
+            ));
+        };
+        for b in self.lineage_bucket.iter().chain(&self.agent_bucket) {
+            let hex = b.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'));
+            if !hex || b.is_empty() || b.len() > usize::from(max) {
+                return Err(bad(format!(
+                    "bucket '{b}' is not 1 to {max} lowercase hex digits (RFC-ACDP-0018 §6.1)"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// The stricter form a subscription filter takes (§8.1): at least one
-    /// value, and no member repeating a value.
+    /// value, no member repeating a value, and no bucket member (§6.1).
     pub fn validate_for_subscription(
         &self,
         max_change_filters: Option<u64>,
     ) -> Result<(), AcdpError> {
         self.validate(max_change_filters)?;
+        if self.has_buckets() {
+            return Err(bad(
+                "a subscription filter carries no bucket member (RFC-ACDP-0018 §6.1)",
+            ));
+        }
         if self.is_empty() {
             return Err(bad("a subscription filter needs at least one value"));
         }
@@ -851,11 +939,23 @@ impl WatchFilter {
                 .map(|a| ("agent_id", a.as_str().to_owned())),
         );
         q.extend(self.kind.iter().map(|k| ("kind", k.as_str().to_owned())));
+        q.extend(
+            self.lineage_bucket
+                .iter()
+                .map(|b| ("lineage_bucket", b.clone())),
+        );
+        q.extend(
+            self.agent_bucket
+                .iter()
+                .map(|b| ("agent_bucket", b.clone())),
+        );
         q
     }
 
-    /// Whether `change` matches (§6). `producer_of` returns the
-    /// `agent_id` of a context the registry holds: a `ctx_id=X` watch
+    /// Whether `change` matches on the wire (§6, §6.1), buckets included:
+    /// the registry-side rule. A consumer holding a response to a bucket
+    /// filter uses [`Self::matches_exact`] instead. `producer_of` returns
+    /// the `agent_id` of a context the registry holds: a `ctx_id=X` watch
     /// also matches a `key_revocation` entry for X's producer.
     pub fn matches(
         &self,
@@ -865,9 +965,54 @@ impl WatchFilter {
         if !self.kind.is_empty() && !self.kind.contains(&change.kind()) {
             return false;
         }
-        if self.ctx_id.is_empty() && self.lineage_id.is_empty() && self.agent_id.is_empty() {
+        if self.ctx_id.is_empty()
+            && self.lineage_id.is_empty()
+            && self.agent_id.is_empty()
+            && !self.has_buckets()
+        {
             return true;
         }
+        let in_bucket = |buckets: &[String], value: &str| {
+            !buckets.is_empty() && {
+                let full = bucket(value, 64);
+                buckets.iter().any(|b| full.starts_with(b.as_str()))
+            }
+        };
+        self.matches_exact_ids(change, producer_of)
+            || in_bucket(&self.lineage_bucket, change.lineage_id.as_str())
+            || in_bucket(&self.agent_bucket, change.agent_id.as_str())
+    }
+
+    /// The consumer's exact match over a bucket response (§6.1, fixture
+    /// `rec-010` H): does `change` concern a value this filter names
+    /// exactly, under the §6 rules? `kind` is AND'd as usual, bucket members
+    /// are ignored, and `producer_of` supplies the producer of a watched
+    /// context, so a `ctx_id` watch keeps that producer's `key_revocation`
+    /// entries.
+    ///
+    /// Call it on the filter of exact values you watch, not the bucket
+    /// filter you sent. Unlike [`Self::matches`], a filter naming no exact
+    /// `ctx_id`, `lineage_id` or `agent_id` matches **nothing**: passing the
+    /// bucket-only wire filter by mistake drops entries rather than letting
+    /// another consumer's entry affect a reliance decision.
+    ///
+    /// A match is still a hint: run §7 verification on it. Advance the feed
+    /// by the page's `next_cursor` whether or not any entry matched.
+    pub fn matches_exact(
+        &self,
+        change: &Change,
+        producer_of: impl Fn(&CtxId) -> Option<AgentDid>,
+    ) -> bool {
+        (self.kind.is_empty() || self.kind.contains(&change.kind()))
+            && self.matches_exact_ids(change, producer_of)
+    }
+
+    /// The §6 `ctx_id`, `lineage_id` and `agent_id` rules.
+    fn matches_exact_ids(
+        &self,
+        change: &Change,
+        producer_of: impl Fn(&CtxId) -> Option<AgentDid>,
+    ) -> bool {
         self.ctx_id.contains(&change.ctx_id)
             || self.lineage_id.contains(&change.lineage_id)
             || self.agent_id.contains(&change.agent_id)
@@ -1447,6 +1592,61 @@ mod tests {
             .kind(ChangeKind::Superseded)
             .validate(Some(1))
             .is_err());
+    }
+
+    #[test]
+    fn bucket_derivation_uses_the_value_as_it_appears() {
+        // rec-010's whole-string readings, without a spec checkout.
+        let lin = "lin:sha256:a3cb6a87c1601b9f6dddd8d54709b01df3e05f1095b43e6d58e3a862bf9906fa";
+        assert_eq!(bucket(lin, 8), "1f54677c");
+        assert_eq!(bucket("did:web:registry.example.com%3A8443", 4), "cf5a");
+        assert_eq!(bucket(lin, 64).len(), 64);
+        assert_eq!(bucket(lin, 100).len(), 64);
+        assert_eq!(bucket(lin, 0), "");
+    }
+
+    #[test]
+    fn bucket_values_are_validated() {
+        let f = |b: &str| WatchFilter::new().lineage_bucket(b);
+        for b in ["1", "1f54", "0123456789abcdef"] {
+            f(b).validate(None).unwrap();
+        }
+        for b in ["", "1F54", "1g54", "0123456789abcdef0"] {
+            assert!(f(b).validate(None).is_err(), "{b:?}");
+        }
+        // No advertised limit: no bucket at all. An exact filter is unaffected.
+        assert!(f("1f54").validate_buckets(None).is_err());
+        WatchFilter::new()
+            .lineage_id(LineageId::parse(LIN).unwrap())
+            .validate_buckets(None)
+            .unwrap();
+        // Never longer than advertised, on either member.
+        f("1f54").validate_buckets(Some(4)).unwrap();
+        assert!(f("1f54a").validate_buckets(Some(4)).is_err());
+        assert!(WatchFilter::new()
+            .agent_bucket("1f54a")
+            .validate_buckets(Some(4))
+            .is_err());
+        // Every bucket value counts toward max_change_filters (rec-010 D).
+        let two = f("1").agent_bucket("2");
+        assert_eq!(two.total_values(), 2);
+        assert!(two.validate(Some(1)).is_err());
+        assert_eq!(
+            two.query_pairs(),
+            vec![
+                ("lineage_bucket", "1".to_string()),
+                ("agent_bucket", "2".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn subscription_filter_refuses_buckets() {
+        let req = json!({
+            "filter": {"lineage_bucket": ["1f54"]},
+            "callback_url": "https://consumer.example.com/hints",
+        });
+        assert!(SubscriptionRequest::from_value(&req).is_err());
     }
 
     #[test]

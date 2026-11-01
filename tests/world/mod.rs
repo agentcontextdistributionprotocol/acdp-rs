@@ -51,6 +51,7 @@ pub fn caps() -> acdp::types::CapabilitiesDocument {
             change_retention_seconds: None,
             max_change_filters: None,
             max_changes_page: None,
+            max_change_bucket_length: None,
             max_subscriptions_per_requester: None,
             max_reads_per_minute: None,
             max_anonymous_reads_per_minute: None,
@@ -62,6 +63,11 @@ pub fn caps() -> acdp::types::CapabilitiesDocument {
         extensions: Default::default(),
     }
 }
+
+/// A raw `GET /changes` answer: `(status, content_encoding, body)`.
+pub type RawChanges = (u16, Option<&'static str>, Vec<u8>);
+/// Builds a raw `GET /changes` answer from the request's query string.
+pub type ChangesResponder = Arc<dyn Fn(&str) -> RawChanges + Send + Sync>;
 
 /// Status of the registry's receipt key in its DID document.
 #[derive(Clone, Copy)]
@@ -151,6 +157,15 @@ pub struct World {
     pub changes_queue: Arc<RwLock<std::collections::VecDeque<(u16, Value)>>>,
     /// The raw query string of every `GET /changes`, in order.
     pub changes_queries: Arc<RwLock<Vec<String>>>,
+    /// When set, answers `GET /changes` from its query string instead of
+    /// the queue, with raw bytes and headers (page sizes, content codings).
+    pub changes_responder: Arc<RwLock<Option<ChangesResponder>>>,
+    /// The `Accept-Encoding` of every request, as `(path, value)`, in order.
+    pub accept_encoding_seen: AuthLog,
+    /// `limits.max_change_bucket_length` the capabilities document advertises.
+    pub bucket_limit: Arc<RwLock<Option<u16>>>,
+    /// Number of capabilities documents served.
+    pub caps_hits: Arc<AtomicUsize>,
 }
 
 /// How the world's `/contexts/search` route answers.
@@ -184,6 +199,10 @@ impl World {
         let auth_seen: AuthLog = Arc::default();
         let changes_queue: Arc<RwLock<std::collections::VecDeque<(u16, Value)>>> = Arc::default();
         let changes_queries: Arc<RwLock<Vec<String>>> = Arc::default();
+        let changes_responder: Arc<RwLock<Option<ChangesResponder>>> = Arc::default();
+        let accept_encoding_seen: AuthLog = Arc::default();
+        let bucket_limit: Arc<RwLock<Option<u16>>> = Arc::default();
+        let caps_hits = Arc::new(AtomicUsize::new(0));
 
         let router = Router::new()
             .route(
@@ -218,7 +237,21 @@ impl World {
                     }
                 }),
             )
-            .route("/.well-known/acdp.json", get(|| async { Json(caps()) }))
+            .route(
+                "/.well-known/acdp.json",
+                get({
+                    let (limit, hits) = (bucket_limit.clone(), caps_hits.clone());
+                    move || {
+                        let (limit, hits) = (limit.clone(), hits.clone());
+                        async move {
+                            hits.fetch_add(1, Ordering::SeqCst);
+                            let mut doc = caps();
+                            doc.limits.max_change_bucket_length = *limit.read().unwrap();
+                            Json(doc)
+                        }
+                    }
+                }),
+            )
             // Publish endpoint: only the `Authorization` log matters, so it
             // always refuses.
             .route(
@@ -296,14 +329,30 @@ impl World {
             .route(
                 "/changes",
                 get({
-                    let (queue, queries) = (changes_queue.clone(), changes_queries.clone());
+                    let (queue, queries, responder) = (
+                        changes_queue.clone(),
+                        changes_queries.clone(),
+                        changes_responder.clone(),
+                    );
                     move |uri: axum::http::Uri| {
-                        let (queue, queries) = (queue.clone(), queries.clone());
+                        let (queue, queries, responder) =
+                            (queue.clone(), queries.clone(), responder.clone());
                         async move {
-                            queries
-                                .write()
-                                .unwrap()
-                                .push(uri.query().unwrap_or("").to_string());
+                            let query = uri.query().unwrap_or("").to_string();
+                            queries.write().unwrap().push(query.clone());
+                            let responder = responder.read().unwrap().clone();
+                            if let Some(respond) = responder {
+                                let (code, coding, body) = respond(&query);
+                                let mut resp =
+                                    (StatusCode::from_u16(code).unwrap(), body).into_response();
+                                if let Some(coding) = coding {
+                                    resp.headers_mut().insert(
+                                        axum::http::header::CONTENT_ENCODING,
+                                        axum::http::HeaderValue::from_static(coding),
+                                    );
+                                }
+                                return resp;
+                            }
                             let (code, body) = queue.write().unwrap().pop_front().unwrap_or((
                                 200,
                                 json!({ "changes": [], "next_cursor": "end", "has_more": false }),
@@ -333,9 +382,14 @@ impl World {
                 }),
             )
             .layer(axum::middleware::from_fn({
-                let (required, seen) = (required_bearer.clone(), auth_seen.clone());
+                let (required, seen, encodings) = (
+                    required_bearer.clone(),
+                    auth_seen.clone(),
+                    accept_encoding_seen.clone(),
+                );
                 move |req: axum::extract::Request, next: axum::middleware::Next| {
-                    let (required, seen) = (required.clone(), seen.clone());
+                    let (required, seen, encodings) =
+                        (required.clone(), seen.clone(), encodings.clone());
                     async move {
                         let path = req.uri().path().to_string();
                         let auth = req
@@ -343,6 +397,11 @@ impl World {
                             .get(axum::http::header::AUTHORIZATION)
                             .map(|v| v.to_str().unwrap().to_string());
                         seen.write().unwrap().push((path.clone(), auth.clone()));
+                        let encoding = req
+                            .headers()
+                            .get(axum::http::header::ACCEPT_ENCODING)
+                            .map(|v| v.to_str().unwrap().to_string());
+                        encodings.write().unwrap().push((path.clone(), encoding));
                         let gated = path.starts_with("/contexts") || path.starts_with("/lineages");
                         let want = required.read().unwrap().clone();
                         match want {
@@ -397,6 +456,10 @@ impl World {
             auth_seen,
             changes_queue,
             changes_queries,
+            changes_responder,
+            accept_encoding_seen,
+            bucket_limit,
+            caps_hits,
         }
     }
 
@@ -406,6 +469,22 @@ impl World {
             .write()
             .unwrap()
             .push_back((status, body));
+    }
+
+    /// Answer `GET /changes` with raw bytes built from its query string.
+    pub fn respond_to_changes(&self, respond: impl Fn(&str) -> RawChanges + Send + Sync + 'static) {
+        *self.changes_responder.write().unwrap() = Some(Arc::new(respond));
+    }
+
+    /// The `Accept-Encoding` values `path` was requested with, in order.
+    pub fn accept_encodings_of(&self, path: &str) -> Vec<Option<String>> {
+        self.accept_encoding_seen
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|(p, _)| p == path)
+            .map(|(_, v)| v.clone())
+            .collect()
     }
 
     /// The query strings `GET /changes` was called with.

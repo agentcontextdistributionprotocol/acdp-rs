@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-mcp-proxy-v0.20.1...acdp-mcp-proxy-v0.21.0) - 2026-11-01
+
+### Other
+
+- release v0.21.0 ([#524](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/524))
+
 ## [0.20.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-mcp-proxy-v0.19.0...acdp-mcp-proxy-v0.20.1) - 2026-11-01
 
 ### Added

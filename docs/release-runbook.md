@@ -11,17 +11,22 @@ moment someone else runs a step.
 The three language-binding release workflows (`bindings-release.yml` for
 `acdp-node`, `acdp-py-release.yml`, `acdp-wasm-release.yml`) run in two ways:
 
-- **SDK cascade (default).** When the core `acdp` crate releases,
-  `release-plz.yml`'s "Release SDK bindings at the acdp version" step dispatches
-  all three via `workflow_dispatch -f dry_run=false`. Each workflow then pushes its
+- **SDK cascade (default).** On every push to `main`, and on every re-run,
+  `release-plz.yml`'s "Release SDK bindings missing at the acdp version" step reads
+  the workspace version on `main`. If `acdp-v$VER` exists, it dispatches each SDK
+  workflow whose own tag is missing, via `workflow_dispatch --ref acdp-v$VER
+  -f dry_run=false`, so it builds the released commit rather than later code on
+  `main`. A release that fails partway needs no manual dispatch, and an SDK release
+  that keeps failing is retried on each push while its version is the one on `main`.
+  Older versions are not retried. Each workflow then pushes its
   own git tag (`acdp-py-v$VER` / `acdp-node-v$VER` / `acdp-wasm-v$VER`) in a "Tag the
   release" step after a successful publish. That step is gated on
   `github.event_name == 'workflow_dispatch' && !inputs.dry_run`, so it never fires on
   a tag push (the tag already exists) or on a dry run (nothing was published).
 - **Tag push (manual).** Pushing a tag matching `acdp-node-v*` / `acdp-py-v*` /
-  `acdp-wasm-v*` runs the full build-and-publish job unconditionally
-  (`if: github.event_name == 'push' || !inputs.dry_run` — the `dry_run` input only
-  guards a manual `workflow_dispatch`, never a tag push).
+  `acdp-wasm-v*` runs the full build-and-publish job, unless that version is already
+  published (`if: github.event_name == 'push' || !inputs.dry_run` — the `dry_run`
+  input only guards a manual `workflow_dispatch`, never a tag push).
 
 Behaviors to know before acting:
 
@@ -39,11 +44,16 @@ Behaviors to know before acting:
   manual `workflow_dispatch` before the workflows tagged automatically, so
   `git tag` can understate what is live on npm/PyPI — check the registries (see
   [Checking release state](#checking-release-state)).
-- **Never push a tag for a version that is already published.** It refires the
-  workflow and tries to republish that exact version; npm/PyPI reject it, so the run
-  fails loudly (a red CI run, no data corruption). The failure sits before the
-  consumer dispatch, so no spurious downstream bump PR is opened — but it still
-  wastes a run. Use the [manual tag push](#manual-tag-push) procedure instead.
+- **Re-releasing a published version is a no-op.** Each workflow's `check` job asks
+  the registry first. If the release is complete (for PyPI, all 5 files; for Node, the
+  root and every platform package), the rest of the run is skipped, no consumer is
+  notified, and a missing tag is pushed. Same-version dispatches queue rather than
+  race. A dry run always builds. A partial PyPI upload is completed, using
+  `skip-existing`.
+- **Consumer dispatches can still be missed.** The `acdp-released` dispatch to
+  `acdp-registry-rs` depends on the run that published `acdp`, so a re-run doesn't send
+  it. `acdp-playground`'s runs after "Tag the release", so a failed tag step loses it
+  and the later no-op won't resend it. Send either by hand if that happens.
 
 ## Reproducibility of the `acdp-wasm` artifact
 
@@ -100,7 +110,7 @@ Re-derive this table with `grep -n dispatches .github/workflows/*.yml`.
 ## Manual tag push
 
 Pushing a binding tag (`acdp-node-v*` / `acdp-py-v*` / `acdp-wasm-v*`) runs the full
-publish job. To push one without publishing (for example, a retroactive marker for a
+publish job, or the no-op `check` job if that version is already published. To push one without publishing (for example, a retroactive marker for a
 version that is already live), pause the tag-triggered workflows first:
 
 ```bash

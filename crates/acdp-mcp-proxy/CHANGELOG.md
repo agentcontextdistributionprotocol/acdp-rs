@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-mcp-proxy-v0.19.0...acdp-mcp-proxy-v0.20.0) - 2026-11-01
+
+### Added
+
+- [**breaking**] honor Retry-After, typed read rate limits, bearer_static (spec 32887b7) ([#514](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/514))
+
+### Other
+
+- bring RFC-0019 and RFC-0020 status labels current ([#506](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/506))
+- publish acdp-mcp-proxy through release-plz ([#505](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/505))
+
 ## [0.19.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-mcp-proxy-v0.18.3...acdp-mcp-proxy-v0.19.0) - 2026-10-30
 
 ### Added

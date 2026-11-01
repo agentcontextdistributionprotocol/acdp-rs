@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-producer-v0.19.0...acdp-producer-v0.20.0) - 2026-11-01
+
+### Other
+
+- RFC-0021 keyless labels: consumer side Final; pin spec 97ac873 ([#509](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/509))
+
 ## [0.18.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-producer-v0.17.3...acdp-producer-v0.18.0) - 2026-10-26
 
 ### Added

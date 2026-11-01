@@ -1,11 +1,17 @@
 //! Retraction recall, consumer side (ACDP 0.5.0 Draft, RFC-ACDP-0018,
 //! profile `acdp-consumer-recall`) — behavioral bindings for `rec-006`
-//! (§7 consumer verification, scenarios A–H) and `rec-007` D–E (§8.2
-//! hint receiver), against the in-process TLS registry world.
+//! (§7 consumer verification, scenarios A–K and M) and `rec-007` D–E
+//! (§8.2 hint receiver), against the in-process TLS registry world, plus
+//! `rec-009`'s executed envelope known answers.
+//!
+//! `rec-006` L (feed silence is not non-revocation) is a duty of the
+//! RFC-ACDP-0014 §8 discovery schedule, not of the feed: it is exercised
+//! by the revocation auto-discovery tests in `tests/key_revocation.rs`.
 //!
 //! The registry-side fixtures (`rec-001..005`, `rec-007` A–C/F–H,
 //! `rec-008`) bind the `acdp-registry-changes` / `-events` profiles and
-//! are a registry implementation's to run.
+//! are a registry implementation's to run (this repo's `acdp-server` has
+//! no `GET /changes`, so `rec-001` G's limit clamp is not bound here).
 
 mod common;
 mod world;
@@ -18,7 +24,7 @@ use acdp::client::VerificationPolicy;
 use acdp::crypto::SigningKey;
 use acdp::error::AcdpError;
 use acdp::types::change::{
-    sign_hint, verify_hint_signature, Change, ChangeHint, ChangeKind, WatchFilter,
+    sign_hint, verify_hint_signature, Change, ChangeHint, ChangeKind, EnvelopeReason, WatchFilter,
 };
 use acdp::types::lifecycle::{LifecycleEvent, LifecycleEventType};
 use acdp::types::receipt::{ReceiptSigner, RegistryReceipt};
@@ -449,6 +455,171 @@ async fn rec_006_h_cursor_expired_resyncs_from_head() {
 }
 
 #[tokio::test]
+async fn rec_006_i_invalid_cursor_on_a_persisted_cursor_resyncs() {
+    let w = world().await;
+    w.queue_changes(
+        400,
+        json!({ "error": { "code": "invalid_cursor", "message": "unknown cursor" } }),
+    );
+    w.queue_changes(
+        200,
+        json!({ "changes": [], "next_cursor": "head-cursor", "has_more": false }),
+    );
+    let client = w.client();
+    let authority = client.authority().unwrap();
+    let mut feed = ChangeFeed::new(&client, WatchFilter::new().kind(ChangeKind::Lifecycle))
+        .since(Since::Cursor("persisted".into()));
+    let mut seen = SeenChanges::new();
+    seen.mark(&authority, RELIER_SEQ);
+
+    let err = feed.fetch().await.unwrap_err();
+    assert!(matches!(err, AcdpError::InvalidCursor(_)), "{err:?}");
+    // A persisted cursor refused as invalid is treated as cursor_expired.
+    assert!(feed.needs_resync(&err));
+    assert!(feed.needs_resync(&AcdpError::CursorExpired));
+    // The consumer re-verifies every watched context directly here, then:
+    feed.resync(&mut seen);
+    assert_eq!(feed.position(), &Since::Head);
+    assert!(seen.is_new(&authority, RELIER_SEQ), "dedup state survived");
+    // Not retried forever: the next request starts from the head.
+    let page = feed.fetch().await.unwrap();
+    feed.advance(&page);
+    assert_eq!(feed.position(), &Since::Cursor("head-cursor".into()));
+    let q = w.changes_queries();
+    assert_eq!(q.len(), 2, "{q:?}");
+    assert!(q[0].contains("since=persisted"), "{q:?}");
+    assert!(q[1].contains("since=head"), "{q:?}");
+
+    // invalid_cursor on a request that sent no persisted cursor is a real
+    // error, not a resync trigger.
+    let head = ChangeFeed::new(&client, WatchFilter::new()).since(Since::Head);
+    assert!(!head.needs_resync(&AcdpError::InvalidCursor("x".into())));
+    assert!(!feed.needs_resync(&AcdpError::RateLimited {
+        message: "slow".into(),
+        retry_after: None
+    }));
+}
+
+#[tokio::test]
+async fn rec_006_j_seq_reused_after_a_resync_is_new() {
+    let (w, ctx, e0, r0) = retracted_world().await;
+    // A second relied-on context, retracted, whose entry the restored
+    // feed serves at the SAME seq.
+    let ctx2 = w.publish("key-1", K1, ContextType::Analysis, None).await;
+    assert_ne!(ctx.body.ctx_id, ctx2.body.ctx_id);
+    let e2 = event(&ctx2, LifecycleEventType::Retracted, 0);
+    let r2 = event_receipt(&ctx2, &e2, 0, 0);
+    serve_events(&w, &ctx2, &[(e2.clone(), r2.clone())]);
+    let first = serde_json::to_value(lifecycle_change(&ctx, &e0, &r0)).unwrap();
+    let reused = serde_json::to_value(lifecycle_change(&ctx2, &e2, &r2)).unwrap();
+
+    w.queue_changes(
+        200,
+        json!({ "changes": [first], "next_cursor": "c1", "has_more": false }),
+    );
+    w.queue_changes(
+        400,
+        json!({ "error": { "code": "cursor_expired", "message": "sequence reset" } }),
+    );
+    w.queue_changes(
+        200,
+        json!({ "changes": [], "next_cursor": "h1", "has_more": false }),
+    );
+    w.queue_changes(
+        200,
+        json!({ "changes": [reused], "next_cursor": "h2", "has_more": false }),
+    );
+
+    let client = w.client();
+    let authority = client.authority().unwrap();
+    let mut feed = ChangeFeed::new(&client, WatchFilter::new()).since(Since::Cursor("c0".into()));
+    let mut seen = SeenChanges::new();
+    let mut processed = Vec::new();
+    for _ in 0..4 {
+        let page = match feed.fetch().await {
+            Err(e) if feed.needs_resync(&e) => {
+                feed.resync(&mut seen);
+                continue;
+            }
+            other => other.unwrap(),
+        };
+        for change in &page.changes {
+            if !seen.is_new(&authority, change.seq()) {
+                continue;
+            }
+            assert!(verify(&w, change, None).await.effect().is_some());
+            seen.mark(&authority, change.seq());
+            processed.push(change.ctx_id().clone());
+        }
+        feed.advance(&page);
+    }
+    assert_eq!(processed, vec![ctx.body.ctx_id, ctx2.body.ctx_id]);
+}
+
+#[tokio::test]
+async fn rec_006_k_revocation_matches_by_the_retrieved_fingerprint() {
+    use acdp::crypto::fingerprint::fingerprint_ed25519;
+
+    let w = world().await;
+    // Two relied-on contexts by the same controller, signed by K1 and K2.
+    let by_k1 = fingerprint_ed25519(&SigningKey::from_bytes(&K1).verifying_key_bytes());
+    let by_k2 = fingerprint_ed25519(&SigningKey::from_bytes(&K2).verifying_key_bytes());
+    assert_ne!(by_k1, by_k2);
+    let rev = w.publish_revocation_of_k1("key-2", K2).await;
+    let change = Change::key_revocation(1057, agent(), &receipt_of(&rev)).unwrap();
+    // The entry carries no fingerprint: its closed schema has no member
+    // for one, so matching can only use the retrieved, verified body.
+    let wire = serde_json::to_value(&change).unwrap();
+    assert!(wire.get("revoked_key_fingerprint").is_none());
+    let mut smuggled = wire.clone();
+    smuggled["revoked_key_fingerprint"] = json!(by_k2);
+    assert!(Change::from_value(&smuggled).is_err());
+
+    match verify(&w, &change, None).await {
+        ChangeVerdict::Verified(ChangeEffect::KeyRevocation { revocation }) => {
+            assert_eq!(revocation.revoked_key_fingerprint, by_k1);
+            // Only the context signed by the revoked key is affected.
+            assert!(revocation.revoked_key_fingerprint == by_k1);
+            assert!(revocation.revoked_key_fingerprint != by_k2);
+        }
+        other => panic!("expected a verified revocation, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn rec_006_m_a_short_page_is_not_the_head() {
+    let (w, ctx, e0, r0) = retracted_world().await;
+    let change = serde_json::to_value(lifecycle_change(&ctx, &e0, &r0)).unwrap();
+    // limit=500 asked, the registry clamps (or filters) to a short page
+    // that still says has_more.
+    w.queue_changes(
+        200,
+        json!({ "changes": [change], "next_cursor": "c1", "has_more": true }),
+    );
+    w.queue_changes(
+        200,
+        json!({ "changes": [], "next_cursor": "c2", "has_more": false }),
+    );
+    let client = w.client();
+    let mut feed = ChangeFeed::new(&client, WatchFilter::new()).limit(500);
+    let mut pages = 0;
+    loop {
+        let page = feed.fetch().await.unwrap();
+        pages += 1;
+        feed.advance(&page);
+        // Only has_more: false says the head is reached.
+        if !page.has_more {
+            break;
+        }
+    }
+    assert_eq!(pages, 2);
+    assert_eq!(feed.position(), &Since::Cursor("c2".into()));
+    let q = w.changes_queries();
+    assert!(q[0].contains("limit=500"), "{q:?}");
+    assert!(q[1].contains("since=c1"), "{q:?}");
+}
+
+#[tokio::test]
 async fn rec_006_envelope_mismatch_is_rejected_before_any_fetch() {
     let (w, ctx, e0, r0) = retracted_world().await;
     let mut wire = serde_json::to_value(lifecycle_change(&ctx, &e0, &r0)).unwrap();
@@ -655,4 +826,90 @@ mod blocking {
         assert!(matches!(err, AcdpError::DeadlineExceeded(_)), "{err:?}");
         assert_eq!(w.retrievals_of(ctx.body.ctx_id.as_str()), before);
     }
+}
+
+// ── rec-009: executed envelope known answers ─────────────────────────────────
+
+fn spec_root() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let require = std::env::var("ACDP_REQUIRE_CONFORMANCE").is_ok();
+    if let Ok(env) = std::env::var("ACDP_SPEC_DIR") {
+        let p = PathBuf::from(env);
+        if p.exists() {
+            return Some(p);
+        }
+        assert!(!require, "ACDP_SPEC_DIR '{}' does not exist", p.display());
+    }
+    let sibling = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(|p| p.join("agentcontextdistributionprotocol"));
+    if let Some(s) = sibling.filter(|s| s.exists()) {
+        return Some(s);
+    }
+    assert!(
+        !require,
+        "ACDP_REQUIRE_CONFORMANCE is set but no ACDP spec checkout could be located"
+    );
+    None
+}
+
+/// `rec-009`: every vector reaches the fixture's verdict, and a rejection
+/// reports the first failing check in `check_order`. The served evidence
+/// is compared under JCS, so a reordered copy is accepted. The checks
+/// that need no served copy also reject in `verify_change` before any
+/// fetch.
+#[tokio::test]
+async fn rec_009_entry_envelope_known_answers() {
+    let Some(root) = spec_root() else {
+        eprintln!("ACDP spec not found; skipping rec-009");
+        return;
+    };
+    let path = root.join("schemas/conformance/rec-009-entry-envelope.json");
+    if !path.exists() {
+        assert!(
+            std::env::var("ACDP_REQUIRE_CONFORMANCE").is_err(),
+            "ACDP_REQUIRE_CONFORMANCE is set but {} is missing",
+            path.display()
+        );
+        return;
+    }
+    let fixture: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(
+        fixture["check_order"].as_array().map(Vec::len),
+        Some(5),
+        "rec-009 check_order changed; revisit Change::check_envelope"
+    );
+    let vectors = fixture["vectors"].as_array().expect("rec-009 vectors[]");
+    assert!(!vectors.is_empty());
+    let w = world().await;
+    for v in vectors {
+        let name = v["name"].as_str().unwrap_or("?");
+        let change = Change::from_value(&v["entry"])
+            .unwrap_or_else(|e| panic!("{name}: entry does not parse: {e}"));
+        let served = &v["served"];
+        let served = served
+            .get("lifecycle_event")
+            .or_else(|| served.get("registry_receipt"))
+            .unwrap_or_else(|| panic!("{name}: no served evidence"));
+        let got = change.check_envelope(Some(served));
+        match v["expected"]["verdict"].as_str() {
+            Some("accept") => {
+                got.unwrap_or_else(|f| panic!("{name}: expected accept, got {f}"));
+                change
+                    .check_consistency()
+                    .unwrap_or_else(|e| panic!("{name}: {e}"));
+            }
+            Some("reject") => {
+                let want = v["expected"]["reason"].as_str().unwrap();
+                let fault = got.expect_err(name);
+                assert_eq!(fault.reason.as_str(), want, "{name}: {fault}");
+                if fault.reason != EnvelopeReason::EvidenceMismatch {
+                    assert!(change.check_consistency().is_err(), "{name}");
+                    rejected(&verify(&w, &change, None).await);
+                }
+            }
+            other => panic!("{name}: unknown verdict {other:?}"),
+        }
+    }
+    assert_eq!(w.changes_queries().len(), 0);
 }

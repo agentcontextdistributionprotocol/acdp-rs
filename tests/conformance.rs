@@ -174,10 +174,11 @@ const KNOWN_FAMILIES: &[&str] = &[
     "pub",
     "rate",
     "rcpt",
-    // RFC-ACDP-0018: rec-006/007 (acdp-consumer-recall) are bound by name in
-    // `tests/recall.rs` (`rec_fixtures_for_consumer_recall_each_have_tests`);
-    // the registry-side ones (acdp-registry-changes/-events) are a registry's
-    // to run, and rec-007's HMAC vector runs in `rec_007_hint_hmac_vectors`.
+    // RFC-ACDP-0018: rec-006/007/009 (acdp-consumer-recall) are bound by name
+    // in `tests/recall.rs` (`rec_fixtures_for_consumer_recall_each_have_tests`;
+    // rec-009's envelope vectors execute there); the registry-side ones
+    // (acdp-registry-changes/-events) are a registry's to run, and rec-007's
+    // HMAC vector runs in `rec_007_hint_hmac_vectors`.
     "rec",
     "ret",
     "rev",

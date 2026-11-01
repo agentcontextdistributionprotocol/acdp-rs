@@ -882,7 +882,8 @@ superseded, or signed by a key later revoked. A registry claiming
   entry could not be decided (a transient failure), so leave it
   unprocessed and retry.
 - `SeenChanges` deduplicates by (registry authority, `seq`), because
-  delivery is at-least-once.
+  delivery is at-least-once. That dedup is valid only between resyncs:
+  `ChangeFeed::resync` clears it (see below).
 
 ```rust,no_run
 # #[cfg(feature = "client")]
@@ -917,16 +918,40 @@ What `verify_change` checks, by kind:
 
 | Kind | Verification |
 |---|---|
-| all | `recorded_at` and `ctx_id` agree with the evidence (`Change::check_consistency`), before any fetch. |
+| all | The §7 envelope rule, before any fetch (`Change::check_consistency`): `recorded_at` equals the evidence time as a string, the evidence names the entry's context (and lineage), and a `superseded` entry does not name itself. `Change::check_envelope(served)` runs the same checks in fixture `rec-009`'s order, adds the JCS comparison with a served copy, and reports the first failure as an `EnvelopeReason`. |
 | `lifecycle` | The event (RFC-ACDP-0013 §5) and its event receipt (RFC-ACDP-0017 §10.3, `verify_event_receipt_value`) both verify. The retraction state is re-derived over the **full** event list. A `HeldContext` stands in for re-retrieval only when it holds every earlier event. Otherwise the context is re-retrieved, and `lifecycle_events[index]` must equal the entry's event under JCS. |
 | `superseded` | `superseded_by` is retrieved and verified with its receipt required. It must originate at the registry serving the feed (§7 origin binding). Its `supersedes`, `lineage_id` and `agent_id` must be the entry's, and its verified receipt must equal the entry's under JCS. |
 | `key_revocation` | The revocation is retrieved and verified under RFC-ACDP-0014 §5/§6, including the historical-key arm. A registry-attested revocation must be published by this registry. The served receipt must verify under RFC-ACDP-0010 §8 and equal the entry's under JCS. The revocation must also speak for the entry's `agent_id` (§7 producer scope). |
 
-On `AcdpError::CursorExpired`, the consumer has missed an unknown set of
-entries. It must re-verify every watched context directly and then call
-`ChangeFeed::reset_to_head` (§7 "Resync"). The feed is a notification
-channel, not a completeness proof, so high-stakes reliance should also be
-re-verified on a schedule.
+On `AcdpError::CursorExpired`, or `AcdpError::InvalidCursor` when the
+request carried a cursor the consumer persisted, the consumer has lost its
+place and missed an unknown set of entries. `ChangeFeed::needs_resync(&err)`
+tells you which errors these are. The consumer must re-verify every watched
+context directly and then call `ChangeFeed::resync(&mut seen)` (§7
+"Resync"). That resumes from `Since::Head` **and** clears the registry's
+`SeenChanges` high-water mark: after a sequence reset a registry may serve
+a different entry at a `seq` already processed, and that entry is new
+(`rec-006` I–J). Never retry the same refused cursor in a loop.
+
+```rust,ignore
+let page = match feed.fetch().await {
+    Err(e) if feed.needs_resync(&e) => {
+        // re-verify every watched context directly, then:
+        feed.resync(&mut seen);
+        continue;
+    }
+    other => other?,
+};
+```
+
+Only `has_more: false` means the head is reached. A registry clamps
+`limit` to its `max_changes_page` and filters by visibility, so a short
+page with `has_more: true` means "ask again from `next_cursor` now"
+(`rec-006` M). The feed is a notification channel, not a completeness
+proof: the absence of a `key_revocation` entry is not evidence that a key
+is unrevoked (the producer may have revoked at another registry), so keep
+RFC-ACDP-0014 §8 revocation discovery running, and re-verify high-stakes
+reliance on a schedule (`rec-006` L).
 
 **Change hints (§8).** A registry claiming `acdp-registry-events` POSTs a
 contentless `acdp-change-hint/1` to a subscriber's callback. The registry

@@ -184,10 +184,10 @@ jobs:
           repository: agentcontextdistributionprotocol/agentcontextdistributionprotocol
           # Pinned so a spec-repo push cannot flip this job's result without
           # a commit here. Kept in sync with the pin in ci.yml's conformance
-          # job automatically by bump-spec.yml. (de7af59 adopted 2026-10-31
-          # for caps-008 / rate-002; bump-spec rewrites only the SHA, so refresh
+          # job automatically by bump-spec.yml. (c40671e adopted 2026-11-01
+          # for rec-009 + rec-006 I–M; bump-spec rewrites only the SHA, so refresh
           # this note on each bump.)
-          ref: de7af5956abb2e4ce1057d7d793ff427eb4b36cb
+          ref: c40671e2493c38c51d2576610e5e7abffa3d4f3b
           path: acdp-spec
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:

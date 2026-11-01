@@ -8,7 +8,8 @@
 //!   hint) into a [`ChangeVerdict`]: [`ChangeVerdict::Verified`] with the
 //!   [`ChangeEffect`] to apply, or [`ChangeVerdict::Rejected`], which MUST
 //!   NOT change any reliance decision.
-//! - [`SeenChanges`] — §7 idempotency, by (registry authority, `seq`).
+//! - [`SeenChanges`] — §7 idempotency, by (registry authority, `seq`),
+//!   valid only between resyncs.
 //!
 //! The processing loop a consumer runs:
 //!
@@ -27,10 +28,11 @@
 //! let authority = client.authority().unwrap_or_default();
 //! loop {
 //!     let page = match feed.fetch().await {
-//!         Err(acdp_primitives::AcdpError::CursorExpired) => {
+//!         // `cursor_expired`, or `invalid_cursor` on a persisted cursor.
+//!         Err(e) if feed.needs_resync(&e) => {
 //!             // §7 "Resync": re-verify every watched context directly,
-//!             // then start again from the head.
-//!             feed.reset_to_head();
+//!             // then start again from the head with fresh dedup state.
+//!             feed.resync(&mut seen);
 //!             continue;
 //!         }
 //!         other => other?,
@@ -165,8 +167,40 @@ impl<'a> ChangeFeed<'a> {
 
     /// After `cursor_expired` and a direct re-verification of every
     /// watched context: resume from the head (§7 "Resync").
+    ///
+    /// Prefer [`Self::resync`], which also clears the (authority, `seq`)
+    /// dedup state: a registry that reset its sequence may reuse numbers
+    /// the consumer already processed (fixture `rec-006` J).
     pub fn reset_to_head(&mut self) {
         self.since = Since::Head;
+    }
+
+    /// Whether `err`, returned by [`Self::fetch`], means the consumer has
+    /// lost its place and must resync (RFC-ACDP-0018 §7 "Resync"):
+    ///
+    /// - [`AcdpError::CursorExpired`], at any position;
+    /// - [`AcdpError::InvalidCursor`] while [`Self::position`] is a
+    ///   [`Since::Cursor`] — a cursor this consumer persisted from an
+    ///   earlier response. The registry issued it, so the consumer treats
+    ///   the refusal exactly as `cursor_expired` and never retries the
+    ///   same cursor forever (fixture `rec-006` I).
+    pub fn needs_resync(&self, err: &AcdpError) -> bool {
+        match err {
+            AcdpError::CursorExpired => true,
+            AcdpError::InvalidCursor(_) => matches!(self.since, Since::Cursor(_)),
+            _ => false,
+        }
+    }
+
+    /// The §7 "Resync" bookkeeping, after re-verifying every watched
+    /// context directly: resume from [`Since::Head`] and forget this
+    /// registry's dedup high-water mark in `seen`, since dedup by `seq`
+    /// is valid only between resyncs (fixture `rec-006` I–J).
+    pub fn resync(&mut self, seen: &mut SeenChanges) {
+        self.reset_to_head();
+        if let Some(authority) = self.client.authority() {
+            seen.forget(&authority);
+        }
     }
 
     /// React to an authenticated change hint (RFC-ACDP-0018 §8.2): read
@@ -189,13 +223,19 @@ impl<'a> ChangeFeed<'a> {
 }
 
 /// §7 idempotency: delivery is at-least-once, so a consumer deduplicates
-/// by (registry authority, `seq`).
+/// by (registry authority, `seq`) — but only **between resyncs**.
 ///
 /// Because `seq` is strictly increasing per registry and a feed is
 /// processed in ascending order, a per-authority high-water mark is the
 /// whole state: an entry at or below it was already processed. Mark an
 /// entry only once its verdict is final (a transient `Err` from
 /// [`verify_change`] leaves it unmarked, to be retried).
+///
+/// A resync (`cursor_expired`, or `invalid_cursor` on a persisted cursor)
+/// MUST clear the mark: after a sequence reset the registry may serve a
+/// different entry at a `seq` already processed, and that entry is new
+/// (fixture `rec-006` J). [`ChangeFeed::resync`] does this; otherwise
+/// call [`Self::forget`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SeenChanges {
     high_water: BTreeMap<String, u64>,
@@ -216,6 +256,11 @@ impl SeenChanges {
     pub fn mark(&mut self, authority: &str, seq: u64) {
         let hw = self.high_water.entry(authority.to_owned()).or_insert(seq);
         *hw = (*hw).max(seq);
+    }
+
+    /// Forget everything recorded for `authority` (on resync).
+    pub fn forget(&mut self, authority: &str) {
+        self.high_water.remove(authority);
     }
 
     /// Check and record in one step: `true` the first time.
@@ -718,5 +763,10 @@ mod tests {
         assert!(seen.first_time("a.example.com", 6));
         seen.mark("a.example.com", 2);
         assert!(!seen.is_new("a.example.com", 6));
+        // A resync clears one authority's mark only.
+        assert!(seen.first_time("b.example.com", 9));
+        seen.forget("a.example.com");
+        assert!(seen.is_new("a.example.com", 6));
+        assert!(!seen.is_new("b.example.com", 9));
     }
 }

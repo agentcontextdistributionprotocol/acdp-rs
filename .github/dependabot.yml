@@ -11,6 +11,11 @@ updates:
       # MSRV CI job fails on it). Drop this once the MSRV is raised.
       - dependency-name: "uuid"
         versions: [">=1.27.0"]
+      # sha2 0.11.1 requires rustc 1.88, above the 1.87 MSRV. Drop this once
+      # the MSRV is raised (and in the three binding blocks below, whose
+      # sha2 must match the root's: scripts/check-bindings-lock-parity.sh).
+      - dependency-name: "sha2"
+        versions: [">=0.11.1"]
     groups:
       # Crypto-critical direct deps (#322). Listed FIRST so it matches before
       # the generic groups: a bump here needs a real cargo-vet audit (the
@@ -54,6 +59,11 @@ updates:
     schedule:
       interval: monthly
     open-pull-requests-limit: 5
+    ignore:
+      # sha2 must match the root lockfile, which holds it below 0.11.1 for
+      # the MSRV (see the root block's ignore).
+      - dependency-name: "sha2"
+        versions: [">=0.11.1"]
     groups:
       minor-and-patch:
         update-types: ["minor", "patch"]
@@ -65,6 +75,11 @@ updates:
     schedule:
       interval: monthly
     open-pull-requests-limit: 5
+    ignore:
+      # sha2 must match the root lockfile, which holds it below 0.11.1 for
+      # the MSRV (see the root block's ignore).
+      - dependency-name: "sha2"
+        versions: [">=0.11.1"]
     groups:
       minor-and-patch:
         update-types: ["minor", "patch"]
@@ -97,6 +112,10 @@ updates:
       # every bindings.yml job), not a flaw in this ignore rule itself.
       - dependency-name: getrandom
         update-types: ["version-update:semver-major"]
+      # sha2 must match the root lockfile, which holds it below 0.11.1 for
+      # the MSRV (see the root block's ignore).
+      - dependency-name: "sha2"
+        versions: [">=0.11.1"]
     groups:
       minor-and-patch:
         update-types: ["minor", "patch"]

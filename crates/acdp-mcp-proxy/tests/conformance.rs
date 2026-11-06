@@ -355,6 +355,10 @@ fn mcp_fixtures_each_have_tests() {
         ("mcp-005", "conformance::mcp_005_derived_from"),
         ("mcp-006", "conformance::mcp_006_embedding_allowlist"),
         ("mcp-007", "conformance::mcp_007_salt_rules"),
+        (
+            "mcp-008",
+            "mcp_008::mcp_008_a_revision_and_identity_from_meta",
+        ),
     ];
     let Some(dir) = common::spec_dir() else {
         return;

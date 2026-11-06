@@ -27,13 +27,14 @@ witness cosigning, key revocation, and lifecycle/retraction events.
 > 0013 (lifecycle/retraction), 0014 (key revocation), 0015 (witness
 > cosigning), 0017 (offline chain verification, Final at 0.5.0; its §10–§11
 > registry event and lineage-member receipts remain Draft), 0019 (MCP
-> tool-result provenance, Final at 0.5.0; the proxy obligations in §5, §7 and
-> the §10 `acdp-producer-mcp-proxy` profile remain Draft), 0020 (registry trust
-> lists, Final at 0.5.0), 0021 (keyless signing, behind the `keyless`
-> feature; Final at 0.5.0 for the consumer side, while the registry side and
-> the `/key-attestations` endpoints remain Draft), and, on the Draft line, 0016
-> (typed external anchors) and 0018 (retraction recall: the changes feed,
-> change hints and the `acdp-consumer-recall` profile).
+> tool-result provenance, Final at 0.5.0; the proxy obligations in §3.1–§3.2,
+> §5, §7 and the §10 `acdp-producer-mcp-proxy` profile remain Draft), 0018
+> (retraction recall: the changes feed, change hints and the
+> `acdp-consumer-recall` profile; Final for the consumer side, while the
+> registry side remains Draft), 0020 (registry trust lists, Final at 0.5.0),
+> 0021 (keyless signing, behind the `keyless` feature; Final at 0.5.0 for the
+> consumer side, while the registry side and the `/key-attestations` endpoints
+> remain Draft), and, on the Draft line, 0016 (typed external anchors).
 
 This is a **Cargo workspace**: the umbrella `acdp` crate is a thin facade that
 re-exports a fine-grained set of crates under [`crates/`](./crates/)

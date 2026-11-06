@@ -860,7 +860,7 @@ to check it outside the pipeline:
 | `verify_witness_cosignature_value`, `evaluate_witness_quorum` | one witness cosignature, and a quorum over a trusted witness set | [RFC-ACDP-0015](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0015-witness-cosigning.md) |
 | `verify_revocation_body`, `classify_under_revocation` | a key-revocation context, and a verdict under a set of revocations | [RFC-ACDP-0014](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0014-key-revocation.md) |
 
-## Retraction recall (RFC-ACDP-0018, Draft)
+## Retraction recall (RFC-ACDP-0018; consumer side Final)
 
 A consumer that relied on a context needs to hear when it is retracted,
 superseded, or signed by a key later revoked. A registry claiming

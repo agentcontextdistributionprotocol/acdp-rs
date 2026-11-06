@@ -1,6 +1,6 @@
 # acdp-mcp-proxy
 
-The MCP signing proxy of [RFC-ACDP-0019](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0019-mcp-tool-result-provenance.md) (Final at 0.5.0, except the proxy obligations in §5, §7 and the §10 profile `acdp-producer-mcp-proxy`, which remain **Draft**).
+The MCP signing proxy of [RFC-ACDP-0019](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0019-mcp-tool-result-provenance.md) (Final at 0.5.0, except the proxy obligations in §3.1–§3.2, §5, §7 and the §10 profile `acdp-producer-mcp-proxy`, which remain **Draft**).
 
 It sits between an MCP client and any stdio MCP server and relays every message unchanged. For each `tools/call` it publishes one signed `acdp:mcp-tool-result` body to an ACDP registry, signed with **your** key. It then returns the result with one key added to `_meta`:
 
@@ -76,8 +76,11 @@ When `external` is set, the proxy writes `<dir>/<content-hash hex>.json` before 
 - **No link before the publish response.** A `tools/call` result is held until its publish succeeds or fails. All other messages pass through byte for byte.
 - **Edge cases (spec rulings, f9bd453):**
   - A tool name over 256 characters is never truncated. That call is a publish failure.
-  - A result that arrives before `initialize` is a publish failure under the tool's own policy.
+  - Under a revision with `initialize`, a result that arrives before the `initialize` result is a publish failure under the tool's own policy.
   - A JSON-RPC error produces no record.
+- **MCP 2026-07-28 and later (§3.1).** The era is decided per request, so one server can serve both eras at once. A `tools/call` whose `_meta` carries `io.modelcontextprotocol/protocolVersion` records that revision and needs no `initialize`. Its `server.name` and `server.version` come from `io.modelcontextprotocol/serverInfo` in the result's `_meta`. Failing that, they come from the last `server/discover` response the client fetched, while its `ttlMs` lasts; the proxy reads that identity from the response's top level or its `_meta`, and never sends `server/discover` itself. Otherwise the name is `unknown` and the version is absent. A missing identity is not a failure.
+- **Results that are not yet complete (§3.2).** Only a result whose `resultType` is absent or `complete` is published. `input_required`, `task` and any other value are relayed byte for byte, with no record and no link. After `input_required`, the client's next `tools/call` is a call of its own: its record hashes that request's `arguments` and `id`, and never `inputResponses` or `requestState`.
+- **Task-delivered results are not covered.** The proxy does not follow the `io.modelcontextprotocol/tasks` extension: `tasks/get` responses and task notifications are relayed unchanged, so a result delivered through a task has no `io.acdp/provenance` link and no record.
   - The configured `visibility` is published exactly as configured, and a rejection is a publish failure. The proxy never widens it.
 - stdout carries only the relayed protocol. Diagnostics go to stderr.
 

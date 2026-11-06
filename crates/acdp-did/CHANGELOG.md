@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-did-v0.21.0...acdp-did-v0.21.1) - 2026-11-06
+
+### Other
+
+- *(deps)* combine the open Dependabot bumps, minus sha2 0.11.1 ([#531](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/531))
+
 ## [0.21.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-did-v0.20.1...acdp-did-v0.21.0) - 2026-11-01
 
 ### Added

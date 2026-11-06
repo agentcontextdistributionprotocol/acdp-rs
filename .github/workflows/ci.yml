@@ -77,7 +77,7 @@ jobs:
           # without a commit here. Bump deliberately when adopting new
           # fixtures. (3f50697 adopted 2026-11-01 for rec-010 + rec-006 N + rec-001 H; bump-spec
           # rewrites only the SHA, so refresh this note on each bump.)
-          ref: 3f5069756baab02148dccef306b52dceebc36794
+          ref: ebdeea46ede7cbbc33a5c7be21e85bfd7496c4bc
           path: acdp-spec
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:

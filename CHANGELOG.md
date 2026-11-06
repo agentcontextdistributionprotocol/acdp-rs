@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.2](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.21.1...acdp-v0.21.2) - 2026-11-06
+
+### Added
+
+- *(a2a)* A2A artifact provenance crate acdp-a2a (RFC-ACDP-0022, a2a-001..008) ([#548](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/548))
+
 ## [0.21.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.21.0...acdp-v0.21.1) - 2026-11-06
 
 ### Added

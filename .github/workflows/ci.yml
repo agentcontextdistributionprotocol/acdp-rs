@@ -35,7 +35,7 @@ jobs:
         with:
           toolchain: stable
           components: clippy
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2.9.1
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2.9.1
       - run: cargo clippy --workspace --all-features --all-targets -- -D warnings
       - run: cargo clippy -p acdp --no-default-features --all-targets -- -D warnings
 
@@ -55,7 +55,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           toolchain: ${{ matrix.rust }}
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2.9.1
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2.9.1
       - run: cargo test --workspace --all-features
       - run: cargo test -p acdp --no-default-features
       # Auto-trait guard (COMPATIBILITY.md) in the default `client` build,
@@ -82,7 +82,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2.9.1
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2.9.1
       # ACDP_REQUIRE_CONFORMANCE makes a missing spec a hard failure, so
       # a green run genuinely proves conformance — the fixtures are not
       # silently skipped (IMP-02).
@@ -100,7 +100,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@9fd5edfc8bba9f7408b867e3f58b5a2119358898 # 1.87.0
         with:
           toolchain: 1.87.0
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2.9.1
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2.9.1
       - run: cargo build --workspace --all-features
       - run: cargo build -p acdp --no-default-features
 
@@ -112,7 +112,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@efcb852328a9f50117170cc43094fb6f09eaf1ae # nightly
         with:
           toolchain: nightly
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2.9.1
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2.9.1
       - env:
           RUSTDOCFLAGS: --cfg docsrs -D warnings
         run: cargo doc --workspace --all-features --no-deps
@@ -125,7 +125,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2.9.1
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2.9.1
       # Install a checksum-verified prebuilt binary (with retries) and run
       # `cargo deny` directly, rather than EmbarkStudios/cargo-deny-action,
       # whose Docker image intermittently failed extracting the cargo-deny
@@ -153,7 +153,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2.9.1
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2.9.1
       - uses: taiki-e/install-action@c0ae9b92c15529ec87e792a1233f3f4a6c726bfa # cargo-vet
         with:
           tool: cargo-vet@0.10.2
@@ -218,7 +218,7 @@ jobs:
         with:
           toolchain: stable
           components: llvm-tools-preview
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2.9.1
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2.9.1
       - uses: taiki-e/install-action@7c1105379b6217809b9ed26c163a46c65c7a528f # cargo-llvm-cov
         with:
           tool: cargo-llvm-cov@0.8.7

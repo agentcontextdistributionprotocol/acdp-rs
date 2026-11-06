@@ -132,6 +132,12 @@ stdio MCP server unchanged and publishes a signed `acdp:mcp-tool-result`
 record of every `tools/call`; see
 [`crates/acdp-mcp-proxy/README.md`](crates/acdp-mcp-proxy/README.md).
 
+A2A artifact provenance (RFC-ACDP-0022, 0.5.0 Draft) is the `acdp-a2a`
+library: an A2A agent publishes each completed artifact as a body it
+signs and returns the `io.acdp/provenance` link in the artifact; a
+holder runs the §8 verification. See
+[`crates/acdp-a2a/README.md`](crates/acdp-a2a/README.md).
+
 ## Security defaults
 
 The public client APIs apply the RFC-ACDP-0006 §7 / RFC-ACDP-0008 defenses

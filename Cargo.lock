@@ -43,6 +43,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "acdp-a2a"
+version = "0.21.1"
+dependencies = [
+ "acdp",
+ "base64 0.23.1",
+ "chrono",
+ "getrandom 0.4.3",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
 name = "acdp-chain"
 version = "0.21.1"
 dependencies = [

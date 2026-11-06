@@ -140,6 +140,10 @@ fn all_conformance_fixtures_parse_as_valid_json() {
 /// `all_conformance_fixtures_are_bucketed_into_known_families` will pass again — that
 /// forcing function is the entire point (RS-2, gates SPEC-9 per hazard H8).
 const KNOWN_FAMILIES: &[&str] = &[
+    // RFC-ACDP-0022 (A2A artifact provenance, 0.5.0 Draft): bound by name in
+    // `crates/acdp-a2a/tests/conformance.rs` (`a2a_fixtures_each_have_tests`);
+    // a2a-001 runs byte for byte there, a2a-002..008 in `tests/behavior.rs`.
+    "a2a",
     "anc",
     "body",
     "can",

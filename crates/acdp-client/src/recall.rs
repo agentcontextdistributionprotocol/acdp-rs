@@ -1,5 +1,5 @@
-//! Retraction recall, consumer side (ACDP 0.5.0 Draft, RFC-ACDP-0018,
-//! profile `acdp-consumer-recall`).
+//! Retraction recall, consumer side (RFC-ACDP-0018, Final for the consumer
+//! side since spec f7fc3a5; profile `acdp-consumer-recall`).
 //!
 //! - [`Since`] and [`ChangeFeed`] — read a registry's `GET /changes`
 //!   tail from a persisted cursor ([`crate::RegistryClient::changes`] is

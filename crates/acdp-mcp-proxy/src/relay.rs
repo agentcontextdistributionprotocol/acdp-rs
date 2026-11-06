@@ -4,8 +4,23 @@
 //! client `tools/call`, which is held until its record's publish has
 //! succeeded or failed (§6: no link before the publish response) and
 //! then re-serialized with `io.acdp/provenance` added to `_meta`.
+//!
+//! The era is classified per request (§3.1). A `tools/call` whose `_meta`
+//! carries [`PROTOCOL_VERSION_META`] (MCP 2026-07-28 and later) takes its
+//! revision from there and its server identity from the result's `_meta`,
+//! a fresh `server/discover` response, or `unknown`. Any other request
+//! uses what the upstream `initialize` result reported.
+//!
+//! Only a complete result is published (§3.2). An `input_required` result,
+//! a task handle and an unknown `resultType` are relayed unchanged with no
+//! body. Task-delivered results are **not covered**: a `tasks/get`
+//! response is relayed unchanged and carries no link.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use acdp::{client::RegistryClient, producer::Producer};
 use chrono::Utc;
@@ -62,20 +77,42 @@ pub struct Proxy {
     pub external: Option<ExternalStore>,
 }
 
+/// The request `_meta` key that marks an MCP revision without
+/// `initialize` and names it (§3.1).
+pub const PROTOCOL_VERSION_META: &str = "io.modelcontextprotocol/protocolVersion";
+/// The `_meta` key carrying the server's self-reported identity (§3.1).
+pub const SERVER_INFO_META: &str = "io.modelcontextprotocol/serverInfo";
+
+// One entry per in-flight request, and few are in flight: boxing the
+// call would only add an allocation per `tools/call`.
+#[allow(clippy::large_enum_variant)]
 enum Pending {
     Initialize,
+    Discover,
     Call {
         tool: String,
         arguments: Value,
         id: Value,
         started_at: chrono::DateTime<Utc>,
+        /// `Some` when the request carried [`PROTOCOL_VERSION_META`].
+        protocol_version: Option<String>,
     },
+}
+
+/// Server name and version as reported, before the proxy's own fields.
+#[derive(Clone)]
+struct Reported {
+    name: String,
+    version: Option<String>,
 }
 
 #[derive(Default)]
 struct State {
     pending: HashMap<String, Pending>,
+    /// From the upstream `initialize` result (legacy requests).
     server: Option<ServerIdentity>,
+    /// From the latest `server/discover` response, until it expires.
+    discovered: Option<(Reported, Instant)>,
 }
 
 fn id_key(id: &Value) -> String {
@@ -153,8 +190,8 @@ impl Proxy {
                 }
                 calls
                     .into_iter()
-                    .filter(|(_, c)| !self.policy(&c.tool).skip)
-                    .map(|(i, c)| (i, c, st.server.clone()))
+                    .filter(|(_, (c, _))| !self.policy(&c.tool).skip)
+                    .map(|(i, (c, server))| (i, c, server))
                     .collect::<Vec<_>>()
             };
             if calls.is_empty() {
@@ -201,7 +238,8 @@ impl Proxy {
                 };
                 self.publish(&server, &call, policy).await
             }
-            // No initialize result seen: nothing to fill the record with.
+            // A legacy call before the initialize result: nothing to fill
+            // the record with (§3.1).
             None => Err(None),
         };
         let mut result = call.result;
@@ -279,12 +317,19 @@ fn note_request(st: &mut State, m: &Value) {
     };
     let pending = match method {
         "initialize" => Pending::Initialize,
+        "server/discover" => Pending::Discover,
         "tools/call" => {
             let params = m.get("params");
             let Some(tool) = params.and_then(|p| p.get("name")).and_then(Value::as_str) else {
                 return;
             };
+            // A present key marks the era even when its value is unusable.
+            let protocol_version = params
+                .and_then(|p| p.get("_meta"))
+                .and_then(|meta| meta.get(PROTOCOL_VERSION_META))
+                .map(|v| v.as_str().unwrap_or("unknown").to_owned());
             Pending::Call {
+                protocol_version,
                 tool: tool.to_owned(),
                 arguments: params
                     .and_then(|p| p.get("arguments"))
@@ -299,13 +344,50 @@ fn note_request(st: &mut State, m: &Value) {
     st.pending.insert(id_key(id), pending);
 }
 
-/// Server → client: learn the server at `initialize`; return the call
-/// to record when `m` is a successful `tools/call` response.
+/// `serverInfo`-shaped object → name and version. A missing or unnamed
+/// object yields `None`.
+fn reported(info: Option<&Value>) -> Option<Reported> {
+    let info = info?.as_object()?;
+    let s = |k: &str| info.get(k).and_then(Value::as_str);
+    Some(Reported {
+        name: s("name")?.to_owned(),
+        version: s("version").map(str::to_owned),
+    })
+}
+
+fn identity(reported: Option<Reported>, protocol_version: String) -> ServerIdentity {
+    let reported = reported.unwrap_or(Reported {
+        name: "unknown".into(),
+        version: None,
+    });
+    ServerIdentity {
+        name: reported.name,
+        version: reported.version,
+        protocol_version,
+        // Filled from the proxy's own configuration at publish.
+        transport: Transport::Stdio,
+        endpoint_hash: String::new(),
+    }
+}
+
+/// Is this result the call's outcome (§3.2)? An absent `resultType` means
+/// `complete`; `input_required`, `task` and any other value are not.
+fn is_complete(result: &Map<String, Value>) -> bool {
+    match result.get("resultType") {
+        None => true,
+        Some(v) => v.as_str() == Some("complete"),
+    }
+}
+
+/// Server → client: learn the server at `initialize` or `server/discover`;
+/// return the call to record, with the server identity for its era
+/// (`None`: a legacy call before `initialize`), when `m` completes a
+/// `tools/call`.
 fn note_response(
     st: &mut State,
     m: &Value,
     completed_at: chrono::DateTime<Utc>,
-) -> Option<ToolCall> {
+) -> Option<(ToolCall, Option<ServerIdentity>)> {
     if m.get("method").is_some() {
         return None;
     }
@@ -313,20 +395,28 @@ fn note_response(
     let result = m.get("result")?.as_object()?;
     match pending {
         Pending::Initialize => {
-            let info = result.get("serverInfo");
-            let s = |k: &str| info.and_then(|i| i.get(k)).and_then(Value::as_str);
-            st.server = Some(ServerIdentity {
-                name: s("name").unwrap_or("unknown").to_owned(),
-                version: s("version").map(str::to_owned),
-                protocol_version: result
+            st.server = Some(identity(
+                reported(result.get("serverInfo")),
+                result
                     .get("protocolVersion")
                     .and_then(Value::as_str)
                     .unwrap_or("unknown")
                     .to_owned(),
-                // Filled from the proxy's own configuration at publish.
-                transport: Transport::Stdio,
-                endpoint_hash: String::new(),
+            ));
+            None
+        }
+        Pending::Discover => {
+            // The identity may sit at the top level or in `_meta`; without
+            // a `ttlMs` the response is not reused.
+            let info = result.get(SERVER_INFO_META).or_else(|| {
+                result
+                    .get("_meta")
+                    .and_then(|meta| meta.get(SERVER_INFO_META))
             });
+            let ttl = result.get("ttlMs").and_then(Value::as_u64);
+            if let (Some(r), Some(ttl)) = (reported(info), ttl) {
+                st.discovered = Some((r, Instant::now() + Duration::from_millis(ttl)));
+            }
             None
         }
         Pending::Call {
@@ -334,13 +424,41 @@ fn note_response(
             arguments,
             id,
             started_at,
-        } => Some(ToolCall {
-            tool,
-            arguments,
-            request_id: Some(id),
-            result: result.clone(),
-            started_at,
-            completed_at,
-        }),
+            protocol_version,
+        } => {
+            if !is_complete(result) {
+                // Relayed unchanged; the call that completes is its own
+                // request, with its own arguments and id.
+                return None;
+            }
+            let server = match protocol_version {
+                Some(pv) => {
+                    let from_result = reported(
+                        result
+                            .get("_meta")
+                            .and_then(|meta| meta.get(SERVER_INFO_META)),
+                    );
+                    let from_discover = || {
+                        st.discovered
+                            .as_ref()
+                            .filter(|(_, expires)| Instant::now() < *expires)
+                            .map(|(r, _)| r.clone())
+                    };
+                    Some(identity(from_result.or_else(from_discover), pv))
+                }
+                None => st.server.clone(),
+            };
+            Some((
+                ToolCall {
+                    tool,
+                    arguments,
+                    request_id: Some(id),
+                    result: result.clone(),
+                    started_at,
+                    completed_at,
+                },
+                server,
+            ))
+        }
     }
 }

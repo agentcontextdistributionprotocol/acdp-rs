@@ -1,0 +1,40 @@
+[package]
+name        = "acdp-a2a"
+version.workspace = true
+edition     = "2021"
+description = "A2A artifact provenance (RFC-ACDP-0022): an A2A server agent signs each completed artifact as an ACDP body, and holders verify held artifacts against it"
+license     = "MIT OR Apache-2.0"
+readme      = "README.md"
+repository  = "https://github.com/agentcontextdistributionprotocol/acdp-rs"
+homepage    = "https://github.com/agentcontextdistributionprotocol/acdp-rs"
+documentation = "https://docs.rs/acdp-a2a"
+keywords    = ["acdp", "a2a", "provenance", "agent", "artifact"]
+categories  = ["cryptography", "web-programming"]
+rust-version = "1.87"
+
+[dependencies]
+acdp       = { path = "../..", version = "=0.21.1", default-features = false, features = ["client"] }
+tokio      = { version = "1", default-features = false, features = ["time", "fs"] }
+serde      = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+chrono     = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+sha2       = "0.11"
+hex        = "0.4"
+base64     = "0.23"
+getrandom  = "0.4"
+
+[dev-dependencies]
+acdp     = { path = "../..", features = ["client", "test-transport"] }
+tokio    = { version = "1", features = ["full"] }
+wiremock = "0.6"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.4](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-did-v0.21.3...acdp-did-v0.21.4) - 2026-11-07
+
+### Fixed
+
+- *(did)* enforce DID document Content-Type on did:web resolution ([#560](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/560)) ([#561](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/561))
+
 ## [0.21.1](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-did-v0.21.0...acdp-did-v0.21.1) - 2026-11-06
 
 ### Other

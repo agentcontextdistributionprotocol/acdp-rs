@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "acdp"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "acdp-chain",
  "acdp-client",
@@ -44,7 +44,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-a2a"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "acdp",
  "base64 0.23.1",
@@ -60,7 +60,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-chain"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "acdp-crypto",
  "acdp-did",
@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-cli"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "acdp",
  "base64 0.23.1",
@@ -95,7 +95,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-client"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "acdp-crypto",
  "acdp-did",
@@ -123,7 +123,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-crypto"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "acdp-did",
  "acdp-jcs",
@@ -144,7 +144,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-did"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "acdp-crypto",
  "acdp-primitives",
@@ -164,7 +164,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-jcs"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "acdp-primitives",
  "hex",
@@ -176,7 +176,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-mcp-proxy"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "acdp",
  "base64 0.23.1",
@@ -192,7 +192,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-primitives"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "chrono",
  "reqwest",
@@ -204,7 +204,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-producer"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "acdp-crypto",
  "acdp-did",
@@ -219,7 +219,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-safe-http"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "acdp-primitives",
  "reqwest",
@@ -229,7 +229,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-server"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "acdp-crypto",
  "acdp-did",
@@ -250,7 +250,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-types"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "acdp-crypto",
  "acdp-did",
@@ -268,7 +268,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-validation"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "acdp-crypto",
  "acdp-did",
@@ -285,7 +285,7 @@ dependencies = [
 
 [[package]]
 name = "acdp-verify"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "acdp-crypto",
  "acdp-did",

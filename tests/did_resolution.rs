@@ -88,7 +88,15 @@ async fn did_001_b_tls_failure_is_transient_unreachable() {
 async fn did_001_c_non_json_200_is_permanent_failure() {
     let server = TlsTestServer::start(Router::new().route(
         "/.well-known/did.json",
-        get(|| async { "<html>definitely not a DID document</html>" }),
+        // Served as application/json so the failure comes from the JSON
+        // parse, not from the §5.11 step 3 Content-Type gate (which has its
+        // own coverage in tls_conformance.rs).
+        get(|| async {
+            (
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                "<html>definitely not a DID document</html>",
+            )
+        }),
     ))
     .await;
     let err = resolver(&server.root_cert_pem)

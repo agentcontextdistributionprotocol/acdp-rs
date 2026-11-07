@@ -452,6 +452,20 @@ impl WebResolver {
             )));
         }
 
+        // RFC-ACDP-0001 §5.11 step 3: the DID document response MUST carry
+        // `Content-Type: application/did+json` (or `application/json`),
+        // parameters such as `charset` ignored. Anything else — an HTML
+        // error/captive-portal page, `text/plain`, or no header at all — is
+        // a DID fetch failure. It is the permanent class (`key_resolution_failed`,
+        // HTTP 400): the host answered 2xx with something that is not a DID
+        // document, which is did-001 scenario C ("200 with a body that is not
+        // JSON"), not the transient availability class of the non-2xx case.
+        check_did_document_content_type(
+            resp.headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .map(|v| v.as_bytes()),
+        )?;
+
         // Cap body size at 64 KB per RFC-ACDP-0006 §7.3.
         if let Some(len) = resp.content_length() {
             if len as usize > MAX_METADATA_BYTES {
@@ -581,6 +595,38 @@ fn build_http_client_pinned(
         .map_err(|e| AcdpError::Http(format!("DID resolver client build: {e}")))
 }
 
+/// RFC-ACDP-0001 §5.11 step 3 media-type gate for a fetched DID document.
+///
+/// Accepts `application/did+json` and `application/json` (case-insensitive,
+/// parameters ignored); everything else, including a missing or non-UTF-8
+/// header, is a DID fetch failure in the permanent class —
+/// `key_resolution_failed`, consistent with did-001 scenario C.
+#[cfg(feature = "client")]
+fn check_did_document_content_type(header: Option<&[u8]>) -> Result<(), AcdpError> {
+    let raw = header.and_then(|h| std::str::from_utf8(h).ok());
+    let essence = raw
+        .map(|v| {
+            v.split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase()
+        })
+        .unwrap_or_default();
+    if essence == "application/did+json" || essence == "application/json" {
+        return Ok(());
+    }
+    Err(AcdpError::KeyResolution(match raw {
+        Some(v) => format!(
+            "DID document fetch returned Content-Type '{v}'; expected \
+             application/did+json or application/json"
+        ),
+        None => "DID document fetch returned no (or a non-UTF-8) Content-Type; expected \
+                 application/did+json or application/json"
+            .to_string(),
+    }))
+}
+
 /// Translate a `reqwest::Error` into the right [`AcdpError`] variant.
 ///
 /// Walks the error's `source()` chain so the `SafeDnsResolver`'s refusal
@@ -661,6 +707,44 @@ pub fn did_web_to_authority(did: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RFC-ACDP-0001 §5.11 step 3 / issue #560: both media types are
+    /// accepted, parameters and case ignored.
+    #[cfg(feature = "client")]
+    #[test]
+    fn did_document_content_type_accepts_did_json_and_json() {
+        for ct in [
+            "application/did+json",
+            "application/json",
+            "application/json; charset=utf-8",
+            "Application/DID+JSON ; charset=UTF-8",
+        ] {
+            check_did_document_content_type(Some(ct.as_bytes()))
+                .unwrap_or_else(|e| panic!("{ct} must be accepted: {e:?}"));
+        }
+    }
+
+    /// Any other media type, or none at all, is a DID fetch failure.
+    #[cfg(feature = "client")]
+    #[test]
+    fn did_document_content_type_rejects_others() {
+        for ct in [
+            Some("text/html".as_bytes()),
+            Some("text/html; charset=utf-8".as_bytes()),
+            Some("text/plain".as_bytes()),
+            Some("application/ld+json".as_bytes()),
+            Some("application/jsonx".as_bytes()),
+            Some(b"\xff\xfe".as_slice()),
+            None,
+        ] {
+            let err = check_did_document_content_type(ct).unwrap_err();
+            assert!(
+                matches!(err, AcdpError::KeyResolution(_)),
+                "{ct:?}: got {err:?}"
+            );
+            assert!(!err.is_transient());
+        }
+    }
 
     #[test]
     fn bare_authority() {

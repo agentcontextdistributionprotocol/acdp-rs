@@ -1184,3 +1184,76 @@ fn spec_root() -> Option<std::path::PathBuf> {
     );
     None
 }
+
+// ── RFC-ACDP-0001 §5.11 step 3 — DID document Content-Type (issue #560) ─────
+
+/// Router serving `did_doc` at `/.well-known/did.json` with an explicit
+/// `Content-Type` header (or none at all when `content_type` is `None`).
+fn did_doc_router_with_content_type(
+    did_doc: serde_json::Value,
+    content_type: Option<&'static str>,
+) -> axum::Router {
+    use axum::http::header::CONTENT_TYPE;
+    use axum::response::IntoResponse;
+    let body = serde_json::to_vec(&did_doc).unwrap();
+    axum::Router::new().route(
+        "/.well-known/did.json",
+        axum::routing::get(move || {
+            let body = body.clone();
+            async move {
+                match content_type {
+                    Some(ct) => ([(CONTENT_TYPE, ct)], body).into_response(),
+                    None => {
+                        let mut r = body.into_response();
+                        r.headers_mut().remove(CONTENT_TYPE);
+                        r
+                    }
+                }
+            }
+        }),
+    )
+}
+
+async fn resolve_with_content_type(content_type: Option<&'static str>) -> Result<(), AcdpError> {
+    let pub_bytes = SigningKey::generate().verifying_key_bytes();
+    let server = TlsTestServer::start_with(|port| {
+        let did = format!("did:web:localhost%3A{port}");
+        did_doc_router_with_content_type(ed25519_did_doc(&did, "key-1", &pub_bytes), content_type)
+    })
+    .await;
+    test_resolver(&server.root_cert_pem)
+        .resolve(&server.did())
+        .await
+        .map(|_| ())
+}
+
+/// Both media types RFC-ACDP-0001 §5.11 step 3 names are accepted,
+/// with parameters (`charset`) ignored.
+#[tokio::test]
+async fn did_doc_content_type_did_json_and_json_accepted() {
+    for ct in [
+        "application/did+json",
+        "application/json",
+        "application/did+json; charset=utf-8",
+        "application/json; charset=utf-8",
+    ] {
+        resolve_with_content_type(Some(ct))
+            .await
+            .unwrap_or_else(|e| panic!("Content-Type {ct} MUST be accepted: {e:?}"));
+    }
+}
+
+/// A DID document served as `text/html` (or with no Content-Type) is a
+/// permanent DID fetch failure — `key_resolution_failed`, the did-001
+/// scenario C class — even though the body is a valid DID document.
+#[tokio::test]
+async fn did_doc_content_type_text_html_rejected() {
+    for ct in [Some("text/html"), Some("text/html; charset=utf-8"), None] {
+        let err = resolve_with_content_type(ct).await.unwrap_err();
+        assert!(
+            matches!(err, AcdpError::KeyResolution(_)),
+            "Content-Type {ct:?} MUST be rejected as a DID fetch failure: got {err:?}"
+        );
+        assert!(!err.is_transient());
+    }
+}

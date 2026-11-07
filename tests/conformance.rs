@@ -722,7 +722,7 @@ async fn data_ref_ssrf_conformance_fixtures() {
     // time, before any DNS resolution. Drive every URI the fixture lists
     // (`data_ref_under_test.location` + `additional_test_cases`).
     let f001 = dir.join("data-ref-ssrf-001-ip-literal-private.json");
-    if f001.exists() {
+    if !fixture_missing(&f001) {
         let fixture = read_json(&f001);
         let input = &fixture["input"];
         let mut uris: Vec<String> = Vec::new();
@@ -757,7 +757,7 @@ async fn data_ref_ssrf_conformance_fixtures() {
     // (including the `rebind.example` mixed public+private case). Bind to
     // every `dns_resolution_results` list the fixture carries.
     let f002 = dir.join("data-ref-ssrf-002-dns-rebinding-loopback.json");
-    if f002.exists() {
+    if !fixture_missing(&f002) {
         let fixture = read_json(&f002);
         let input = &fixture["input"];
         let policy = SsrfPolicy::default();
@@ -806,7 +806,7 @@ async fn data_ref_ssrf_conformance_fixtures() {
     // ── data-ref-ssrf-003: a 30x redirect to a different authority MUST
     // be refused. Drive the fixture's own initial location + redirect.
     let f003 = dir.join("data-ref-ssrf-003-cross-authority-redirect.json");
-    if f003.exists() {
+    if !fixture_missing(&f003) {
         let fixture = read_json(&f003);
         let input = &fixture["input"];
         let original = input["data_ref_under_test"]["location"]
@@ -3158,7 +3158,7 @@ fn dk_fixtures_did_key_rejections() {
 
     // dk-001: unsupported multicodec (secp256k1).
     let p = dir.join("dk-001-wrong-multicodec-prefix.json");
-    if p.exists() {
+    if !fixture_missing(&p) {
         let v = read_json(&p);
         let did = v["input"]["agent_id"].as_str().unwrap();
         let err = acdp::did::resolve_did_key(did).unwrap_err();
@@ -3170,7 +3170,7 @@ fn dk_fixtures_did_key_rejections() {
 
     // dk-002: malformed multibase payloads.
     let p = dir.join("dk-002-malformed-multibase.json");
-    if p.exists() {
+    if !fixture_missing(&p) {
         let v = read_json(&p);
         for case in v["input"]["cases"].as_array().unwrap() {
             let did = case["agent_id"].as_str().unwrap();
@@ -3184,7 +3184,7 @@ fn dk_fixtures_did_key_rejections() {
 
     // dk-004: fragment ≠ method-specific identifier.
     let p = dir.join("dk-004-fragment-mismatch.json");
-    if p.exists() {
+    if !fixture_missing(&p) {
         let v = read_json(&p);
         let key_id = v["input"]["signature_key_id"].as_str().unwrap();
         let err = acdp::did::resolve_did_key_url(key_id).unwrap_err();
@@ -3200,7 +3200,7 @@ fn dk_fixtures_did_key_rejections() {
     #[cfg(feature = "server")]
     {
         let p = dir.join("dk-003-did-key-not-advertised.json");
-        if p.exists() {
+        if !fixture_missing(&p) {
             use acdp::types::capabilities::{CapabilitiesDocument, Limits};
             let caps = CapabilitiesDocument {
                 acdp_version: "0.2.0".into(),
@@ -3339,7 +3339,7 @@ fn rcpt_negative_fixtures() {
     // rcpt-002: tampered created_at → preimage hash diverges →
     // signature no longer verifies.
     let p = dir.join("rcpt-002-tampered-created-at.json");
-    if p.exists() {
+    if !fixture_missing(&p) {
         let v = read_json(&p);
         let wire = &v["input"]["registry_receipt"];
         let tampered_hash =
@@ -3361,7 +3361,7 @@ fn rcpt_negative_fixtures() {
 
     // rcpt-003: fingerprint mismatch fails the §8 step 5 cross-check.
     let p = dir.join("rcpt-003-key-fingerprint-mismatch.json");
-    if p.exists() {
+    if !fixture_missing(&p) {
         let v = read_json(&p);
         let correct = v["input"]["resolved_producer_key"]["correct_fingerprint"]
             .as_str()
@@ -3380,7 +3380,7 @@ fn rcpt_negative_fixtures() {
     // rcpt-004: registry_did ≠ serving authority — the cross-check the
     // client runs against the fetched-from authority.
     let p = dir.join("rcpt-004-registry-did-mismatch.json");
-    if p.exists() {
+    if !fixture_missing(&p) {
         let v = read_json(&p);
         let serving = v["input"]["serving_authority"].as_str().unwrap();
         let claimed = v["input"]["receipt_excerpt"]["registry_did"]

@@ -109,6 +109,49 @@ pin is bumped when the spec moves is described in `acdp-ci`'s
 [Spec propagation](https://github.com/agentcontextdistributionprotocol/acdp-ci/blob/main/DELIVERY-STANDARD.md#spec-propagation-a-new-spec-revision--its-sha-pinners)
 section.
 
+## Live registry tests (opt-in, local only)
+
+Every other publish test drives `RegistryClient` against wiremock or the
+in-process `tests/world` router, so neither shows that a real
+`acdp-registry-rs` accepts, stores, serves back and re-verifies what this SDK
+emits. Two suites cover that boundary against a real registry:
+
+- `tests/live_registry.rs`: publish → retrieve → `verify_context_hash` /
+  `verify_body_offline` / `VerifiedContext::fetch`, idempotent replay,
+  supersession and `current`/`lineage`, search, `not_found`, and the typed
+  refusal of a forged signature (`InvalidSignature`) and a tampered body
+  (`RemoteHashMismatch`).
+- `crates/acdp-a2a/tests/live_registry.rs`: the A2A `Agent` publishes an
+  artifact, and the holder runs `verify::fetch_and_verify`, including its
+  `PartsMismatch`, `TaskMismatch` and `UntrustedAgent` refusals.
+
+Both skip unless `ACDP_LIVE_REGISTRY_URL` is set, so plain `cargo test` and
+CI never need a running registry. Set `ACDP_REQUIRE_LIVE_REGISTRY=1` to make a
+missing URL fail instead. The URL must be loopback `http://`; the tests refuse
+anything else. Producers are `did:key`, so the registry has to advertise it.
+The shipped `docker/config.docker.toml` lists only `did:web`, which correctly
+refuses did:key with `key_resolution_failed` (dk-003). Copy it and set
+`[auth] did_methods = ["did:web", "did:key"]`:
+
+```bash
+cd ../acdp-registry-rs/docker
+sed 's/^did_methods *= *\["did:web"\]/did_methods = ["did:web", "did:key"]/' \
+  config.docker.toml > /tmp/config.livetest.toml
+cat > /tmp/compose.livetest.yml <<'EOF'
+services:
+  registry:
+    volumes: !override
+      - /tmp/config.livetest.toml:/app/config.toml:ro
+EOF
+docker compose -p livetest-acdp -f docker-compose.yml -f /tmp/compose.livetest.yml up -d --build --wait
+cd -
+ACDP_LIVE_REGISTRY_URL=http://127.0.0.1:8443 ACDP_REQUIRE_LIVE_REGISTRY=1 \
+  cargo test --features client,test-transport --test live_registry
+ACDP_LIVE_REGISTRY_URL=http://127.0.0.1:8443 ACDP_REQUIRE_LIVE_REGISTRY=1 \
+  cargo test -p acdp-a2a --test live_registry
+(cd ../acdp-registry-rs/docker && docker compose -p livetest-acdp down -v --remove-orphans)
+```
+
 ## The full pre-PR check set
 
 This mirrors CI (canonical copy:

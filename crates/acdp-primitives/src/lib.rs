@@ -58,4 +58,5 @@ pub const ACDP_VERSION: &str = "0.4.0";
 
 /// The JSON Schema namespace (`$id` prefix) for this protocol version,
 /// e.g. `<ACDP_SCHEMA_NAMESPACE>/acdp-error.schema.json`.
-pub const ACDP_SCHEMA_NAMESPACE: &str = "https://schemas.acdp.io/v0.1.0";
+pub const ACDP_SCHEMA_NAMESPACE: &str =
+    "https://schemas.agentcontextdistributionprotocol.io/v0.1.0";

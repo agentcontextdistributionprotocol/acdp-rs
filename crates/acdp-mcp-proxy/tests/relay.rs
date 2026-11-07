@@ -222,7 +222,7 @@ async fn mcp_002_relays_the_result_unchanged() {
         record::call_hash(&hashed, Some(&salt))
     );
 
-    // B — upstream _meta keys kept; only io.acdp/provenance added.
+    // B — upstream _meta keys kept; only io.agentcontextdistributionprotocol/provenance added.
     let meta = got["_meta"].as_object().unwrap();
     assert_eq!(meta["com.example/trace"], "abc123");
     assert_eq!(meta.len(), 2);

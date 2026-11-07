@@ -6,7 +6,7 @@ It sits between an MCP client and any stdio MCP server and relays every message 
 
 ```json
 "_meta": {
-  "io.acdp/provenance": {
+  "io.agentcontextdistributionprotocol/provenance": {
     "ctx_id": "acdp://registry.example.com/3c2b1a09-8f7e-4d6c-9b5a-4e3d2c1b0a9f",
     "content_hash": "sha256:3b2b…634f",
     "registry": "registry.example.com",
@@ -70,7 +70,7 @@ When `external` is set, the proxy writes `<dir>/<content-hash hex>.json` before 
 
 ## Behaviour
 
-- **No change to results.** `content`, `structuredContent`, `isError` and every other `_meta` key are left exactly as the server sent them. If the server already set `io.acdp/provenance`, the proxy leaves that value in place and still publishes its own record.
+- **No change to results.** `content`, `structuredContent`, `isError` and every other `_meta` key are left exactly as the server sent them. If the server already set `io.agentcontextdistributionprotocol/provenance`, the proxy leaves that value in place and still publishes its own record.
 - **Salted by default.** The arguments, the hashed result and the request id are hashed as `H(salt ‖ JCS(v))`. The salt is a fresh 32-byte value per call and is revealed only to the client, in `_meta`. Only embedded records are unsalted.
 - **`derived_from`** lists the `acdp://` ids that appear as whole string values in the arguments. They are collected in JCS order, without duplicates, up to 1000.
 - **No link before the publish response.** A `tools/call` result is held until its publish succeeds or fails. All other messages pass through byte for byte.
@@ -80,7 +80,7 @@ When `external` is set, the proxy writes `<dir>/<content-hash hex>.json` before 
   - A JSON-RPC error produces no record.
 - **MCP 2026-07-28 and later (§3.1).** The era is decided per request, so one server can serve both eras at once. A `tools/call` whose `_meta` carries `io.modelcontextprotocol/protocolVersion` records that revision and needs no `initialize`. Its `server.name` and `server.version` come from `io.modelcontextprotocol/serverInfo` in the result's `_meta`. Failing that, they come from the last `server/discover` response the client fetched, while its `ttlMs` lasts; the proxy reads that identity from the response's top level or its `_meta`, and never sends `server/discover` itself. Otherwise the name is `unknown` and the version is absent. A missing identity is not a failure.
 - **Results that are not yet complete (§3.2).** Only a result whose `resultType` is absent or `complete` is published. `input_required`, `task` and any other value are relayed byte for byte, with no record and no link. After `input_required`, the client's next `tools/call` is a call of its own: its record hashes that request's `arguments` and `id`, and never `inputResponses` or `requestState`.
-- **Task-delivered results are not covered.** The proxy does not follow the `io.modelcontextprotocol/tasks` extension: `tasks/get` responses and task notifications are relayed unchanged, so a result delivered through a task has no `io.acdp/provenance` link and no record.
+- **Task-delivered results are not covered.** The proxy does not follow the `io.modelcontextprotocol/tasks` extension: `tasks/get` responses and task notifications are relayed unchanged, so a result delivered through a task has no `io.agentcontextdistributionprotocol/provenance` link and no record.
   - The configured `visibility` is published exactly as configured, and a rejection is a publish failure. The proxy never widens it.
 - stdout carries only the relayed protocol. Diagnostics go to stderr.
 

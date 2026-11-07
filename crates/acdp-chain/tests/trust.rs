@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 const ISSUER: &str = "did:key:z6MkghLt1e8m1fmANsdJJco3aCLV8Xnigr5UWwC3u5iZFPd3";
 const ISSUER_SEED: [u8; 32] = [0x42; 32];
 const LIST_ID: &str = "tenant-acme.production";
-const GOLDEN_HASH: &str = "sha256:206fe1d0f0c3610e9a7d55638b7baa1883b625c71373b92747f25e07f3678bf3";
+const GOLDEN_HASH: &str = "sha256:3af2ea67f7fd60d888b892fc1654b6fe5657c680fa361e54cd3627a403d0f056";
 const NOW: &str = "2026-10-27T00:00:00.000Z";
 const LIST_RECEIPT: &str = "2026-10-26T00:00:01.000Z";
 

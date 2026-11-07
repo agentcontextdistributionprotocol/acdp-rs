@@ -1,4 +1,4 @@
-//! The Agent Card pointer `https://acdp.io/ext/a2a/v1` (RFC-ACDP-0022 §9)
+//! The Agent Card pointer `https://agentcontextdistributionprotocol.io/ext/a2a/v1` (RFC-ACDP-0022 §9)
 //! and the AITP identity binding (§3.1).
 //!
 //! The Card is an **untrusted pointer**: it says where to look and which
@@ -13,7 +13,7 @@ use base64::Engine as _;
 use serde_json::{json, Value};
 
 /// The extension URI, compared byte for byte.
-pub const EXTENSION_URI: &str = "https://acdp.io/ext/a2a/v1";
+pub const EXTENSION_URI: &str = "https://agentcontextdistributionprotocol.io/ext/a2a/v1";
 /// RFC-AITP-0014's extension URI, which carries `params.aid`.
 pub const AITP_EXTENSION_URI: &str = "https://agentidentitytrustprotocol.io/ext/a2a/v1";
 

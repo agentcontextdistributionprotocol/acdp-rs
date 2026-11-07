@@ -4,7 +4,7 @@
 //! message unchanged, and for each `tools/call` publishes one signed
 //! `acdp:mcp-tool-result` body to an ACDP registry under the operator's
 //! own key. The result goes back to the client with one `_meta` key
-//! added, `io.acdp/provenance`, linking it to that record.
+//! added, `io.agentcontextdistributionprotocol/provenance`, linking it to that record.
 //!
 //! - [`record`] builds the body: salted call hashes (§4.3), the
 //!   `derived_from` extraction (§4.4), the embedding allowlist (§5).

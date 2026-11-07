@@ -33,7 +33,7 @@ pub const TRUST_LIST_TYPE: &str = "acdp:trust-list";
 pub const TRUST_LIST_VERSION: &str = "acdp-trust-list/1";
 /// The RECOMMENDED `schema_uri` of a trust list (§4.1).
 pub const TRUST_LIST_SCHEMA_URI: &str =
-    "https://schemas.acdp.io/v0.1.0/acdp-trust-list.schema.json";
+    "https://schemas.agentcontextdistributionprotocol.io/v0.1.0/acdp-trust-list.schema.json";
 /// `trust_report_version` (§8).
 pub const TRUST_REPORT_VERSION: &str = "acdp-trust-report/1";
 /// The profile name that, in `required_profiles`, also requires a

@@ -1,4 +1,4 @@
-//! The `io.acdp/provenance` `_meta` value (RFC-ACDP-0019 §6–§7).
+//! The `io.agentcontextdistributionprotocol/provenance` `_meta` value (RFC-ACDP-0019 §6–§7).
 
 use acdp::{
     types::{primitives::ContentHash, CtxId},
@@ -9,7 +9,7 @@ use serde_json::{json, Map, Value};
 use crate::record::Salt;
 
 /// The `_meta` key the proxy adds to a `CallToolResult`.
-pub const META_KEY: &str = "io.acdp/provenance";
+pub const META_KEY: &str = "io.agentcontextdistributionprotocol/provenance";
 
 /// §6 published value `{ctx_id, content_hash, registry, salt?}`.
 /// `registry` is the `ctx_id` authority, which is the body's

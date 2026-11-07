@@ -21,7 +21,8 @@ use sha2::{Digest, Sha256};
 /// `type` of every body the proxy publishes.
 pub const CONTEXT_TYPE: &str = "acdp:mcp-tool-result";
 /// `schema_uri` of every body the proxy publishes.
-pub const SCHEMA_URI: &str = "https://schemas.acdp.io/v0.1.0/acdp-mcp-tool-result.schema.json";
+pub const SCHEMA_URI: &str =
+    "https://schemas.agentcontextdistributionprotocol.io/v0.1.0/acdp-mcp-tool-result.schema.json";
 /// `metadata.record_version` this crate emits.
 pub const RECORD_VERSION: &str = "acdp-mcp-tool-result/1";
 /// Minimum `acdp_version` for the record (RFC-ACDP-0019 §4.1).

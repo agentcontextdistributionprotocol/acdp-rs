@@ -14,9 +14,9 @@
 //!   `metadata["acdp:a2a"]` of a body of the agent's own type, with the
 //!   salted hashes (§5), embedding (§5.3), `url` part DataRefs (§5.4)
 //!   and the optional `a2a.artifact` anchor (§10), and signs it;
-//! - [`inputs`] turns `Message.metadata["io.acdp/inputs"]` into
+//! - [`inputs`] turns `Message.metadata["io.agentcontextdistributionprotocol/inputs"]` into
 //!   `derived_from` (§7);
-//! - [`link`] is the `Artifact.metadata["io.acdp/provenance"]` value and
+//! - [`link`] is the `Artifact.metadata["io.agentcontextdistributionprotocol/provenance"]` value and
 //!   its fail-open form (§6);
 //! - [`agent`] runs it end to end: publish (with the Idempotency-Key)
 //!   before the completing chunk is emitted, supersede on re-emission,
@@ -24,7 +24,7 @@
 //!
 //! **Holder side** (profile `acdp-consumer-a2a`): [`verify`] runs §8
 //! against the retrieved body, with the [`card`] pointer
-//! `https://acdp.io/ext/a2a/v1` as an untrusted hint and the AITP key
+//! `https://agentcontextdistributionprotocol.io/ext/a2a/v1` as an untrusted hint and the AITP key
 //! binding (§3.1).
 //!
 //! Nothing here adds to ACDP's trust machinery (§3.2): a re-emission is

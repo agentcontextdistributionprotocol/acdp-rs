@@ -237,11 +237,11 @@ fn a1(states: &[PinState]) -> NodeTrust {
 fn trust_001_golden_list() {
     let req = signed(&ISSUER_SEED, golden_metadata());
     assert_eq!(req["agent_id"], ISSUER);
-    let hash = "sha256:206fe1d0f0c3610e9a7d55638b7baa1883b625c71373b92747f25e07f3678bf3";
+    let hash = "sha256:3af2ea67f7fd60d888b892fc1654b6fe5657c680fa361e54cd3627a403d0f056";
     assert_eq!(req["content_hash"], hash);
     assert_eq!(
         req["signature"]["value"],
-        "F4i+OHnLx0lExnr4iL3cjiIh+p8GRjjDbVenIh5TCWG3EB/iPTW5jJf6e/d37vml/TeSffkbhYyXUIMiDp+3DQ=="
+        "QKrSN5bjlwzYH5b/+WVhQYctQqdI/DEAsg8VVJ7q5ionzTGiF4J4wVb4oVCInGKPwJ+Uf/vIFY0p9SvdSIb0CA=="
     );
     let v = version(&req);
     assert_eq!(

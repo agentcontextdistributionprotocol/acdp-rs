@@ -45,7 +45,7 @@ pub use acdp_primitives::keyless::KeylessReason;
 pub const KEY_ATTESTATION_TYPE: &str = "acdp:key-attestation";
 /// The `schema_uri` of a key attestation (§5.3).
 pub const KEY_ATTESTATION_SCHEMA_URI: &str =
-    "https://schemas.acdp.io/v0.1.0/acdp-key-attestation.schema.json";
+    "https://schemas.agentcontextdistributionprotocol.io/v0.1.0/acdp-key-attestation.schema.json";
 /// `attestation_version` (§5.3).
 pub const ATTESTATION_VERSION: &str = "acdp-key-attestation/1";
 /// `request_version` (§5.1).

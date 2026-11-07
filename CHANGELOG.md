@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking identifier change (wire strings only):** ACDP identifiers move to the long-form domain, following spec #136 (`ed58f52`). `https://schemas.acdp.io/…` becomes `https://schemas.agentcontextdistributionprotocol.io/…`, which covers `ACDP_SCHEMA_NAMESPACE` and the trust-list, keyless/key-attestation and MCP tool-result `schema_uri` constants. `https://acdp.io/ext/a2a/v1` becomes `https://agentcontextdistributionprotocol.io/ext/a2a/v1`, and the `io.acdp/*` metadata keys (`provenance`, `inputs`, `provenance.error`) become `io.agentcontextdistributionprotocol/*`. Bodies built with the old strings hash and sign differently. The re-pinned kl-001, mcp-001 and trust-001 vectors pin the new values. There are no known adopters: Seam is pinned to `=0.21.0`, and its vectors contain none of these strings. The public Rust API surface is unchanged.
+
 ## [0.21.2](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.21.1...acdp-v0.21.2) - 2026-11-06
 
 ### Added

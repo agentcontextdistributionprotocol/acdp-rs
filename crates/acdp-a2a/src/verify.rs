@@ -1,6 +1,6 @@
 //! Verification by a holder (RFC-ACDP-0022 §8).
 //!
-//! A holder with an A2A artifact and its `io.acdp/provenance` link:
+//! A holder with an A2A artifact and its `io.agentcontextdistributionprotocol/provenance` link:
 //!
 //! 1. **Body** — retrieves and verifies the body (RFC-ACDP-0001 §5.11)
 //!    and binds it to the link (`ctx_id`, `registry`, `content_hash`);
@@ -263,7 +263,12 @@ pub fn link_target(held: &HeldArtifact<'_>) -> Result<CtxId, VerifyFailure> {
 fn published_link<'v>(held: &HeldArtifact<'v>) -> Result<&'v Map<String, Value>, VerifyFailure> {
     use FailureKind as K;
     let link = link_of(held.artifact)
-        .ok_or_else(|| VerifyFailure::new(K::LinkInvalid, "artifact has no io.acdp/provenance"))?
+        .ok_or_else(|| {
+            VerifyFailure::new(
+                K::LinkInvalid,
+                "artifact has no io.agentcontextdistributionprotocol/provenance",
+            )
+        })?
         .as_object()
         .ok_or_else(|| VerifyFailure::new(K::LinkInvalid, "link is not an object"))?;
     if link.contains_key("failed") {

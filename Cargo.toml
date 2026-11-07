@@ -104,6 +104,11 @@ required-features = ["client", "test-transport"]
 # registry harness: `client` for the resolver/RegistryClient, `server`
 # for RegistryServer + InMemoryStore.
 [[test]]
+name              = "live_registry"
+path              = "tests/live_registry.rs"
+required-features = ["client", "test-transport"]
+
+[[test]]
 name              = "keyless_verify"
 path              = "tests/keyless_verify.rs"
 required-features = ["client", "test-transport", "keyless"]

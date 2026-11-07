@@ -13,7 +13,7 @@ categories  = ["cryptography", "web-programming"]
 rust-version = "1.87"
 
 [dependencies]
-acdp       = { path = "../..", version = "=0.21.2", default-features = false, features = ["client"] }
+acdp       = { path = "../..", version = "=0.21.3", default-features = false, features = ["client"] }
 tokio      = { version = "1", default-features = false, features = ["time", "fs"] }
 serde      = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }

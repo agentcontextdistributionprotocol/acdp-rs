@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.3](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-v0.21.2...acdp-v0.21.3) - 2026-11-07
+
+### Fixed
+
+- *(spec)* move ACDP identifiers to the long-form domain (spec ce39078) ([#555](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/555))
+
 ### Changed
 
 - **Breaking identifier change (wire strings only):** ACDP identifiers move to the long-form domain, following spec #136 (`ed58f52`) and #137 (`ce39078`). `https://schemas.acdp.io/…` becomes `https://schemas.agentcontextdistributionprotocol.io/…`, which covers `ACDP_SCHEMA_NAMESPACE` and the trust-list, keyless/key-attestation and MCP tool-result `schema_uri` constants. `https://acdp.io/ext/a2a/v1` becomes `https://agentcontextdistributionprotocol.io/ext/a2a/v1`, and the `io.acdp/*` metadata keys (`provenance`, `inputs`, `provenance.error`) become `io.agentcontextdistributionprotocol/*`. Bodies built with the old strings hash and sign differently. The re-pinned kl-001, mcp-001 and trust-001 vectors pin the new values. There are no known adopters: Seam is pinned to `=0.21.0`, and its vectors contain none of these strings. Verifiers still accept the earlier key-attestation `schema_uri`, because keyless bodies already on prod carry it (RFC-ACDP-0021 §5.3, §6.3 step 3, §8.1 step 1). It is exposed as `LEGACY_KEY_ATTESTATION_SCHEMA_URI` with `is_accepted_key_attestation_schema_uri`, for verification only. Registries mint only `KEY_ATTESTATION_SCHEMA_URI`. Otherwise the public Rust API surface is unchanged.

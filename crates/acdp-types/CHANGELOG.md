@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.3](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-types-v0.21.2...acdp-types-v0.21.3) - 2026-11-07
+
+### Fixed
+
+- *(spec)* move ACDP identifiers to the long-form domain (spec ce39078) ([#555](https://github.com/agentcontextdistributionprotocol/acdp-rs/pull/555))
+
 ## [0.21.0](https://github.com/agentcontextdistributionprotocol/acdp-rs/compare/acdp-types-v0.20.1...acdp-types-v0.21.0) - 2026-11-01
 
 ### Added

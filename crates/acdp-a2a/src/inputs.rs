@@ -1,7 +1,7 @@
 //! Cited inputs and `derived_from` (RFC-ACDP-0022 §7).
 //!
 //! A client cites the ACDP contexts it supplies under
-//! `Message.metadata["io.acdp/inputs"]`: a bare array of 1 to 1000
+//! `Message.metadata["io.agentcontextdistributionprotocol/inputs"]`: a bare array of 1 to 1000
 //! `ctx_id`s. Only explicit citations count: an `acdp://` string inside a
 //! Part is content and is never extracted.
 
@@ -9,7 +9,7 @@ use acdp::{client::CrossRegistryResolver, types::CtxId};
 use serde_json::Value;
 
 /// The `Message.metadata` key for cited inputs.
-pub const INPUTS_KEY: &str = "io.acdp/inputs";
+pub const INPUTS_KEY: &str = "io.agentcontextdistributionprotocol/inputs";
 /// RFC-ACDP-0002 `derived_from` maximum, and the `inputs` array maximum.
 pub const MAX_DERIVED_FROM: usize = 1000;
 
@@ -28,7 +28,7 @@ pub fn parse_inputs(message_metadata: &Value) -> Option<Vec<CtxId>> {
 
 /// The inputs cited across a task's client messages (A2A JSON `Message`
 /// objects), in message order and then array order, first occurrence
-/// kept. A value under `io.acdp/provenance` is never read for inputs.
+/// kept. A value under `io.agentcontextdistributionprotocol/provenance` is never read for inputs.
 pub fn cited_inputs<'a>(messages: impl IntoIterator<Item = &'a Value>) -> Vec<CtxId> {
     let mut out: Vec<CtxId> = Vec::new();
     for m in messages {

@@ -3,7 +3,7 @@
 //! Every line is forwarded byte-for-byte, except the response to a
 //! client `tools/call`, which is held until its record's publish has
 //! succeeded or failed (§6: no link before the publish response) and
-//! then re-serialized with `io.acdp/provenance` added to `_meta`.
+//! then re-serialized with `io.agentcontextdistributionprotocol/provenance` added to `_meta`.
 //!
 //! The era is classified per request (§3.1). A `tools/call` whose `_meta`
 //! carries [`PROTOCOL_VERSION_META`] (MCP 2026-07-28 and later) takes its

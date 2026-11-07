@@ -134,7 +134,7 @@ record of every `tools/call`; see
 
 A2A artifact provenance (RFC-ACDP-0022, 0.5.0 Draft) is the `acdp-a2a`
 library: an A2A agent publishes each completed artifact as a body it
-signs and returns the `io.acdp/provenance` link in the artifact; a
+signs and returns the `io.agentcontextdistributionprotocol/provenance` link in the artifact; a
 holder runs the §8 verification. See
 [`crates/acdp-a2a/README.md`](crates/acdp-a2a/README.md).
 

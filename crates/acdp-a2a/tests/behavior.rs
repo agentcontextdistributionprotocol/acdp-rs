@@ -368,7 +368,9 @@ async fn a2a_002_f_continuation_in_a_new_task() {
     let earlier = s1.published("a1").unwrap().ctx_id.clone();
 
     let mut s2 = TaskSession::new("t2", "c1");
-    s2.observe_client_message(&json!({ "metadata": { "io.acdp/inputs": [ctx(77)] } }));
+    s2.observe_client_message(
+        &json!({ "metadata": { "io.agentcontextdistributionprotocol/inputs": [ctx(77)] } }),
+    );
     s2.mark_inputs_verified([cid(77)]);
     s2.hints_mut("a1").continues = Some(earlier.clone());
     a.on_chunk(
@@ -815,8 +817,8 @@ fn a2a_004_i_failed_link() {
 fn a2a_005_a_order_and_deduplication() {
     let (x, y) = (ctx(1), ctx(2));
     let msgs = [
-        json!({ "metadata": { "io.acdp/inputs": [x, y] } }),
-        json!({ "metadata": { "io.acdp/inputs": [x] } }),
+        json!({ "metadata": { "io.agentcontextdistributionprotocol/inputs": [x, y] } }),
+        json!({ "metadata": { "io.agentcontextdistributionprotocol/inputs": [x] } }),
     ];
     let cited = inputs::cited_inputs(msgs.iter());
     assert_eq!(cited, vec![cid(1), cid(2)]);
@@ -828,7 +830,7 @@ async fn a2a_005_b_verified_and_used_only() {
     let a = agent(client);
     let mut s = TaskSession::new("t1", "c1");
     s.observe_client_message(
-        &json!({ "metadata": { "io.acdp/inputs": [ctx(50), ctx(51), ctx(52)] } }),
+        &json!({ "metadata": { "io.agentcontextdistributionprotocol/inputs": [ctx(50), ctx(51), ctx(52)] } }),
     );
     s.mark_inputs_verified([cid(50), cid(51)]);
     s.hints_mut("a1").used_inputs = Some(vec![cid(51)]);
@@ -866,7 +868,7 @@ fn a2a_005_c_invalid_value_ignored() {
             "{bad}"
         );
     }
-    // Under io.acdp/provenance it is not read.
+    // Under io.agentcontextdistributionprotocol/provenance it is not read.
     let m = json!({ LINK_KEY: { inputs::INPUTS_KEY: [ctx(1)] } });
     assert!(inputs::parse_inputs(&m).is_none());
 }
@@ -915,7 +917,7 @@ async fn a2a_006_only_metadata_gains_the_link() {
     let out = run_task(&a, &mut s, &cs).await;
     let mut last = out[1].clone();
     assert!(last["artifact"].get("extensions").is_none());
-    // Only io.acdp/provenance was added.
+    // Only io.agentcontextdistributionprotocol/provenance was added.
     strip_link(&mut last["artifact"]);
     let mut want = cs[1].clone();
     if want["artifact"].get("metadata").is_none() {

@@ -24,7 +24,7 @@ use acdp::producer::keyless::EphemeralKey;
 use acdp::producer::Producer;
 use acdp::types::keyless::{
     IdentityDescriptor, KeyAttestation, KeylessReason, WorkloadIdentity, ATTESTATION_VERSION,
-    KEY_ATTESTATION_SCHEMA_URI, KEY_ATTESTATION_TYPE,
+    KEY_ATTESTATION_SCHEMA_URI, KEY_ATTESTATION_TYPE, LEGACY_KEY_ATTESTATION_SCHEMA_URI,
 };
 use acdp::types::receipt::ReceiptSigner;
 use acdp::types::revocation::{KeyRevocation, RevocationTrustClass};
@@ -350,6 +350,20 @@ fn fixture_with(attestation_status: &str, attestation_agent: &str) -> Fixture {
 }
 
 fn fixture_full(attestation_status: &str, attestation_agent: &str, org_wide: bool) -> Fixture {
+    fixture_schema(
+        attestation_status,
+        attestation_agent,
+        org_wide,
+        KEY_ATTESTATION_SCHEMA_URI,
+    )
+}
+
+fn fixture_schema(
+    attestation_status: &str,
+    attestation_agent: &str,
+    org_wide: bool,
+    schema_uri: &str,
+) -> Fixture {
     let now = acdp::time::trunc_ms(Utc::now());
     let key = EphemeralKey::from_key(SigningKey::from_bytes(&EPHEMERAL_SEED).into());
     let fingerprint = key.fingerprint().unwrap();
@@ -385,7 +399,7 @@ fn fixture_full(attestation_status: &str, attestation_agent: &str, org_wide: boo
         .title("Key attestation")
         .context_type(ContextType::Custom(KEY_ATTESTATION_TYPE.into()))
         .metadata(serde_json::to_value(&metadata).unwrap())
-        .schema_uri(KEY_ATTESTATION_SCHEMA_URI)
+        .schema_uri(schema_uri)
         .acdp_version("0.5.0")
         .build()
         .unwrap();
@@ -492,6 +506,25 @@ async fn kl_005_a_currently_authorized() {
         v.body().key_attestation().unwrap().unwrap().ctx_id,
         fx.attestation.ctx_id
     );
+}
+
+/// RFC-ACDP-0021 §5.3: an attestation minted under the earlier short-domain
+/// `schema_uri` still verifies (§6.3 step 3, §8.1 step 1).
+#[tokio::test]
+async fn kl_005_legacy_attestation_schema_uri_still_verifies() {
+    let h = harness().await;
+    let fx = fixture_schema(
+        "active",
+        REGISTRY_DID,
+        false,
+        LEGACY_KEY_ATTESTATION_SCHEMA_URI,
+    );
+    assert_eq!(
+        fx.attestation.schema_uri.as_deref(),
+        Some("https://schemas.acdp.io/v0.1.0/acdp-key-attestation.schema.json")
+    );
+    let v = run(&h, &fx, &accepting()).await.expect("verifies");
+    assert_eq!(v.key_status(), KeyAuthorization::CurrentlyAuthorized);
 }
 
 /// kl-005 B and kl-009 A: removing the identity does not reach back.

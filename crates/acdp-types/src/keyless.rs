@@ -43,9 +43,23 @@ pub use acdp_primitives::keyless::KeylessReason;
 
 /// The body `type` of a key attestation (§5.3).
 pub const KEY_ATTESTATION_TYPE: &str = "acdp:key-attestation";
-/// The `schema_uri` of a key attestation (§5.3).
+/// The `schema_uri` of a key attestation (§5.3). A registry MUST mint
+/// this value.
 pub const KEY_ATTESTATION_SCHEMA_URI: &str =
+    "https://schemas.agentcontextdistributionprotocol.io/v0.1.0/acdp-key-attestation.schema.json";
+/// The earlier short-domain `schema_uri` of a key attestation (§5.3).
+/// Use it for **verification only**. Attestations minted before the move to
+/// the long-form domain carry it, and stored bodies are immutable, so a
+/// verifier (§6.3 step 3, §8.1 step 1) MUST still accept it. Never mint it.
+pub const LEGACY_KEY_ATTESTATION_SCHEMA_URI: &str =
     "https://schemas.acdp.io/v0.1.0/acdp-key-attestation.schema.json";
+
+/// Whether `schema_uri` is one a verifier accepts on a key attestation
+/// (§5.3): [`KEY_ATTESTATION_SCHEMA_URI`] or
+/// [`LEGACY_KEY_ATTESTATION_SCHEMA_URI`].
+pub fn is_accepted_key_attestation_schema_uri(schema_uri: &str) -> bool {
+    schema_uri == KEY_ATTESTATION_SCHEMA_URI || schema_uri == LEGACY_KEY_ATTESTATION_SCHEMA_URI
+}
 /// `attestation_version` (§5.3).
 pub const ATTESTATION_VERSION: &str = "acdp-key-attestation/1";
 /// `request_version` (§5.1).
@@ -634,7 +648,11 @@ impl KeyAttestation {
                 body.agent_id
             )));
         }
-        if body.schema_uri.as_deref() != Some(KEY_ATTESTATION_SCHEMA_URI) {
+        if !body
+            .schema_uri
+            .as_deref()
+            .is_some_and(is_accepted_key_attestation_schema_uri)
+        {
             return Err(invalid(format!(
                 "schema_uri is not {KEY_ATTESTATION_SCHEMA_URI}"
             )));
@@ -1064,6 +1082,25 @@ mod tests {
             keyless_key_id("did:web:agents.example.com:ci", &jwk.fingerprint().unwrap()).unwrap();
         assert!(is_keyless_key_id(&id));
         assert!(!is_keyless_key_id("did:web:agents.example.com:ci#key-1"));
+    }
+
+    #[test]
+    fn legacy_key_attestation_schema_uri_is_accepted_for_verification_only() {
+        assert!(is_accepted_key_attestation_schema_uri(
+            KEY_ATTESTATION_SCHEMA_URI
+        ));
+        assert!(is_accepted_key_attestation_schema_uri(
+            "https://schemas.acdp.io/v0.1.0/acdp-key-attestation.schema.json"
+        ));
+        assert!(!is_accepted_key_attestation_schema_uri(
+            "https://schemas.agentcontextdistributionprotocol.io/v0.1.0/acdp-trust-list.schema.json"
+        ));
+        assert!(!is_accepted_key_attestation_schema_uri(
+            "https://schemas.acdp.io/v0.1.0/acdp-trust-list.schema.json"
+        ));
+        // Minting uses only the long-form value.
+        assert!(KEY_ATTESTATION_SCHEMA_URI
+            .starts_with("https://schemas.agentcontextdistributionprotocol.io/"));
     }
 
     #[test]

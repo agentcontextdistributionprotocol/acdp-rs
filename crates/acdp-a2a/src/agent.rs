@@ -112,7 +112,7 @@ impl TaskSession {
     }
 
     /// Note a client message (A2A JSON `Message`) received before
-    /// completion: its `io.acdp/inputs`, if valid, are cited (§7).
+    /// completion: its `io.agentcontextdistributionprotocol/inputs`, if valid, are cited (§7).
     pub fn observe_client_message(&mut self, message: &Value) {
         for id in inputs::cited_inputs([message]) {
             if !self.cited.contains(&id) {

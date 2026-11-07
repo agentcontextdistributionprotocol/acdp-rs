@@ -1,4 +1,4 @@
-//! The link in `Artifact.metadata["io.acdp/provenance"]` (RFC-ACDP-0022
+//! The link in `Artifact.metadata["io.agentcontextdistributionprotocol/provenance"]` (RFC-ACDP-0022
 //! §6–§6.2). The value is exactly RFC-ACDP-0019 §6's, except that under
 //! this RFC `salt` is always present (§5.2).
 
@@ -11,7 +11,7 @@ use serde_json::{json, Map, Value};
 use crate::hash::Salt;
 
 /// The `Artifact.metadata` key carrying the link (RFC-ACDP-0019's key).
-pub const LINK_KEY: &str = "io.acdp/provenance";
+pub const LINK_KEY: &str = "io.agentcontextdistributionprotocol/provenance";
 
 /// `Idempotency-Key` for a body: `acdp-a2a-<64 hex of content_hash>` (§6).
 pub fn idempotency_key(content_hash: &ContentHash) -> String {

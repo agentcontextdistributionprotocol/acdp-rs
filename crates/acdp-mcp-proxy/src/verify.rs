@@ -1,4 +1,4 @@
-//! The holder's check of an `io.acdp/provenance` link (RFC-ACDP-0019
+//! The holder's check of an `io.agentcontextdistributionprotocol/provenance` link (RFC-ACDP-0019
 //! §4.3 "Verification").
 //!
 //! [`verify_link`] runs steps 1–5 against a body the caller has already
@@ -79,7 +79,7 @@ fn mismatch(step: u8, reason: impl Into<String>) -> LinkError {
     }
 }
 
-/// Verify `link` (the `io.acdp/provenance` value) against `body` and the
+/// Verify `link` (the `io.agentcontextdistributionprotocol/provenance` value) against `body` and the
 /// held call. `body` MUST already have passed RFC-ACDP-0001 §5.11.
 pub fn verify_link(
     body: &Body,

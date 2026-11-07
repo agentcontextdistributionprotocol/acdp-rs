@@ -85,7 +85,7 @@ impl AssembledArtifact {
 
     /// The artifact as a `Task.artifacts` snapshot entry: the assembled
     /// parts, the labels and the metadata, with `link` added under
-    /// `io.acdp/provenance` when given (§6).
+    /// `io.agentcontextdistributionprotocol/provenance` when given (§6).
     pub fn to_snapshot(&self, link: Option<&Value>) -> Value {
         let mut a = Map::new();
         a.insert("artifactId".into(), self.artifact_id.clone().into());
